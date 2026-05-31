@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/ga4-mcp/spec/payload_contract_v1.schema.json",
+  "title": "ga4-mcp payload contract v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/successEnvelope"
+    },
+    {
+      "$ref": "#/$defs/errorEnvelope"
+    }
+  ],
+  "$defs": {
+    "baseMeta": {
+      "type": "object",
+      "required": [
+        "elapsed_ms"
+      ],
+      "properties": {
+        "elapsed_ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "columnMeta": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "logical_type": {
+          "type": "string"
+        },
+        "nullable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "tabularMeta": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseMeta"
+        },
+        {
+          "type": "object",
+          "required": [
+            "output_mode",
+            "summary_only",
+            "row_count_total",
+            "row_count_returned",
+            "truncated",
+            "next_cursor",
+            "query_hash",
+            "columns"
+          ],
+          "properties": {
+            "output_mode": {
+              "type": "string",
+              "enum": [
+                "rows",
+                "tuples",
+                "scalar",
+                "compact"
+              ]
+            },
+            "summary_only": {
+              "type": "boolean"
+            },
+            "row_count_total": {
+              "type": "number",
+              "minimum": 0
+            },
+            "row_count_returned": {
+              "type": "number",
+              "minimum": 0
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "next_cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "query_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "columns": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/columnMeta"
+              }
+            },
+            "cell_clipping": {
+              "type": "object"
+            },
+            "query_hints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "errorPayload": {
+      "type": "object",
+      "required": [
+        "code",
+        "reason",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status_code": {
+          "type": "number"
+        },
+        "engine_code": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "successEnvelope": {
+      "type": "object",
+      "required": [
+        "ok",
+        "data",
+        "meta"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "data": {},
+        "meta": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/baseMeta"
+            },
+            {
+              "$ref": "#/$defs/tabularMeta"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "errorEnvelope": {
+      "type": "object",
+      "required": [
+        "ok",
+        "error",
+        "meta"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "$ref": "#/$defs/errorPayload"
+        },
+        "meta": {
+          "$ref": "#/$defs/baseMeta"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
