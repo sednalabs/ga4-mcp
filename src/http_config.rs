@@ -438,7 +438,7 @@ fn parse_allowed_cidrs(raw: &str, var_name: &str) -> Result<Vec<IpNet>> {
         .filter(|item| !item.is_empty())
         .map(|item| {
             item.parse::<IpNet>()
-                .map_err(|err| anyhow!("invalid {var_name} CIDR {item:?}: {err}"))
+                .map_err(|err| anyhow!("invalid {} CIDR {:?}: {}", var_name, item, err))
         })
         .collect()
 }

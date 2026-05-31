@@ -4955,7 +4955,7 @@ fn extract_dimension_columns(response: &Value) -> Vec<contract::ColumnMeta> {
                         .and_then(Value::as_str)
                         .filter(|value| !value.trim().is_empty())
                         .map(str::to_string)
-                        .unwrap_or_else(|| format!("dimension_{idx}"));
+                        .unwrap_or_else(|| format!("dimension_{}", idx));
                     let mut column = contract::ColumnMeta::new(name).with_nullable(true);
                     if let Some(logical_type) = header.get("type").and_then(Value::as_str) {
                         column = column.with_logical_type(logical_type);
@@ -4984,7 +4984,7 @@ fn extract_metric_columns(response: &Value) -> Vec<contract::ColumnMeta> {
                         .and_then(Value::as_str)
                         .filter(|value| !value.trim().is_empty())
                         .map(str::to_string)
-                        .unwrap_or_else(|| format!("metric_{idx}"));
+                        .unwrap_or_else(|| format!("metric_{}", idx));
                     let logical_type = header
                         .get("type")
                         .and_then(Value::as_str)
