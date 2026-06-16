@@ -4244,18 +4244,31 @@ fn execute_scratchpad_projection(
 }
 
 fn query_row_count(conn: &duckdb::Connection, sql: &str) -> Result<usize, AnalyticsError> {
+    let sql_preview = {
+        let text = safe_text(sql);
+        const MAX_SQL_PREVIEW_CHARS: usize = 512;
+        if text.chars().count() > MAX_SQL_PREVIEW_CHARS {
+            let truncated = text.chars().take(MAX_SQL_PREVIEW_CHARS).collect::<String>();
+            format!("{truncated}…")
+        } else {
+            text
+        }
+    };
+
     let mut stmt = conn.prepare(sql).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to prepare scratchpad row-count query: {err}"
+            "failed to prepare scratchpad row-count query (sql: {sql_preview}): {err}"
         ))
     })?;
     let mut rows = stmt.query([]).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to execute scratchpad row-count query: {err}"
+            "failed to execute scratchpad row-count query (sql: {sql_preview}): {err}"
         ))
     })?;
     let Some(row) = rows.next().map_err(|err| {
-        AnalyticsError::ScratchpadEngine(format!("failed to fetch scratchpad row-count row: {err}"))
+        AnalyticsError::ScratchpadEngine(format!(
+            "failed to fetch scratchpad row-count row (sql: {sql_preview}): {err}"
+        ))
     })?
     else {
         return Ok(0);
@@ -4263,7 +4276,7 @@ fn query_row_count(conn: &duckdb::Connection, sql: &str) -> Result<usize, Analyt
 
     let value = row.get_ref(0).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to decode scratchpad row-count value: {err}"
+            "failed to decode scratchpad row-count value (sql: {sql_preview}): {err}"
         ))
     })?;
     Ok(duck_value_to_usize(DuckValue::from(value)))
