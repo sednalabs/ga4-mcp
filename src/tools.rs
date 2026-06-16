@@ -3518,17 +3518,11 @@ fn value_as_trimmed_string(value: &Value) -> Option<String> {
     if raw.is_empty() { None } else { Some(raw) }
 }
 
-fn normalize_ga_date_literal(raw: &str) -> Option<String> {
-    let value = raw.trim();
-    if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let year = value[0..4].parse::<u32>().ok()?;
-    let month = value[4..6].parse::<u32>().ok()?;
-    let day = value[6..8].parse::<u32>().ok()?;
+fn is_valid_ymd(year: u32, month: u32, day: u32) -> bool {
     if month == 0 || month > 12 {
-        return None;
+        return false;
     }
+
     let max_day = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -3539,9 +3533,21 @@ fn normalize_ga_date_literal(raw: &str) -> Option<String> {
                 28
             }
         }
-        _ => return None,
+        _ => return false,
     };
-    if day == 0 || day > max_day {
+
+    day != 0 && day <= max_day
+}
+
+fn normalize_ga_date_literal(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let year = value[0..4].parse::<u32>().ok()?;
+    let month = value[4..6].parse::<u32>().ok()?;
+    let day = value[6..8].parse::<u32>().ok()?;
+    if !is_valid_ymd(year, month, day) {
         return None;
     }
     Some(format!("{year:04}-{month:02}-{day:02}"))
