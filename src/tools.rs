@@ -29,6 +29,8 @@ use crate::ga_client::{
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
 
+/// Upper bound for report row limits accepted by tool request validation.
+/// Applies to client-provided `limit` values (for limit/offset style report pagination).
 const MAX_REPORT_LIMIT: u64 = 250_000;
 const MAX_BATCH_REPORT_REQUESTS: usize = 5;
 const MAX_DIMENSIONS: usize = 50;
