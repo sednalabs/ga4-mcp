@@ -16,6 +16,7 @@
 //! * `docs/SECURITY_MODEL.md`
 //! * `https://github.com/googleanalytics/google-analytics-mcp`
 
+pub mod auth_ux;
 pub mod config;
 pub mod contract;
 pub mod error;

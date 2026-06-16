@@ -19,12 +19,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 
+use crate::auth_ux::{
+    auth_login_cli_command, local_credential_material_detected, login_command_for_scope,
+};
+use crate::config::{DEFAULT_ANALYTICS_SCOPE, UpstreamTokenSource};
 use crate::contract;
 use crate::error::AnalyticsError;
 use crate::ga_client::{
-    AccountId, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions, PropertyId,
-    RunAccessReportRequest, RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
-    sort_object,
+    AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
+    PropertyId, RunAccessReportRequest, RunPivotReportRequest, RunRealtimeReportRequest,
+    RunReportRequest, sort_object,
 };
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
@@ -59,6 +63,23 @@ const SCRATCHPAD_QUERY_ALIAS: &str = "ga4_scratchpad_query";
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AuthStatusArgs {
+    /// When true, acquire a Google access token and call GA account summaries. The token is never returned.
+    #[serde(default)]
+    pub verify_token: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AuthLoginCommandArgs {
+    /// Include the headless browser flag for SSH or remote environments.
+    #[serde(default)]
+    pub headless: bool,
+    /// Optional Google OAuth client id file for gcloud ADC login.
+    #[serde(default)]
+    pub client_id_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -669,6 +690,200 @@ struct ScratchpadTabularProjection {
 
 #[tool_router(router = tool_router_analytics, vis = "pub")]
 impl AnalyticsMcp {
+    /// Return the recommended first-run path.
+    #[tool(
+        name = "ga4_get_started",
+        description = "Return the recommended GA4 first-run auth flow, credential modes, and safe starter tools."
+    )]
+    async fn ga4_get_started(&self) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        Ok(contract_success(
+            json!({
+                "server": "ga4-mcp",
+                "capability_profile": self.capability_profile().as_str(),
+                "auth_source_candidate": self.client.auth_source().as_str(),
+                "auth_source_note": "A candidate server credential source is not proof credentials exist; call ga4_auth_status or auth status --verify-token.",
+                "scope": self.client.analytics_scope(),
+                "upstream_token_source": self.client.upstream_token_source().as_str(),
+                "upstream_token_header": self.client.upstream_token_header(),
+                "recommended_cli": {
+                    "login": "ga4-mcp auth login",
+                    "login_headless": "ga4-mcp auth login --headless",
+                    "login_with_client_id_file": "ga4-mcp auth login --client-id-file /path/to/client_id.json",
+                    "status": "ga4-mcp auth status --verify-token",
+                    "doctor": "ga4-mcp auth doctor --verify-token"
+                },
+                "first_steps": [
+                    "Before starting a long-lived MCP client, run ga4-mcp auth login for the easiest browser login.",
+                    "Call ga4-mcp auth status --verify-token or ga4_auth_status with verify_token=true to prove Google Analytics access without returning a token.",
+                    "For a loopback HTTP service, use GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization.",
+                    "For a hosted per-user service, keep GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header so each client supplies its own Google token.",
+                    "If verification says local ADC requires a quota project, enable analyticsadmin.googleapis.com and analyticsdata.googleapis.com on a Google Cloud project, then run gcloud auth application-default set-quota-project YOUR_PROJECT.",
+                    "If Google rejects the Analytics scope during login, create a Desktop OAuth client and rerun ga4-mcp auth login --client-id-file /path/to/client_id.json.",
+                    "Call get_account_summaries to discover accessible GA4 accounts and properties."
+                ],
+                "credential_options": [
+                    {
+                        "name": "Application Default Credentials",
+                        "best_for": "lowest-friction local browser login",
+                        "command": "ga4-mcp auth login",
+                        "headless_command": "ga4-mcp auth login --headless",
+                        "client_id_file_command": "ga4-mcp auth login --client-id-file /path/to/client_id.json",
+                        "quota_project_command": "gcloud auth application-default set-quota-project YOUR_PROJECT",
+                        "quota_project_note": "Only needed when Google reports local ADC requires a quota project; the project must have the Analytics Admin and Data APIs enabled.",
+                        "env": []
+                    },
+                    {
+                        "name": "per-request Google bearer token",
+                        "best_for": "hosted or multi-user MCP services",
+                        "env": [
+                            "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header",
+                            "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization"
+                        ]
+                    },
+                    {
+                        "name": "local request-header-or-ADC fallback",
+                        "best_for": "loopback user-level HTTP services",
+                        "env": [
+                            "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config",
+                            "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization"
+                        ]
+                    },
+                    {
+                        "name": "GOOGLE_APPLICATION_CREDENTIALS",
+                        "best_for": "standard service-account or ADC file configuration",
+                        "env": ["GOOGLE_APPLICATION_CREDENTIALS"]
+                    }
+                ],
+                "safe_starter_tools": [
+                    "get_account_summaries",
+                    "get_property_details",
+                    "run_report",
+                    "preview_report_request",
+                    "check_report_compatibility"
+                ],
+                "scratchpad_note": "Scratchpad tools require GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE=scratchpad or --capability-profile scratchpad."
+            }),
+            started,
+        ))
+    }
+
+    /// Explain configured auth without exposing secrets.
+    #[tool(
+        name = "ga4_auth_status",
+        description = "Explain configured Google Analytics auth source and optionally verify Google API access without returning secrets."
+    )]
+    async fn ga4_auth_status(
+        &self,
+        Parameters(args): Parameters<AuthStatusArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        let token_check = if args.verify_token {
+            let result =
+                if self.client.upstream_token_source() == UpstreamTokenSource::RequestHeader {
+                    self.client.verify_config_token().await
+                } else {
+                    self.client.verify_token().await
+                };
+            match result {
+                Ok(()) => json!({ "checked": true, "ok": true }),
+                Err(err) => json!({
+                    "checked": true,
+                    "ok": false,
+                    "error": redact_tool_error_message(&err)
+                }),
+            }
+        } else {
+            json!({ "checked": false })
+        };
+        let token_ok = token_check.get("ok").and_then(Value::as_bool);
+        let auth_source_candidate = self.client.auth_source();
+        let credential_material_detected = credential_material_detected_for_auth_source(
+            auth_source_candidate,
+            local_credential_material_detected(),
+        );
+        let auth_source = if matches!(
+            auth_source_candidate,
+            AuthSource::GoogleDefaultProviderChain
+        ) && !credential_material_detected
+            && token_ok != Some(true)
+        {
+            Value::Null
+        } else {
+            json!(auth_source_candidate.as_str())
+        };
+
+        Ok(contract_success(
+            json!({
+                "auth_source": auth_source,
+                "auth_source_candidate": auth_source_candidate.as_str(),
+                "scope": self.client.analytics_scope(),
+                "capability_profile": self.capability_profile().as_str(),
+                "upstream_token_source": self.client.upstream_token_source().as_str(),
+                "upstream_token_header": self.client.upstream_token_header(),
+                "quota_project_configured": self.client.quota_project_configured(),
+                "credential_material_detected": credential_material_detected,
+                "detected_env": auth_env_presence(),
+                "token_check": token_check,
+                "next_steps": auth_next_steps(self.client.upstream_token_source(), self.client.analytics_scope(), args.verify_token, token_ok),
+                "secrets_returned": false
+            }),
+            started,
+        ))
+    }
+
+    /// Return a gcloud ADC login command.
+    #[tool(
+        name = "ga4_auth_login_command",
+        description = "Return a copyable gcloud Application Default Credentials login command for GA4."
+    )]
+    async fn ga4_auth_login_command(
+        &self,
+        Parameters(args): Parameters<AuthLoginCommandArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        let scope = login_scope_for_mcp_command(self.client.analytics_scope());
+        let command = login_command_for_scope(
+            scope,
+            args.headless,
+            args.client_id_file.as_deref().map(std::path::Path::new),
+        );
+        let preferred_cli = auth_login_cli_command(
+            scope,
+            args.headless,
+            args.client_id_file.as_deref().map(std::path::Path::new),
+        );
+        let after_login = after_login_instruction(
+            self.client.upstream_token_source(),
+            self.client.analytics_scope(),
+            scope,
+        );
+        Ok(contract_success(
+            json!({
+                "command": command,
+                "preferred_cli": preferred_cli,
+                "scope": scope,
+                "headless": args.headless,
+                "client_id_file": args.client_id_file,
+                "after_login": after_login,
+                "client_id_file_hint": "Analytics scopes normally work with gcloud's default client, but pass client_id_file when Google rejects the requested scope.",
+                "quota_project_hint": "If verification says local ADC requires a quota project, run `gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT` and `gcloud auth application-default set-quota-project YOUR_PROJECT`, then verify again.",
+                "local_http_env": {
+                    "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE": "request_header_or_config",
+                    "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER": "authorization"
+                },
+                "hosted_per_user_env": {
+                    "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE": "request_header",
+                    "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER": "authorization"
+                },
+                "service_account_alternative": {
+                    "standard_env": "GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-or-adc.json"
+                }
+            }),
+            started,
+        ))
+    }
+
     /// Retrieve account summaries and linked properties for the authenticated identity.
     #[tool(
         name = "get_account_summaries",
@@ -5451,6 +5666,145 @@ fn contract_success(data: Value, started: Instant) -> CallToolResult {
 
 fn contract_error(err: AnalyticsError, started: Instant) -> CallToolResult {
     contract::error(err, contract::elapsed_ms(started))
+}
+
+fn redact_tool_error_message(err: &impl std::fmt::Display) -> String {
+    contract::redact_secret_text(&err.to_string())
+}
+
+fn auth_env_presence() -> Value {
+    json!({
+        "GOOGLE_APPLICATION_CREDENTIALS": std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some(),
+        "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON": std::env::var_os("GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON").is_some(),
+        "GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN": std::env::var_os("GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN").is_some(),
+        "CLOUDSDK_CONFIG": std::env::var_os("CLOUDSDK_CONFIG").is_some(),
+    })
+}
+
+fn credential_material_detected_for_auth_source(
+    auth_source: AuthSource,
+    local_detected: bool,
+) -> bool {
+    local_detected || !matches!(auth_source, AuthSource::GoogleDefaultProviderChain)
+}
+
+fn login_scope_for_mcp_command(current_scope: &str) -> &str {
+    if scope_allows_analytics_read(current_scope) {
+        current_scope
+    } else {
+        DEFAULT_ANALYTICS_SCOPE
+    }
+}
+
+fn after_login_instruction(
+    upstream_token_source: UpstreamTokenSource,
+    current_scope: &str,
+    login_scope: &str,
+) -> String {
+    let ambient_scope = std::env::var("GOOGLE_ANALYTICS_MCP_SCOPE").ok();
+    after_login_instruction_with_env(
+        upstream_token_source,
+        current_scope,
+        login_scope,
+        ambient_scope.as_deref(),
+    )
+}
+
+fn after_login_instruction_with_env(
+    upstream_token_source: UpstreamTokenSource,
+    current_scope: &str,
+    login_scope: &str,
+    ambient_scope: Option<&str>,
+) -> String {
+    if current_scope != login_scope
+        || ambient_scope
+            .filter(|scope| !scope.is_empty())
+            .is_some_and(|scope| scope != login_scope)
+    {
+        format!(
+            "Unset GOOGLE_ANALYTICS_MCP_SCOPE, set GOOGLE_ANALYTICS_MCP_SCOPE={login_scope}, or update any MCP launcher `--analytics-scope` argument before restarting stdio MCP clients; stale scope configuration overrides the login scope."
+        )
+    } else if upstream_token_source == UpstreamTokenSource::RequestHeader {
+        "For local ADC fallback, set GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization before restarting; keep request_header for hosted per-user services.".to_string()
+    } else {
+        "Restart stdio or HTTP MCP clients that keep long-lived server processes, then call ga4_auth_status with verify_token=true or run ga4-mcp auth status --verify-token.".to_string()
+    }
+}
+
+fn auth_next_steps(
+    upstream_token_source: UpstreamTokenSource,
+    scope: &str,
+    verified: bool,
+    token_ok: Option<bool>,
+) -> Vec<String> {
+    let missing_analytics_scope = !scope_allows_analytics_read(scope);
+    let read_scope_step = format!(
+        "Set GOOGLE_ANALYTICS_MCP_SCOPE={DEFAULT_ANALYTICS_SCOPE} or start the MCP server with `--analytics-scope {DEFAULT_ANALYTICS_SCOPE}`."
+    );
+    let login_command = if missing_analytics_scope {
+        format!("ga4-mcp --analytics-scope {DEFAULT_ANALYTICS_SCOPE} auth login")
+    } else {
+        "ga4-mcp auth login".to_string()
+    };
+    match (verified, token_ok) {
+        (false, _) => {
+            let mut steps = Vec::new();
+            if missing_analytics_scope {
+                steps.push(read_scope_step);
+            }
+            steps.push("Run ga4-mcp auth status --verify-token, or call ga4_auth_status with verify_token=true, when you are ready to prove credentials.".to_string());
+            steps.push(format!(
+                "If credentials are missing, run {login_command} or call ga4_auth_login_command for the gcloud command."
+            ));
+            if upstream_token_source == UpstreamTokenSource::RequestHeader {
+                steps.push("For local ADC fallback, switch GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE to request_header_or_config; keep request_header for hosted per-user services.".to_string());
+            }
+            steps.push("Call get_account_summaries after auth is verified to discover accessible GA4 account/property ids.".to_string());
+            steps
+        }
+        (true, Some(true)) => {
+            let mut steps = Vec::new();
+            if missing_analytics_scope {
+                steps.push(read_scope_step);
+            }
+            if upstream_token_source == UpstreamTokenSource::RequestHeader {
+                steps.push("Runtime is in request_header mode; this is correct for hosted per-user OAuth. For local ADC fallback, use request_header_or_config.".to_string());
+            }
+            steps.push(
+                "Restart MCP clients that keep long-lived stdio or HTTP server processes."
+                    .to_string(),
+            );
+            steps.push(
+                "Call get_account_summaries to discover accessible GA4 accounts and properties."
+                    .to_string(),
+            );
+            steps
+        }
+        (true, Some(false)) | (true, None) => {
+            let mut steps = vec![
+                format!("Run {login_command} for local browser login."),
+                "If the token check reports that local ADC requires a quota project, run gcloud auth application-default set-quota-project YOUR_PROJECT after enabling analyticsadmin.googleapis.com and analyticsdata.googleapis.com on that project.".to_string(),
+                "Call ga4_auth_login_command if you need a copyable gcloud command inside MCP."
+                    .to_string(),
+                "For unattended deployments, set GOOGLE_APPLICATION_CREDENTIALS or OAuth refresh-token env configuration.".to_string(),
+                "Ensure the authenticated Google principal has access to the GA4 account/property."
+                    .to_string(),
+            ];
+            if missing_analytics_scope {
+                steps.insert(0, read_scope_step);
+            }
+            if upstream_token_source == UpstreamTokenSource::RequestHeader {
+                steps.push("For local ADC fallback, switch GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE to request_header_or_config; keep request_header for hosted per-user services.".to_string());
+            }
+            steps
+        }
+    }
+}
+
+fn scope_allows_analytics_read(scope: &str) -> bool {
+    scope.split([',', ' ', '\n', '\t']).any(|item| {
+        item == DEFAULT_ANALYTICS_SCOPE || item == "https://www.googleapis.com/auth/analytics"
+    })
 }
 
 #[cfg(test)]

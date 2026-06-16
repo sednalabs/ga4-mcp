@@ -2,10 +2,11 @@
 //!
 //! CLI and environment-backed runtime configuration for ga4-mcp.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 pub const DEFAULT_ANALYTICS_SCOPE: &str = "https://www.googleapis.com/auth/analytics.readonly";
 const DEFAULT_ADMIN_BASE_URL: &str = "https://analyticsadmin.googleapis.com";
@@ -75,15 +76,30 @@ impl UpstreamTokenSource {
 )]
 pub struct Cli {
     /// OAuth scope used for token acquisition.
-    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_SCOPE", default_value = DEFAULT_ANALYTICS_SCOPE)]
+    #[arg(
+        long,
+        env = "GOOGLE_ANALYTICS_MCP_SCOPE",
+        global = true,
+        default_value = DEFAULT_ANALYTICS_SCOPE
+    )]
     pub analytics_scope: String,
 
     /// Base URL for Google Analytics Admin API.
-    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_ADMIN_BASE_URL", default_value = DEFAULT_ADMIN_BASE_URL)]
+    #[arg(
+        long,
+        env = "GOOGLE_ANALYTICS_MCP_ADMIN_BASE_URL",
+        global = true,
+        default_value = DEFAULT_ADMIN_BASE_URL
+    )]
     pub admin_base_url: String,
 
     /// Base URL for Google Analytics Data API.
-    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_DATA_BASE_URL", default_value = DEFAULT_DATA_BASE_URL)]
+    #[arg(
+        long,
+        env = "GOOGLE_ANALYTICS_MCP_DATA_BASE_URL",
+        global = true,
+        default_value = DEFAULT_DATA_BASE_URL
+    )]
     pub data_base_url: String,
 
     /// HTTP timeout budget in milliseconds.
@@ -105,11 +121,15 @@ pub struct Cli {
     /// Optional path to OAuth client-secret JSON (`installed` or `web`) for refresh-token auth.
     ///
     /// When this is set, `GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN` must also be set.
-    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON")]
+    #[arg(
+        long,
+        env = "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON",
+        global = true
+    )]
     pub oauth_client_secret_json: Option<String>,
 
     /// Optional OAuth refresh token used with `GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON`.
-    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN")]
+    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN", global = true)]
     pub oauth_refresh_token: Option<String>,
 
     /// Token source for upstream Google API calls.
@@ -120,6 +140,7 @@ pub struct Cli {
     #[arg(
         long,
         env = "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE",
+        global = true,
         value_enum,
         default_value_t = UpstreamTokenSource::Config
     )]
@@ -131,12 +152,13 @@ pub struct Cli {
     #[arg(
         long,
         env = "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER",
+        global = true,
         default_value = "authorization"
     )]
     pub upstream_token_header: String,
 
     /// Optional quota/billing project for Google APIs (`x-goog-user-project`).
-    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT")]
+    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT", global = true)]
     pub quota_project: Option<String>,
 
     /// Scratchpad session TTL in seconds.
@@ -199,6 +221,7 @@ pub struct Cli {
     #[arg(
         long,
         env = "GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE",
+        global = true,
         value_enum,
         default_value_t = CapabilityProfile::ReadOnly
     )]
@@ -211,6 +234,88 @@ pub struct Cli {
     /// Print full tool schema snapshot JSON and exit.
     #[arg(long)]
     pub print_tool_schema: bool,
+
+    /// Optional command. Omit to run the stdio MCP server.
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum CliCommand {
+    /// Run the stdio MCP server. This is also the default when no command is supplied.
+    Serve,
+    /// Login, verify, and diagnose Google Analytics credentials.
+    Auth(AuthCli),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AuthCli {
+    #[command(subcommand)]
+    pub command: AuthSubcommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum AuthSubcommand {
+    /// Run the browser-based gcloud Application Default Credentials login flow.
+    Login(AuthLoginArgs),
+    /// Print the exact gcloud login command without running it.
+    Command(AuthCommandArgs),
+    /// Show the configured credential source and optional Google API verification result.
+    Status(AuthStatusCliArgs),
+    /// Check the local auth environment and suggest the next action.
+    Doctor(AuthDoctorArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AuthLoginArgs {
+    /// Print a browser URL instead of launching a browser where supported by gcloud.
+    #[arg(long)]
+    pub headless: bool,
+
+    /// Optional Google OAuth client id file for gcloud ADC login.
+    #[arg(long)]
+    pub client_id_file: Option<PathBuf>,
+
+    /// Print the command that would run, without invoking gcloud.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip post-login Google API verification.
+    #[arg(long)]
+    pub no_verify: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AuthCommandArgs {
+    /// Include the headless browser flag in the printed gcloud command.
+    #[arg(long)]
+    pub headless: bool,
+
+    /// Optional Google OAuth client id file for gcloud ADC login.
+    #[arg(long)]
+    pub client_id_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AuthStatusCliArgs {
+    /// Acquire a Google access token and call GA account summaries. The token is never printed.
+    #[arg(long)]
+    pub verify_token: bool,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AuthDoctorArgs {
+    /// Acquire a Google access token and call GA account summaries. The token is never printed.
+    #[arg(long)]
+    pub verify_token: bool,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +342,7 @@ pub struct Settings {
     pub capability_profile: CapabilityProfile,
     pub print_tools: bool,
     pub print_tool_schema: bool,
+    pub command: Option<CliCommand>,
 }
 
 impl Settings {
@@ -324,6 +430,7 @@ impl Settings {
             capability_profile: cli.capability_profile,
             print_tools: cli.print_tools,
             print_tool_schema: cli.print_tool_schema,
+            command: cli.command,
         })
     }
 }
@@ -405,6 +512,7 @@ mod tests {
             capability_profile: CapabilityProfile::ReadOnly,
             print_tools: false,
             print_tool_schema: false,
+            command: None,
         }
     }
 
