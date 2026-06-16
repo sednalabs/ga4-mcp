@@ -2773,6 +2773,32 @@ fn parse_positive_u64(value: &Value) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+fn build_compatibility_reason_codes(
+    missing_metadata: bool,
+    has_incompatible_dimensions: bool,
+    has_incompatible_metrics: bool,
+) -> Vec<String> {
+    let mut reason_codes = Vec::new();
+
+    if missing_metadata {
+        reason_codes.push("MISSING_COMPATIBILITY_METADATA".to_string());
+    }
+    if has_incompatible_dimensions {
+        reason_codes.push("INCOMPATIBLE_DIMENSIONS".to_string());
+    }
+    if has_incompatible_metrics {
+        reason_codes.push("INCOMPATIBLE_METRICS".to_string());
+    }
+
+    let is_fully_compatible =
+        !missing_metadata && !has_incompatible_dimensions && !has_incompatible_metrics;
+    if is_fully_compatible {
+        reason_codes.push("COMPATIBLE".to_string());
+    }
+
+    reason_codes
+}
+
 fn summarize_report_compatibility(compatibility: &Value) -> Value {
     let dimensions = compatibility
         .get("dimensionCompatibilities")
@@ -2790,22 +2816,17 @@ fn summarize_report_compatibility(compatibility: &Value) -> Value {
     let (compatible_metrics, incompatible_metrics) =
         split_compatibility_names(&metrics, "metricMetadata");
 
-    let mut reason_codes = Vec::new();
     let missing_metadata = dimensions.is_empty() || metrics.is_empty();
-    if missing_metadata {
-        reason_codes.push("MISSING_COMPATIBILITY_METADATA".to_string());
-    }
-    if !incompatible_dimensions.is_empty() {
-        reason_codes.push("INCOMPATIBLE_DIMENSIONS".to_string());
-    }
-    if !incompatible_metrics.is_empty() {
-        reason_codes.push("INCOMPATIBLE_METRICS".to_string());
-    }
+    let has_incompatible_dimensions = !incompatible_dimensions.is_empty();
+    let has_incompatible_metrics = !incompatible_metrics.is_empty();
+
+    let reason_codes = build_compatibility_reason_codes(
+        missing_metadata,
+        has_incompatible_dimensions,
+        has_incompatible_metrics,
+    );
     let is_fully_compatible =
-        incompatible_dimensions.is_empty() && incompatible_metrics.is_empty() && !missing_metadata;
-    if is_fully_compatible {
-        reason_codes.push("COMPATIBLE".to_string());
-    }
+        !missing_metadata && !has_incompatible_dimensions && !has_incompatible_metrics;
 
     json!({
         "is_fully_compatible": is_fully_compatible,
