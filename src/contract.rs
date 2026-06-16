@@ -135,7 +135,7 @@ pub fn error(err: AnalyticsError, elapsed_ms: u64) -> CallToolResult {
     let mut error_obj = json!({
         "code": err.code(),
         "reason": err.reason(),
-        "message": err.to_string(),
+        "message": redact_secret_text(&err.to_string()),
         "category": err.category(),
     });
     if let Some(status_code) = err.status_code() {
@@ -161,6 +161,30 @@ pub fn error(err: AnalyticsError, elapsed_ms: u64) -> CallToolResult {
             "elapsed_ms": elapsed_ms,
         }
     }))
+}
+
+pub fn redact_secret_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for token in input.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        if looks_secret_bearing(token) {
+            out.push_str("[redacted]");
+        } else {
+            out.push_str(token);
+        }
+    }
+    out
+}
+
+fn looks_secret_bearing(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower.contains("refresh_token")
+        || lower.contains("access_token")
+        || lower.contains("client_secret")
+        || lower.contains("private_key")
+        || lower.starts_with("ya29.")
 }
 
 fn attach_elapsed(meta: Value, elapsed_ms: u64) -> Value {
