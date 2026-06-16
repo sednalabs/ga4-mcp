@@ -5350,7 +5350,7 @@ fn collect_runtime_memory_pressure(
 fn probe_duckdb_memory_usage(conn: &duckdb::Connection) -> Result<(u64, u64), AnalyticsError> {
     let mut stmt = conn
         .prepare(
-            "SELECT CAST(memory_usage AS VARCHAR), CAST(memory_limit AS VARCHAR)
+            "SELECT memory_usage, memory_limit
              FROM pragma_database_size()",
         )
         .map_err(|err| {
@@ -5371,20 +5371,20 @@ fn probe_duckdb_memory_usage(conn: &duckdb::Connection) -> Result<(u64, u64), An
         ));
     };
 
-    let used_raw = row.get::<_, String>(0).map_err(|err| {
+    let used_raw = row.get::<_, i64>(0).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!("failed to decode duckdb memory usage: {err}"))
     })?;
-    let limit_raw = row.get::<_, String>(1).map_err(|err| {
+    let limit_raw = row.get::<_, i64>(1).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!("failed to decode duckdb memory limit: {err}"))
     })?;
-    let used_bytes = parse_duckdb_size_bytes(&used_raw).ok_or_else(|| {
+    let used_bytes = u64::try_from(used_raw).map_err(|_| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to parse duckdb memory usage value '{used_raw}'"
+            "duckdb memory usage is out of range for u64: {used_raw}"
         ))
     })?;
-    let limit_bytes = parse_duckdb_size_bytes(&limit_raw).ok_or_else(|| {
+    let limit_bytes = u64::try_from(limit_raw).map_err(|_| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to parse duckdb memory limit value '{limit_raw}'"
+            "duckdb memory limit is out of range for u64: {limit_raw}"
         ))
     })?;
 
