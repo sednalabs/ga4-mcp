@@ -29,8 +29,8 @@ Use exactly one of these defaults unless you have a specific reason not to:
 Generic local setup:
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login
+ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
@@ -39,17 +39,24 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 If you are on SSH or a headless box, use:
 
 ```bash
-gcloud auth application-default login \
-  --no-launch-browser \
-  --client-id-file /path/to/oauth-client.json \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --headless
 ```
 
-`gcloud` prints a URL and waits for browser consent from a trusted machine.
+The CLI prints the underlying `gcloud` command, then `gcloud` prints a URL and
+waits for browser consent from a trusted machine.
 
 If Google blocks the default client for Analytics scopes, create a Google OAuth
 desktop client, save its JSON outside the repository, and rerun with
-`--client-id-file`.
+`ga4-mcp auth login --client-id-file /path/to/oauth-client.json`.
+
+If Google says local ADC needs a quota project, enable the Analytics APIs on a
+Google Cloud project and attach that project to ADC:
+
+```bash
+gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+gcloud auth application-default set-quota-project YOUR_PROJECT
+ga4-mcp auth status --verify-token
+```
 
 ## Quick Mode Matrix
 
@@ -133,8 +140,8 @@ the service use the local user's Google ADC credential when the client does not
 send a bearer token.
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login
+ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
@@ -143,10 +150,7 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 Headless/SSH variant:
 
 ```bash
-gcloud auth application-default login \
-  --no-launch-browser \
-  --client-id-file /path/to/oauth-client.json \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --headless
 ```
 
 Configure the MCP process environment:
@@ -176,9 +180,9 @@ GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
 
 If a tool call fails with `authentication bootstrap failed: no available
-authentication method found`, ADC is not logged in yet. Run the ADC login
-command again and complete browser consent as a Google account that has GA4
-access.
+authentication method found`, ADC is not logged in yet. Run
+`ga4-mcp auth login` again and complete browser consent as a Google account
+that has GA4 access.
 
 If a tool call fails with Google `403`, the Google login worked but that Google
 identity does not have access to the requested GA4 account or property.
@@ -274,8 +278,12 @@ Meaning:
 
 Fix:
 
-- Confirm server is in `request_header` mode.
-- If intentionally using `config` mode, set quota project correctly.
+- If this is a hosted per-user service, confirm clients are sending request
+  tokens and the server is in `request_header` mode.
+- If using ADC or `request_header_or_config`, run
+  `gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT`
+  and `gcloud auth application-default set-quota-project YOUR_PROJECT`, then
+  rerun `ga4-mcp auth status --verify-token`.
 
 ### `UPSTREAM_REJECTED` + HTTP `403` without quota message
 

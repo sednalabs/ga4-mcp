@@ -30,6 +30,26 @@ jobs:
         # swatinem/rust-cache v2
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
+      - name: Format check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+
+      - name: Unit and integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked
+
+      - name: Print tool inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin ga4-mcp -- --print-tools > /tmp/tools.json
+          test -s /tmp/tools.json
+          grep -F '"ga4_auth_status"' /tmp/tools.json
+
       - name: Build release binaries
         shell: bash
         run: |

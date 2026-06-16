@@ -3,8 +3,10 @@
 //! Thin adapter around Google Analytics Admin/Data REST endpoints.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -87,6 +89,11 @@ struct OAuthRefreshResponse {
     error_description: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct AdcUserCredentialFile {
+    quota_project_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct CachedAccessToken {
     value: String,
@@ -97,6 +104,21 @@ struct CachedAccessToken {
 enum UpstreamAuthMode {
     Adc,
     OAuthRefresh(Arc<OAuthRefreshConfig>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSource {
+    GoogleDefaultProviderChain,
+    OAuthRefreshToken,
+}
+
+impl AuthSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GoogleDefaultProviderChain => "google_default_provider_chain",
+            Self::OAuthRefreshToken => "oauth_refresh_token",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -235,6 +257,12 @@ impl AnalyticsApiClient {
             _ => UpstreamAuthMode::Adc,
         };
 
+        let quota_project = settings.quota_project.clone().or_else(|| {
+            matches!(auth_mode, UpstreamAuthMode::Adc)
+                .then(adc_quota_project_id)
+                .flatten()
+        });
+
         Ok(Self {
             http,
             auth_mode,
@@ -245,13 +273,57 @@ impl AnalyticsApiClient {
             analytics_scope: settings.analytics_scope.clone().into(),
             admin_base_url: settings.admin_base_url.clone().into(),
             data_base_url: settings.data_base_url.clone().into(),
-            quota_project: settings
-                .quota_project
-                .as_ref()
-                .map(|value| Arc::<str>::from(value.as_str())),
+            quota_project: quota_project.as_deref().map(Arc::<str>::from),
             max_page_size: settings.max_page_size,
             default_max_pages: settings.max_pages,
         })
+    }
+
+    pub fn auth_source(&self) -> AuthSource {
+        match &self.auth_mode {
+            UpstreamAuthMode::Adc => AuthSource::GoogleDefaultProviderChain,
+            UpstreamAuthMode::OAuthRefresh(_) => AuthSource::OAuthRefreshToken,
+        }
+    }
+
+    pub fn analytics_scope(&self) -> &str {
+        self.analytics_scope.as_ref()
+    }
+
+    pub fn upstream_token_source(&self) -> UpstreamTokenSource {
+        self.token_source
+    }
+
+    pub fn upstream_token_header(&self) -> &str {
+        self.token_header.as_ref()
+    }
+
+    pub fn quota_project_configured(&self) -> bool {
+        self.quota_project.is_some()
+    }
+
+    pub async fn verify_token(&self) -> Result<(), AnalyticsError> {
+        self.get_account_summaries(PaginationOptions {
+            page_size: Some(1),
+            max_pages: Some(1),
+        })
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn verify_config_token(&self) -> Result<(), AnalyticsError> {
+        let token = self.configured_access_token().await?;
+        let url =
+            parse_https_upstream_url(&format!("{}/v1beta/accountSummaries", self.admin_base_url))?;
+        let mut request = self
+            .http
+            .request(Method::GET, url)
+            .bearer_auth(token)
+            .query(&[("pageSize", "1")]);
+        if let Some(quota_project) = &self.quota_project {
+            request = request.header("x-goog-user-project", quota_project.as_ref());
+        }
+        self.send_json(request).await.map(|_| ())
     }
 
     pub async fn get_account_summaries(
@@ -908,6 +980,7 @@ fn parse_oauth_refresh_config(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("https://oauth2.googleapis.com/token");
+    validate_oauth_token_uri(token_uri)?;
 
     Ok(OAuthRefreshConfig {
         token_uri: token_uri.to_string(),
@@ -922,7 +995,35 @@ fn clip_message(message: String) -> String {
     if message.len() <= MAX_LEN {
         return message;
     }
-    format!("{}...", &message[..MAX_LEN])
+    let mut end = MAX_LEN;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &message[..end])
+}
+
+fn validate_oauth_token_uri(token_uri: &str) -> Result<(), AnalyticsError> {
+    let parsed = Url::parse(token_uri).map_err(|err| {
+        AnalyticsError::AuthBootstrap(format!(
+            "invalid OAuth token_uri '{token_uri}' in GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON: {err}"
+        ))
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(AnalyticsError::AuthBootstrap(format!(
+            "OAuth token_uri '{token_uri}' must use https"
+        )));
+    }
+
+    let host = parsed.host_str().unwrap_or("");
+    let path = parsed.path();
+    let allowed = (host == "oauth2.googleapis.com" && path == "/token")
+        || (host == "accounts.google.com" && path == "/o/oauth2/token");
+    if !allowed {
+        return Err(AnalyticsError::AuthBootstrap(format!(
+            "OAuth token_uri '{token_uri}' must be one of https://oauth2.googleapis.com/token or https://accounts.google.com/o/oauth2/token"
+        )));
+    }
+    Ok(())
 }
 
 fn parse_request_token_header_value(
@@ -1213,6 +1314,45 @@ pub(crate) fn sort_object(value: Value) -> Value {
     }
 }
 
+fn adc_quota_project_id() -> Option<String> {
+    let path = adc_credentials_path()?;
+    let raw = fs::read_to_string(path).ok()?;
+    parse_adc_quota_project_id(&raw)
+}
+
+fn parse_adc_quota_project_id(raw: &str) -> Option<String> {
+    let parsed: AdcUserCredentialFile = serde_json::from_str(raw).ok()?;
+    parsed
+        .quota_project_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn adc_credentials_path() -> Option<PathBuf> {
+    if let Some(config) = env::var_os("CLOUDSDK_CONFIG").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(config).join("application_default_credentials.json"));
+    }
+
+    if cfg!(windows)
+        && let Some(appdata) = env::var_os("APPDATA").filter(|value| !value.is_empty())
+    {
+        return Some(
+            PathBuf::from(appdata)
+                .join("gcloud")
+                .join("application_default_credentials.json"),
+        );
+    }
+
+    env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".config")
+                .join("gcloud")
+                .join("application_default_credentials.json")
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1331,6 +1471,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_oauth_refresh_config_rejects_non_google_token_uri() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ga4-oauth-client-bad-uri-{nonce}.json"));
+        std::fs::write(
+            &path,
+            r#"{"installed":{"client_id":"client","client_secret":"secret","token_uri":"https://evil.test/token"}}"#,
+        )
+        .expect("fixture should write");
+        let err = parse_oauth_refresh_config(
+            path.to_str().expect("temp path should be utf8"),
+            "refresh-token-value",
+        )
+        .expect_err("non-google token uri should fail");
+        assert!(err.to_string().contains("must be one of"));
+    }
+
+    #[test]
+    fn parses_adc_quota_project_id_without_exposing_credentials() {
+        assert_eq!(
+            parse_adc_quota_project_id(
+                r#"{"client_id":"client","client_secret":"secret","refresh_token":"refresh","quota_project_id":" ga4-quota "}"#
+            )
+            .as_deref(),
+            Some("ga4-quota")
+        );
+        assert_eq!(
+            parse_adc_quota_project_id(r#"{"quota_project_id":"   "}"#),
+            None
+        );
+        assert_eq!(parse_adc_quota_project_id("not-json"), None);
+    }
+
+    #[test]
     fn parse_https_upstream_url_rejects_cleartext_http() {
         let err = parse_https_upstream_url("http://analyticsdata.googleapis.com/v1beta")
             .expect_err("cleartext upstream request URL should fail");
@@ -1357,5 +1533,14 @@ mod tests {
         let token = normalize_request_token_value("ya29.compact.token", "x-google-access-token")
             .expect("compact token should parse");
         assert_eq!(token, "ya29.compact.token");
+    }
+
+    #[test]
+    fn clips_multibyte_messages_without_panicking() {
+        let message = format!("{}a", "é".repeat(512));
+        let clipped = clip_message(message);
+        assert!(clipped.ends_with("..."));
+        assert!(clipped.len() <= 1_027);
+        assert!(clipped.chars().all(|ch| ch == 'é' || ch == '.'));
     }
 }

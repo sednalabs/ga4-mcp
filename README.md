@@ -28,6 +28,12 @@ As of 2026-02-24, the upstream README describes a smaller core tool set (`get_ac
 
 ## Current Tool Surface
 
+### Auth and setup helpers
+
+- `ga4_get_started`
+- `ga4_auth_status`
+- `ga4_auth_login_command`
+
 ### Core GA read/report tools
 
 - `get_account_summaries`
@@ -89,8 +95,8 @@ Required Google scope for all modes:
 Use this for a loopback user service on your own machine.
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login
+ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
@@ -104,29 +110,41 @@ If Google blocks the default `gcloud` OAuth client for Analytics scopes, create
 a Google OAuth desktop client, download the JSON locally, and run:
 
 ```bash
-gcloud auth application-default login \
-  --client-id-file /path/to/oauth-client.json \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --client-id-file /path/to/oauth-client.json
 ```
 
 Headless or SSH login:
 
 ```bash
-gcloud auth application-default login \
-  --no-launch-browser \
-  --client-id-file /path/to/oauth-client.json \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --headless
 ```
 
 The headless flow asks `gcloud` not to launch a browser. Complete the printed
 Google consent flow from a trusted machine and keep the resulting ADC file
 private.
 
+Useful auth commands:
+
+```bash
+ga4-mcp auth command
+ga4-mcp auth doctor --verify-token
+ga4-mcp auth status --json --verify-token
+```
+
+If verification says local ADC needs a quota project, enable the Analytics
+Admin and Data APIs on a Google Cloud project, then attach it to ADC:
+
+```bash
+gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+gcloud auth application-default set-quota-project YOUR_PROJECT
+ga4-mcp auth status --verify-token
+```
+
 #### Server-side credential mode
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login
+ga4-mcp auth status --verify-token
 ```
 
 Or point directly at a credentials file:
@@ -186,6 +204,10 @@ Notes:
 ```bash
 cargo run --release --bin ga4-mcp
 ```
+
+Inside MCP, call `ga4_get_started` first after install. Use
+`ga4_auth_status` to inspect credentials, and `ga4_auth_login_command` when an
+MCP client needs a copyable `gcloud` command without running the CLI wrapper.
 
 ### 3) Optional: run streamable HTTP server
 
