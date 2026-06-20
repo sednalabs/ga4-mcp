@@ -19,7 +19,8 @@ mcp-toolkit-http = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = 
 mcp-toolkit-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "1cf322071d84e27fe3002ee53198353af0ea6513", package = "mcp-toolkit-core" }
 mcp-toolkit-auth = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "1cf322071d84e27fe3002ee53198353af0ea6513", package = "mcp-toolkit-auth" }
 mcp-toolkit-observability = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "1cf322071d84e27fe3002ee53198353af0ea6513", package = "mcp-toolkit-observability", features = ["tracing-bridge"] }
-mcp-toolkit-policy-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "1cf322071d84e27fe3002ee53198353af0ea6513", package = "mcp-toolkit-policy-core" }
+mcp-toolkit-policy-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "99a17c957049723fcc4cc6239068a3a5c42a751c", package = "mcp-toolkit-policy-core" }
+mcp-toolkit-policy-runtime = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "99a17c957049723fcc4cc6239068a3a5c42a751c", package = "mcp-toolkit-policy-runtime" }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "http2", "query", "rustls"] }
 rmcp = { version = "1.2.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
 rustls = { version = "0.23.36", features = ["ring"] }
