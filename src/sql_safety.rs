@@ -2,8 +2,12 @@
 //!
 //! Restricted SQL policy for DuckDB scratchpad execution.
 
-use mcp_toolkit_policy_core::sql_read_only::{
-    RestrictedSqlError, RestrictedSqlErrorCode, classify_restricted_sql,
+use mcp_toolkit_policy_core::{
+    DecisionCode, SQL_POLICY_CONTRACT_VERSION, SqlRestrictedPolicyInput,
+};
+use mcp_toolkit_policy_runtime::{
+    PolicyAuthorityDecision, PolicyRuntimeMode, configured_sql_restricted_policy_authority,
+    sql_restricted_policy_authority,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,16 +115,18 @@ pub fn validate_scratchpad_sql(
     let trimmed = lexical.trim();
     let upper = trimmed.to_ascii_uppercase();
 
-    match classify_restricted_sql(sql) {
-        Ok(()) => {}
-        Err(err) => {
-            let allow_duckdb_prefix = matches!(err.code, RestrictedSqlErrorCode::NotReadOnlyPrefix)
-                && DUCKDB_ALLOWED_PREFIXES
-                    .iter()
-                    .any(|prefix| upper.starts_with(prefix));
-            if !allow_duckdb_prefix {
-                return Err(map_core_error(err));
-            }
+    let decision = evaluate_scratchpad_sql_policy(sql);
+    if !decision.allow {
+        let code = scratchpad_error_code(decision.code.as_deref());
+        let allow_duckdb_prefix = matches!(code, ScratchpadSqlPolicyCode::NotReadOnlyPrefix)
+            && DUCKDB_ALLOWED_PREFIXES
+                .iter()
+                .any(|prefix| upper.starts_with(prefix));
+        if !allow_duckdb_prefix {
+            return Err(ScratchpadSqlPolicyError::new(
+                code,
+                scratchpad_error_message(code),
+            ));
         }
     }
 
@@ -141,21 +147,74 @@ pub fn validate_scratchpad_sql(
     Ok(())
 }
 
-fn map_core_error(err: RestrictedSqlError) -> ScratchpadSqlPolicyError {
-    let code = match err.code {
-        RestrictedSqlErrorCode::EmptySql => ScratchpadSqlPolicyCode::EmptySql,
-        RestrictedSqlErrorCode::UnterminatedToken => ScratchpadSqlPolicyCode::UnterminatedToken,
-        RestrictedSqlErrorCode::MultipleStatements => ScratchpadSqlPolicyCode::MultipleStatements,
-        RestrictedSqlErrorCode::NotReadOnlyPrefix => ScratchpadSqlPolicyCode::NotReadOnlyPrefix,
-        RestrictedSqlErrorCode::ForbiddenKeyword => ScratchpadSqlPolicyCode::ForbiddenKeyword,
-        RestrictedSqlErrorCode::ForbiddenFunction => ScratchpadSqlPolicyCode::ForbiddenFunction,
-        RestrictedSqlErrorCode::ExplainNotReadOnly => ScratchpadSqlPolicyCode::ExplainNotReadOnly,
-        RestrictedSqlErrorCode::ClassifierUnavailable => {
-            ScratchpadSqlPolicyCode::ClassifierUnavailable
-        }
+/// Evaluates canonical restricted SQL policy through the configured toolkit authority.
+pub fn evaluate_scratchpad_sql_policy(sql: &str) -> PolicyAuthorityDecision {
+    let input = SqlRestrictedPolicyInput {
+        policy_contract_version: SQL_POLICY_CONTRACT_VERSION.to_string(),
+        sql: sql.to_string(),
     };
+    configured_sql_restricted_policy_authority().evaluate(&input)
+}
 
-    ScratchpadSqlPolicyError::new(code, err.message)
+/// Evaluates canonical restricted SQL policy through a specific toolkit authority mode.
+pub fn evaluate_scratchpad_sql_policy_with_mode(
+    sql: &str,
+    runtime_mode: PolicyRuntimeMode,
+) -> PolicyAuthorityDecision {
+    let input = SqlRestrictedPolicyInput {
+        policy_contract_version: SQL_POLICY_CONTRACT_VERSION.to_string(),
+        sql: sql.to_string(),
+    };
+    sql_restricted_policy_authority(runtime_mode).evaluate(&input)
+}
+
+fn scratchpad_error_code(code: Option<&str>) -> ScratchpadSqlPolicyCode {
+    match code.and_then(DecisionCode::parse) {
+        Some(DecisionCode::EmptySql) => ScratchpadSqlPolicyCode::EmptySql,
+        Some(DecisionCode::UnterminatedToken) => ScratchpadSqlPolicyCode::UnterminatedToken,
+        Some(DecisionCode::MultipleStatements) => ScratchpadSqlPolicyCode::MultipleStatements,
+        Some(DecisionCode::NotReadOnlyPrefix) => ScratchpadSqlPolicyCode::NotReadOnlyPrefix,
+        Some(DecisionCode::ForbiddenKeyword) => ScratchpadSqlPolicyCode::ForbiddenKeyword,
+        Some(DecisionCode::ForbiddenFunction) => ScratchpadSqlPolicyCode::ForbiddenFunction,
+        Some(DecisionCode::ExplainNotReadOnly) => ScratchpadSqlPolicyCode::ExplainNotReadOnly,
+        Some(DecisionCode::ClassifierUnavailable)
+        | Some(DecisionCode::SparkRuntimeUnavailable)
+        | Some(DecisionCode::InvalidInput)
+        | None
+        | Some(_) => ScratchpadSqlPolicyCode::ClassifierUnavailable,
+    }
+}
+
+fn scratchpad_error_message(code: ScratchpadSqlPolicyCode) -> &'static str {
+    match code {
+        ScratchpadSqlPolicyCode::EmptySql => "sql must not be empty",
+        ScratchpadSqlPolicyCode::UnterminatedToken => {
+            "restricted mode could not parse SQL lexical surface"
+        }
+        ScratchpadSqlPolicyCode::MultipleStatements => {
+            "restricted mode allows only a single SQL statement"
+        }
+        ScratchpadSqlPolicyCode::NotReadOnlyPrefix => {
+            "restricted mode allows only allowlisted SQL prefixes"
+        }
+        ScratchpadSqlPolicyCode::ForbiddenKeyword => "restricted mode rejected write/admin SQL",
+        ScratchpadSqlPolicyCode::ForbiddenFunction => {
+            "restricted mode rejected unsafe function call"
+        }
+        ScratchpadSqlPolicyCode::ExplainNotReadOnly => {
+            "restricted mode allows EXPLAIN only for read-only statements"
+        }
+        ScratchpadSqlPolicyCode::ClassifierUnavailable => {
+            "restricted mode policy classifier unavailable"
+        }
+        ScratchpadSqlPolicyCode::SqlTooLarge => "sql payload exceeds scratchpad size limit",
+        ScratchpadSqlPolicyCode::DuckDbForbiddenKeyword => {
+            "scratchpad policy rejected DuckDB extension/file keyword"
+        }
+        ScratchpadSqlPolicyCode::DuckDbForbiddenFunction => {
+            "scratchpad policy rejected DuckDB external scan/read function"
+        }
+    }
 }
 
 fn contains_forbidden_keyword(surface_upper: &str) -> bool {
@@ -416,6 +475,23 @@ mod tests {
     }
 
     #[test]
+    fn rust_authority_allows_read_only_sql_with_provenance() {
+        let decision =
+            evaluate_scratchpad_sql_policy_with_mode("SELECT 1", PolicyRuntimeMode::Rust);
+
+        assert!(decision.allow);
+        assert_eq!(decision.runtime_mode, PolicyRuntimeMode::Rust);
+        assert_eq!(
+            decision.policy_contract_version.as_deref(),
+            Some(SQL_POLICY_CONTRACT_VERSION)
+        );
+        assert_eq!(
+            decision.decision_source,
+            "mcp_toolkit_policy_runtime.sql_restricted.rust"
+        );
+    }
+
+    #[test]
     fn rejects_duckdb_install_keyword() {
         let err = must_err(validate_scratchpad_sql("INSTALL httpfs", 1024));
         assert_eq!(err.code, ScratchpadSqlPolicyCode::NotReadOnlyPrefix);
@@ -450,5 +526,15 @@ mod tests {
     fn rejects_multiple_statements() {
         let err = must_err(validate_scratchpad_sql("SELECT 1; SELECT 2", 1024));
         assert_eq!(err.code, ScratchpadSqlPolicyCode::MultipleStatements);
+    }
+
+    #[test]
+    fn preserves_canonical_write_error_surface() {
+        let err = must_err(validate_scratchpad_sql("INSERT INTO t VALUES (1)", 1024));
+        assert_eq!(err.code, ScratchpadSqlPolicyCode::NotReadOnlyPrefix);
+        assert_eq!(
+            err.message,
+            "restricted mode allows only allowlisted SQL prefixes"
+        );
     }
 }
