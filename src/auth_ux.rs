@@ -1195,6 +1195,7 @@ mod tests {
             upstream_token_source: UpstreamTokenSource::Config,
             upstream_token_header: "authorization".to_string(),
             quota_project: None,
+            shared_adc: false,
             scratchpad_session_ttl: std::time::Duration::from_secs(900),
             scratchpad_max_sessions: 64,
             scratchpad_max_tables_per_session: 32,

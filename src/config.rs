@@ -486,8 +486,7 @@ pub fn server_cloudsdk_config_dir() -> Option<PathBuf> {
 }
 
 pub fn conventional_adc_credentials_path() -> Option<PathBuf> {
-    conventional_cloudsdk_config_dir()
-        .map(|path| path.join("application_default_credentials.json"))
+    conventional_cloudsdk_config_dir().map(|path| path.join("application_default_credentials.json"))
 }
 
 pub fn conventional_cloudsdk_config_dir() -> Option<PathBuf> {
@@ -593,6 +592,7 @@ mod tests {
             upstream_token_source: UpstreamTokenSource::Config,
             upstream_token_header: "authorization".to_string(),
             quota_project: None,
+            shared_adc: false,
             scratchpad_session_ttl_secs: DEFAULT_SCRATCHPAD_SESSION_TTL_SECS,
             scratchpad_max_sessions: DEFAULT_SCRATCHPAD_MAX_SESSIONS,
             scratchpad_max_tables_per_session: DEFAULT_SCRATCHPAD_MAX_TABLES_PER_SESSION,
