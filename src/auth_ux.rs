@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use anyhow::{Context, Result, anyhow};
+use mcp_toolkit_auth::provider_auth::{
+    GOOGLE_CLOUD_PLATFORM_SCOPE, GoogleProviderAuthConfig, GoogleProviderAuthFailureKind,
+    classify_google_provider_auth_error, format_provider_auth_command, google_adc_login_scopes,
+    google_adc_quota_project_command,
+};
 use serde::Serialize;
 
 use crate::config::{
@@ -13,6 +18,10 @@ use crate::config::{
 };
 use crate::contract::redact_secret_text;
 use crate::ga_client::{AnalyticsApiClient, AuthSource};
+
+const ANALYTICS_API_NAME: &str = "Google Analytics API";
+const ANALYTICS_ADMIN_API_SERVICE: &str = "analyticsadmin.googleapis.com";
+const ANALYTICS_DATA_API_SERVICE: &str = "analyticsdata.googleapis.com";
 
 #[derive(Debug, Clone, Serialize)]
 struct AuthReport {
@@ -25,7 +34,7 @@ struct AuthReport {
     auth_source_candidate: Option<String>,
     config_valid: bool,
     credential_material_detected: bool,
-    quota_project_configured: bool,
+    quota_project: QuotaProjectStatus,
     detected: CredentialDetection,
     verification: VerificationReport,
     ready: bool,
@@ -53,7 +62,15 @@ struct EnvPresence {
     oauth_client_secret_json: bool,
     oauth_client_secret_json_file_present: bool,
     oauth_refresh_token: bool,
+    quota_project: bool,
     cloudsdk_config: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct QuotaProjectStatus {
+    configured: bool,
+    value: Option<String>,
+    source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,7 +78,7 @@ struct EnvPresence {
 enum VerificationReport {
     NotChecked,
     Ok,
-    Failed { error: String },
+    Failed { error: String, hint: Option<String> },
     ConfigError { error: String },
 }
 
@@ -69,17 +86,7 @@ enum VerificationReport {
 pub async fn run_auth_command(settings: &Settings, command: &AuthSubcommand) -> Result<()> {
     match command {
         AuthSubcommand::Login(args) => run_login(settings, args).await,
-        AuthSubcommand::Command(args) => {
-            println!(
-                "{}",
-                shell_command(&gcloud_login_args(
-                    login_scope(settings),
-                    args.headless,
-                    args.client_id_file.as_deref(),
-                ))
-            );
-            Ok(())
-        }
+        AuthSubcommand::Command(args) => print_login_command(settings, args),
         AuthSubcommand::Status(args) => print_status(settings, args).await,
         AuthSubcommand::Doctor(args) => print_doctor(settings, args).await,
     }
@@ -97,6 +104,7 @@ pub fn auth_login_cli_command(
     scope: &str,
     headless: bool,
     client_id_file: Option<&Path>,
+    quota_project: Option<&str>,
 ) -> String {
     let mut args = vec!["ga4-mcp".to_string()];
     if scope != DEFAULT_ANALYTICS_SCOPE {
@@ -111,6 +119,10 @@ pub fn auth_login_cli_command(
     if let Some(path) = client_id_file {
         args.push("--client-id-file".to_string());
         args.push(path.display().to_string());
+    }
+    if let Some(project) = quota_project.filter(|project| !project.trim().is_empty()) {
+        args.push("--quota-project".to_string());
+        args.push(project.to_string());
     }
     shell_command(&args)
 }
@@ -153,9 +165,19 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
     let scope = login_scope(settings).to_string();
     let command_args = gcloud_login_args(&scope, args.headless, args.client_id_file.as_deref());
     let rendered = shell_command(&command_args);
+    let quota_project = args
+        .quota_project
+        .clone()
+        .or_else(|| settings.quota_project.clone());
 
     if args.dry_run {
         println!("{rendered}");
+        if let Some(project) = quota_project.as_deref() {
+            println!(
+                "{}",
+                shell_command(&gcloud_set_quota_project_command(project))
+            );
+        }
         return Ok(());
     }
 
@@ -169,6 +191,12 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
     println!("Starting Google Analytics login using Application Default Credentials.");
     println!("Scope: {scope}");
     println!("Command: {rendered}");
+    println!(
+        "Tip: ADC login includes the required cloud-platform scope because gcloud requires it for local ADC user credentials."
+    );
+    println!(
+        "Tip: use --quota-project PROJECT_ID so verification can send x-goog-user-project when Google requires a quota project for local ADC."
+    );
     if args.client_id_file.is_none() {
         println!(
             "Tip: if Google rejects the Analytics scope, create a Desktop OAuth client and rerun with `--client-id-file /path/to/client_id.json`."
@@ -185,7 +213,30 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
         .status()
         .context("failed to run gcloud")?;
     if !status.success() {
-        return Err(anyhow!("gcloud login failed with status {status}"));
+        let mut message = format!("gcloud login failed with status {status}");
+        if args.client_id_file.is_none() {
+            message.push_str(
+                ". If Google blocked the default OAuth app for Analytics scopes, rerun with `--client-id-file /path/to/client_id.json` from a Desktop OAuth client.",
+            );
+        }
+        return Err(anyhow!(message));
+    }
+
+    if let Some(project) = quota_project.as_deref() {
+        let quota_project_command = gcloud_set_quota_project_command(project);
+        println!(
+            "Setting ADC quota project: {}",
+            shell_command(&quota_project_command)
+        );
+        let status = ProcessCommand::new(&quota_project_command[0])
+            .args(&quota_project_command[1..])
+            .status()
+            .context("failed to run gcloud ADC quota-project command")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "gcloud set-quota-project failed with status {status}"
+            ));
+        }
     }
 
     println!("Google login completed.");
@@ -199,6 +250,7 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
 
     let mut verify_settings = settings.clone();
     verify_settings.analytics_scope = scope.clone();
+    verify_settings.quota_project = quota_project;
     let mut report = build_auth_report(&verify_settings, true).await;
     add_post_login_runtime_steps(settings, &scope, &mut report);
     print_human_report(&report, true);
@@ -209,6 +261,23 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
             "login completed, but Google Analytics verification did not pass"
         ))
     }
+}
+
+fn print_login_command(settings: &Settings, args: &crate::config::AuthCommandArgs) -> Result<()> {
+    let scope = login_scope(settings);
+    let command = gcloud_login_args(scope, args.headless, args.client_id_file.as_deref());
+    println!("{}", shell_command(&command));
+    if let Some(project) = args
+        .quota_project
+        .as_deref()
+        .or(settings.quota_project.as_deref())
+    {
+        println!(
+            "{}",
+            shell_command(&gcloud_set_quota_project_command(project))
+        );
+    }
+    Ok(())
 }
 
 async fn print_status(settings: &Settings, args: &AuthStatusCliArgs) -> Result<()> {
@@ -235,11 +304,11 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
     let detection = detect_credentials();
     let client = AnalyticsApiClient::from_settings(settings).await;
     let mut detected_auth_source = None;
-    let mut quota_project_configured = settings.quota_project.is_some();
+    let mut detected_quota_project = settings.quota_project.clone();
     let verification = match client {
         Ok(client) => {
             detected_auth_source = Some(client.auth_source());
-            quota_project_configured = client.quota_project_configured();
+            detected_quota_project = client.quota_project().map(str::to_string);
             if verify_token {
                 let result = if settings.upstream_token_source == UpstreamTokenSource::RequestHeader
                 {
@@ -251,6 +320,7 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
                     Ok(()) => VerificationReport::Ok,
                     Err(err) => VerificationReport::Failed {
                         error: redact_secret_text(&err.to_string()),
+                        hint: err.hint().map(str::to_string),
                     },
                 }
             } else {
@@ -274,6 +344,7 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
     let config_valid = auth_source.is_some()
         && !explicit_credential_needs_repair
         && !matches!(verification, VerificationReport::ConfigError { .. });
+    let quota_project = effective_quota_project(settings, detected_quota_project.as_deref());
     let ready = report_ready(settings, &verification, config_valid);
     let next_steps = next_steps(settings, &detection, &verification, verify_token);
 
@@ -287,7 +358,7 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
         auth_source_candidate,
         config_valid,
         credential_material_detected,
-        quota_project_configured,
+        quota_project,
         detected: detection,
         verification,
         ready,
@@ -295,21 +366,48 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
     }
 }
 
+fn effective_quota_project(
+    settings: &Settings,
+    detected_quota_project: Option<&str>,
+) -> QuotaProjectStatus {
+    if let Some(project) = settings.quota_project.as_deref() {
+        return QuotaProjectStatus {
+            configured: true,
+            value: Some(project.to_string()),
+            source: Some("GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT_or_cli".to_string()),
+        };
+    }
+    if let Some(project) = detected_quota_project {
+        return QuotaProjectStatus {
+            configured: true,
+            value: Some(project.to_string()),
+            source: Some("adc_credentials_file".to_string()),
+        };
+    }
+    QuotaProjectStatus {
+        configured: false,
+        value: None,
+        source: None,
+    }
+}
+
 fn print_human_report(report: &AuthReport, doctor: bool) {
     println!("Google Analytics MCP auth");
-    println!("Capability profile: {}", report.capability_profile);
+    println!("Profile: {}", report.capability_profile);
     println!("Scope: {}", report.requested_scope);
-    println!("Upstream token source: {}", report.upstream_token_source);
-    println!("Request token header: {}", report.upstream_token_header);
+    if doctor {
+        println!("Upstream token source: {}", report.upstream_token_source);
+        println!("Request token header: {}", report.upstream_token_header);
+    }
     match (
         report.auth_source.as_deref(),
         report.auth_source_candidate.as_deref(),
     ) {
-        (Some(source), _) => println!("Server credential source: {source}"),
+        (Some(source), _) => println!("Credential source: {source}"),
         (None, Some(candidate)) => {
-            println!("Server credential source: not verified (candidate: {candidate})")
+            println!("Credential source: not verified (candidate: {candidate})")
         }
-        (None, None) => println!("Server credential source: not configured"),
+        (None, None) => println!("Credential source: not configured"),
     }
     println!("Config valid: {}", yes_no(report.config_valid));
     println!(
@@ -318,10 +416,9 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
     );
     println!(
         "Quota project: {}",
-        if report.quota_project_configured {
-            "configured"
-        } else {
-            "not configured"
+        match (&report.quota_project.value, &report.quota_project.source) {
+            (Some(project), Some(source)) => format!("{project} ({source})"),
+            _ => "not configured".to_string(),
         }
     );
     println!(
@@ -349,17 +446,21 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
         None => println!("ADC file: unknown"),
     }
     println!(
-        "Env credentials: GOOGLE_APPLICATION_CREDENTIALS={}, oauth-client={}, oauth-refresh-token={}",
+        "Env credentials: GOOGLE_APPLICATION_CREDENTIALS={}, oauth-client={}, oauth-refresh-token={}, quota-project={}",
         yes_no(report.detected.env.google_application_credentials),
         yes_no(report.detected.env.oauth_client_secret_json),
         yes_no(report.detected.env.oauth_refresh_token),
+        yes_no(report.detected.env.quota_project),
     );
     match &report.verification {
         VerificationReport::NotChecked => println!("Verification: not checked"),
         VerificationReport::Ok => println!("Verification: ok"),
-        VerificationReport::Failed { error } => {
+        VerificationReport::Failed { error, hint } => {
             println!("Verification: failed");
             println!("Error: {error}");
+            if let Some(hint) = hint {
+                println!("Hint: {hint}");
+            }
         }
         VerificationReport::ConfigError { error } => {
             println!("Configuration: invalid");
@@ -402,6 +503,7 @@ fn detect_credentials() -> CredentialDetection {
                 "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON",
             ),
             oauth_refresh_token: env_present("GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN"),
+            quota_project: env_present("GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT"),
             cloudsdk_config: env_present("CLOUDSDK_CONFIG"),
         },
     }
@@ -552,6 +654,8 @@ fn next_steps(
     verification: &VerificationReport,
     verify_token: bool,
 ) -> Vec<String> {
+    let auth_config = google_provider_auth_config(DEFAULT_ANALYTICS_SCOPE);
+    let setup_plan = auth_config.adc_setup_plan();
     let missing_analytics_scope = !scope_allows_analytics_read(&settings.analytics_scope);
     let read_scope_step = format!(
         "Set GOOGLE_ANALYTICS_MCP_SCOPE={DEFAULT_ANALYTICS_SCOPE} or start the MCP server with `--analytics-scope {DEFAULT_ANALYTICS_SCOPE}`."
@@ -623,17 +727,35 @@ fn next_steps(
                 steps
             }
         }
-        VerificationReport::Failed { error } => {
+        VerificationReport::Failed { error, .. } => {
             let mut steps = Vec::new();
+            let diagnostic = classify_google_provider_auth_error(403, error, &auth_config);
             if missing_analytics_scope {
                 steps.push(read_scope_step);
             }
             if explicit_credential_config_detected(settings, detection) {
                 steps.push("Fix or clear explicit credential configuration before browser login; it takes precedence over Application Default Credentials.".to_string());
             }
-            if verification_needs_quota_project(error) {
-                steps.push("Set an ADC quota project with `gcloud auth application-default set-quota-project YOUR_PROJECT`; the project must have analyticsadmin.googleapis.com and analyticsdata.googleapis.com enabled and your account must be allowed to use it for quota.".to_string());
+            if matches!(
+                diagnostic.kind,
+                GoogleProviderAuthFailureKind::MissingQuotaProject
+                    | GoogleProviderAuthFailureKind::ApiDisabled
+            ) {
+                steps.push(format!(
+                    "Set an ADC quota project with `{}`.",
+                    setup_plan.quota_project.shell
+                ));
+                if let Some(api_enable) = setup_plan.api_enable.as_ref() {
+                    steps.push(format!(
+                        "Enable the required Analytics APIs with `{}`.",
+                        api_enable.shell
+                    ));
+                }
                 steps.push("Then rerun `ga4-mcp auth status --verify-token`.".to_string());
+            } else if diagnostic.kind == GoogleProviderAuthFailureKind::OAuthAppBlocked {
+                steps.push(format!(
+                    "Run `{login_command}` again with `--client-id-file /path/to/client_id.json` from a Desktop OAuth client."
+                ));
             } else if !detection.gcloud_available {
                 steps.push(
                     "Install the Google Cloud SDK, or configure GOOGLE_APPLICATION_CREDENTIALS."
@@ -674,80 +796,47 @@ fn next_steps(
     }
 }
 
-fn verification_needs_quota_project(error: &str) -> bool {
-    let lower = error.to_ascii_lowercase();
-    lower.contains("quota project")
-        || lower.contains("quota_project")
-        || lower.contains("x-goog-user-project")
-        || lower.contains("service_disabled")
-}
-
 fn scope_allows_analytics_read(scope: &str) -> bool {
     scope.split([',', ' ', '\n', '\t']).any(|item| {
         item == DEFAULT_ANALYTICS_SCOPE || item == "https://www.googleapis.com/auth/analytics"
     })
 }
 
-pub const GCLOUD_ADC_REQUIRED_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
+pub const GCLOUD_ADC_REQUIRED_SCOPE: &str = GOOGLE_CLOUD_PLATFORM_SCOPE;
 
 pub fn adc_login_scopes(scope: &str) -> String {
-    let mut scopes = Vec::new();
-    let mut has_required_scope = false;
-
-    for item in scope
-        .split([',', ' ', '\n', '\t'])
-        .filter(|item| !item.is_empty())
-    {
-        if item == GCLOUD_ADC_REQUIRED_SCOPE {
-            has_required_scope = true;
-        }
-        if !scopes.iter().any(|existing| existing == &item) {
-            scopes.push(item);
-        }
-    }
-
-    if !has_required_scope {
-        scopes.insert(0, GCLOUD_ADC_REQUIRED_SCOPE);
-    }
-
-    scopes.join(",")
+    google_adc_login_scopes(split_scopes(scope)).join(",")
 }
 
 fn gcloud_login_args(scope: &str, headless: bool, client_id_file: Option<&Path>) -> Vec<String> {
-    let login_scopes = adc_login_scopes(scope);
-    let mut args = vec![
-        "gcloud".to_string(),
-        "auth".to_string(),
-        "application-default".to_string(),
-        "login".to_string(),
-        format!("--scopes={login_scopes}"),
-    ];
-    if headless {
-        args.push("--no-launch-browser".to_string());
-    }
+    let config = google_provider_auth_config(scope);
     if let Some(path) = client_id_file {
-        args.push("--client-id-file".to_string());
-        args.push(path.display().to_string());
+        config.adc_login_command_with_client_id_file(headless, &path.display().to_string())
+    } else {
+        config.adc_login_command(headless)
     }
-    args
 }
 
 fn shell_command(args: &[String]) -> String {
-    args.iter()
-        .map(|arg| shell_word(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
+    format_provider_auth_command(args)
 }
 
-fn shell_word(arg: &str) -> String {
-    if arg
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':' | '='))
-    {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', r#"'\''"#))
-    }
+fn gcloud_set_quota_project_command(project: &str) -> Vec<String> {
+    google_adc_quota_project_command(project)
+}
+
+pub(crate) fn google_provider_auth_config(scope: &str) -> GoogleProviderAuthConfig {
+    GoogleProviderAuthConfig::new(ANALYTICS_API_NAME, split_scopes(scope))
+        .with_api_service_names([ANALYTICS_ADMIN_API_SERVICE, ANALYTICS_DATA_API_SERVICE])
+}
+
+fn split_scopes(scope: &str) -> Vec<String> {
+    scope
+        .split([',', ' ', '\n', '\t'])
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn gcloud_version_summary() -> Option<String> {
@@ -825,7 +914,7 @@ mod tests {
 
         assert_eq!(
             login_command_for_scope(login_scope(&settings), false, None),
-            "gcloud auth application-default login '--scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/analytics.readonly'"
+            "gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/analytics.readonly"
         );
     }
 
@@ -839,7 +928,7 @@ mod tests {
             adc_login_scopes(
                 "https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform"
             ),
-            "https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform"
+            "https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/analytics.readonly"
         );
     }
 
@@ -874,6 +963,7 @@ mod tests {
             DEFAULT_ANALYTICS_SCOPE,
             true,
             Some(Path::new("/tmp/client id.json")),
+            None,
         );
 
         assert_eq!(
@@ -888,11 +978,23 @@ mod tests {
             "https://www.googleapis.com/auth/analytics.readonly extra",
             false,
             None,
+            None,
         );
 
         assert_eq!(
             command,
             "ga4-mcp --analytics-scope 'https://www.googleapis.com/auth/analytics.readonly extra' auth login"
+        );
+    }
+
+    #[test]
+    fn auth_login_cli_command_includes_quota_project() {
+        let command =
+            auth_login_cli_command(DEFAULT_ANALYTICS_SCOPE, true, None, Some("itwire-project"));
+
+        assert_eq!(
+            command,
+            "ga4-mcp auth login --headless --quota-project itwire-project"
         );
     }
 
@@ -911,6 +1013,7 @@ mod tests {
                 oauth_client_secret_json: false,
                 oauth_client_secret_json_file_present: false,
                 oauth_refresh_token: false,
+                quota_project: false,
                 cloudsdk_config: false,
             },
         };
@@ -920,6 +1023,7 @@ mod tests {
             &detection,
             &VerificationReport::Failed {
                 error: "PERMISSION_DENIED: local Application Default Credentials requires a quota project; SERVICE_DISABLED".to_string(),
+                hint: None,
             },
             true,
         );

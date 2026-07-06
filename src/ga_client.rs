@@ -302,6 +302,10 @@ impl AnalyticsApiClient {
         self.quota_project.is_some()
     }
 
+    pub fn quota_project(&self) -> Option<&str> {
+        self.quota_project.as_deref()
+    }
+
     pub async fn verify_token(&self) -> Result<(), AnalyticsError> {
         self.get_account_summaries(PaginationOptions {
             page_size: Some(1),

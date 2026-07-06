@@ -276,6 +276,10 @@ pub struct AuthLoginArgs {
     #[arg(long)]
     pub client_id_file: Option<PathBuf>,
 
+    /// Optional quota project to set after successful login.
+    #[arg(long)]
+    pub quota_project: Option<String>,
+
     /// Print the command that would run, without invoking gcloud.
     #[arg(long)]
     pub dry_run: bool,
@@ -294,12 +298,16 @@ pub struct AuthCommandArgs {
     /// Optional Google OAuth client id file for gcloud ADC login.
     #[arg(long)]
     pub client_id_file: Option<PathBuf>,
+
+    /// Optional quota project to print as a follow-up command.
+    #[arg(long)]
+    pub quota_project: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct AuthStatusCliArgs {
     /// Acquire a Google access token and call GA account summaries. The token is never printed.
-    #[arg(long)]
+    #[arg(long = "verify-token", alias = "verify-access")]
     pub verify_token: bool,
 
     /// Emit machine-readable JSON.
@@ -310,7 +318,7 @@ pub struct AuthStatusCliArgs {
 #[derive(Debug, Clone, Args)]
 pub struct AuthDoctorArgs {
     /// Acquire a Google access token and call GA account summaries. The token is never printed.
-    #[arg(long)]
+    #[arg(long = "verify-token", alias = "verify-access")]
     pub verify_token: bool,
 
     /// Emit machine-readable JSON.

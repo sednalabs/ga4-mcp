@@ -4,6 +4,7 @@ set -euo pipefail
 SCOPES="https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform"
 ACCOUNT=""
 CLIENT_ID_FILE=""
+QUOTA_PROJECT=""
 ENV_FILE=""
 SERVICE="ga4-mcp-http.service"
 RUN_LOGIN=1
@@ -24,6 +25,7 @@ The script:
 Options:
   --account EMAIL          Google account to log in, e.g. user@example.com.
   --client-id-file PATH    Optional Google OAuth desktop client JSON.
+  --quota-project ID       Optional Google Cloud project used for ADC quota.
   --env-file PATH          Service env file to update.
                            Default: discovered from systemd, then
                            ~/.config/ga4-mcp/ga4-mcp-http.env.
@@ -99,6 +101,11 @@ while [[ $# -gt 0 ]]; do
     --client-id-file)
       [[ $# -ge 2 ]] || die "--client-id-file requires a value"
       CLIENT_ID_FILE="$2"
+      shift 2
+      ;;
+    --quota-project)
+      [[ $# -ge 2 ]] || die "--quota-project requires a value"
+      QUOTA_PROJECT="$2"
       shift 2
       ;;
     --env-file)
@@ -230,6 +237,10 @@ if [[ "$RUN_LOGIN" -eq 1 ]]; then
   fi
   printf '...\n'
   "${login_cmd[@]}"
+  if [[ -n "$QUOTA_PROJECT" ]]; then
+    printf 'Setting ADC quota project to %s...\n' "$QUOTA_PROJECT"
+    gcloud auth application-default set-quota-project "$QUOTA_PROJECT"
+  fi
   gcloud auth application-default print-access-token >/dev/null
 fi
 
@@ -274,4 +285,11 @@ Local user auth is configured.
 
 The service now accepts per-request Google bearer tokens when clients send them,
 and otherwise falls back to the logged-in ADC identity.
+
+Verify with:
+  ga4-mcp auth status --verify-token
+
+If Google reports that local ADC needs a quota project, run:
+  gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+  gcloud auth application-default set-quota-project YOUR_PROJECT
 EOF

@@ -79,8 +79,8 @@ As of 2026-02-24, the upstream README describes a smaller core tool set (`get_ac
 
 Straight answer:
 
-- Local user-level service on your own machine: use `request_header_or_config`
-  and log in once with Google ADC. This is the least painful path.
+- Local user-level service on your own machine: log in once with Google ADC
+  and set a quota project. This is the benchmark happy path.
 - Hosted/public/multi-user service: use `request_header`; every client request
   must carry that user's Google bearer token.
 - Non-interactive automation: use `config` with ADC, a service account, or an
@@ -95,12 +95,16 @@ Required Google scope for all modes:
 Use this for a loopback user service on your own machine.
 
 ```bash
-ga4-mcp auth login
+ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
+
+`YOUR_PROJECT` should be a Google Cloud project where both
+`analyticsadmin.googleapis.com` and `analyticsdata.googleapis.com` are enabled
+and where your Google account is allowed to use the project for quota.
 
 Result: if a client sends `Authorization: Bearer <google_access_token>`, the
 server uses that token. If the client sends no token, the server uses the local
@@ -110,13 +114,13 @@ If Google blocks the default `gcloud` OAuth client for Analytics scopes, create
 a Google OAuth desktop client, download the JSON locally, and run:
 
 ```bash
-ga4-mcp auth login --client-id-file /path/to/oauth-client.json
+ga4-mcp auth login --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
 ```
 
 Headless or SSH login:
 
 ```bash
-ga4-mcp auth login --headless
+ga4-mcp auth login --headless --quota-project YOUR_PROJECT
 ```
 
 The headless flow asks `gcloud` not to launch a browser. Complete the printed
@@ -126,7 +130,7 @@ private.
 Useful auth commands:
 
 ```bash
-ga4-mcp auth command
+ga4-mcp auth command --headless --quota-project YOUR_PROJECT
 ga4-mcp auth doctor --verify-token
 ga4-mcp auth status --json --verify-token
 ```
@@ -143,7 +147,7 @@ ga4-mcp auth status --verify-token
 #### Server-side credential mode
 
 ```bash
-ga4-mcp auth login
+ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
 
