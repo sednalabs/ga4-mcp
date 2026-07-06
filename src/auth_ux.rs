@@ -1,6 +1,6 @@
 //! Human-facing authentication helpers for the CLI and setup tools.
 
-use std::env;
+use std::{env, fs};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -14,7 +14,8 @@ use serde::Serialize;
 
 use crate::config::{
     AuthDoctorArgs, AuthLoginArgs, AuthStatusCliArgs, AuthSubcommand, DEFAULT_ANALYTICS_SCOPE,
-    Settings, UpstreamTokenSource,
+    Settings, UpstreamTokenSource, conventional_adc_credentials_path, server_adc_credentials_path,
+    server_cloudsdk_config_dir,
 };
 use crate::contract::redact_secret_text;
 use crate::ga_client::{AnalyticsApiClient, AuthSource};
@@ -97,7 +98,31 @@ pub fn login_command_for_scope(
     headless: bool,
     client_id_file: Option<&Path>,
 ) -> String {
-    shell_command(&gcloud_login_args(scope, headless, client_id_file))
+    login_command_for_scope_with_cloudsdk(
+        scope,
+        headless,
+        client_id_file,
+        server_cloudsdk_config_dir().as_deref(),
+    )
+}
+
+pub fn login_command_for_scope_with_cloudsdk(
+    scope: &str,
+    headless: bool,
+    client_id_file: Option<&Path>,
+    cloudsdk_config: Option<&Path>,
+) -> String {
+    shell_join_with_cloudsdk_config(
+        &gcloud_login_args(scope, headless, client_id_file),
+        cloudsdk_config,
+    )
+}
+
+pub fn quota_project_command_with_cloudsdk(
+    project: &str,
+    cloudsdk_config: Option<&Path>,
+) -> String {
+    shell_join_with_cloudsdk_config(&gcloud_set_quota_project_command(project), cloudsdk_config)
 }
 
 pub fn auth_login_cli_command(
@@ -105,6 +130,7 @@ pub fn auth_login_cli_command(
     headless: bool,
     client_id_file: Option<&Path>,
     quota_project: Option<&str>,
+    shared_adc: bool,
 ) -> String {
     let mut args = vec!["ga4-mcp".to_string()];
     if scope != DEFAULT_ANALYTICS_SCOPE {
@@ -123,6 +149,9 @@ pub fn auth_login_cli_command(
     if let Some(project) = quota_project.filter(|project| !project.trim().is_empty()) {
         args.push("--quota-project".to_string());
         args.push(project.to_string());
+    }
+    if shared_adc {
+        args.push("--shared-adc".to_string());
     }
     shell_command(&args)
 }
@@ -164,7 +193,8 @@ fn analytics_scope_arg_present() -> bool {
 async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
     let scope = login_scope(settings).to_string();
     let command_args = gcloud_login_args(&scope, args.headless, args.client_id_file.as_deref());
-    let rendered = shell_command(&command_args);
+    let cloudsdk_config = require_login_cloudsdk_config(args.shared_adc)?;
+    let rendered = shell_join_with_cloudsdk_config(&command_args, cloudsdk_config.as_deref());
     let quota_project = args
         .quota_project
         .clone()
@@ -175,7 +205,10 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
         if let Some(project) = quota_project.as_deref() {
             println!(
                 "{}",
-                shell_command(&gcloud_set_quota_project_command(project))
+                shell_join_with_cloudsdk_config(
+                    &gcloud_set_quota_project_command(project),
+                    cloudsdk_config.as_deref(),
+                )
             );
         }
         return Ok(());
@@ -190,6 +223,10 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
 
     println!("Starting Google Analytics login using Application Default Credentials.");
     println!("Scope: {scope}");
+    println!(
+        "Credential file: {}",
+        adc_login_target_description(args.shared_adc)
+    );
     println!("Command: {rendered}");
     println!(
         "Tip: ADC login includes the required cloud-platform scope because gcloud requires it for local ADC user credentials."
@@ -197,6 +234,11 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
     println!(
         "Tip: use --quota-project PROJECT_ID so verification can send x-goog-user-project when Google requires a quota project for local ADC."
     );
+    if !args.shared_adc {
+        println!(
+            "Tip: this login uses a GA4-specific ADC file so other Google MCPs keep their own tokens and scopes."
+        );
+    }
     if args.client_id_file.is_none() {
         println!(
             "Tip: if Google rejects the Analytics scope, create a Desktop OAuth client and rerun with `--client-id-file /path/to/client_id.json`."
@@ -208,10 +250,16 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
         );
     }
 
-    let status = ProcessCommand::new("gcloud")
-        .args(&command_args[1..])
-        .status()
-        .context("failed to run gcloud")?;
+    if let Some(dir) = cloudsdk_config.as_deref() {
+        fs::create_dir_all(dir).context("failed to create server-specific gcloud config dir")?;
+    }
+
+    let mut login = ProcessCommand::new(&command_args[0]);
+    login.args(&command_args[1..]);
+    if let Some(dir) = cloudsdk_config.as_deref() {
+        login.env("CLOUDSDK_CONFIG", dir);
+    }
+    let status = login.status().context("failed to run gcloud")?;
     if !status.success() {
         let mut message = format!("gcloud login failed with status {status}");
         if args.client_id_file.is_none() {
@@ -226,10 +274,14 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
         let quota_project_command = gcloud_set_quota_project_command(project);
         println!(
             "Setting ADC quota project: {}",
-            shell_command(&quota_project_command)
+            shell_join_with_cloudsdk_config(&quota_project_command, cloudsdk_config.as_deref())
         );
-        let status = ProcessCommand::new(&quota_project_command[0])
-            .args(&quota_project_command[1..])
+        let mut quota = ProcessCommand::new(&quota_project_command[0]);
+        quota.args(&quota_project_command[1..]);
+        if let Some(dir) = cloudsdk_config.as_deref() {
+            quota.env("CLOUDSDK_CONFIG", dir);
+        }
+        let status = quota
             .status()
             .context("failed to run gcloud ADC quota-project command")?;
         if !status.success() {
@@ -266,7 +318,11 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
 fn print_login_command(settings: &Settings, args: &crate::config::AuthCommandArgs) -> Result<()> {
     let scope = login_scope(settings);
     let command = gcloud_login_args(scope, args.headless, args.client_id_file.as_deref());
-    println!("{}", shell_command(&command));
+    let cloudsdk_config = require_login_cloudsdk_config(args.shared_adc)?;
+    println!(
+        "{}",
+        shell_join_with_cloudsdk_config(&command, cloudsdk_config.as_deref())
+    );
     if let Some(project) = args
         .quota_project
         .as_deref()
@@ -274,7 +330,10 @@ fn print_login_command(settings: &Settings, args: &crate::config::AuthCommandArg
     {
         println!(
             "{}",
-            shell_command(&gcloud_set_quota_project_command(project))
+            shell_join_with_cloudsdk_config(
+                &gcloud_set_quota_project_command(project),
+                cloudsdk_config.as_deref(),
+            )
         );
     }
     Ok(())
@@ -827,8 +886,54 @@ fn shell_command(args: &[String]) -> String {
     format_provider_auth_command(args)
 }
 
+fn shell_join_with_cloudsdk_config(parts: &[String], cloudsdk_config: Option<&Path>) -> String {
+    if let Some(dir) = cloudsdk_config {
+        let assignment = format!(
+            "CLOUDSDK_CONFIG={}",
+            shell_command(&[dir.display().to_string()])
+        );
+        let command = shell_command(parts);
+        if command.is_empty() {
+            assignment
+        } else {
+            format!("{assignment} {command}")
+        }
+    } else {
+        shell_command(parts)
+    }
+}
+
 fn gcloud_set_quota_project_command(project: &str) -> Vec<String> {
     google_adc_quota_project_command(project)
+}
+
+fn login_cloudsdk_config_dir(shared_adc: bool) -> Option<PathBuf> {
+    if shared_adc {
+        None
+    } else {
+        server_cloudsdk_config_dir()
+    }
+}
+
+fn require_login_cloudsdk_config(shared_adc: bool) -> Result<Option<PathBuf>> {
+    let cloudsdk_config = login_cloudsdk_config_dir(shared_adc);
+    if !shared_adc && cloudsdk_config.is_none() {
+        return Err(anyhow!(
+            "failed to determine the server-specific gcloud config directory; set HOME/XDG_CONFIG_HOME on Unix or APPDATA on Windows, or pass --shared-adc to intentionally use conventional shared ADC"
+        ));
+    }
+    Ok(cloudsdk_config)
+}
+
+fn adc_login_target_description(shared_adc: bool) -> String {
+    if shared_adc {
+        return conventional_adc_credentials_path()
+            .map(|path| format!("shared gcloud ADC ({})", path.display()))
+            .unwrap_or_else(|| "shared gcloud ADC".to_string());
+    }
+    server_adc_credentials_path()
+        .map(|path| format!("server-specific ADC ({})", path.display()))
+        .unwrap_or_else(|| "server-specific ADC".to_string())
 }
 
 pub(crate) fn google_provider_auth_config(scope: &str) -> GoogleProviderAuthConfig {
@@ -862,34 +967,7 @@ fn gcloud_version_summary() -> Option<String> {
 }
 
 fn adc_credentials_path() -> Option<PathBuf> {
-    if let Some(config) = env::var_os("CLOUDSDK_CONFIG").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(config).join("application_default_credentials.json"));
-    }
-    if cfg!(windows) {
-        return env::var_os("APPDATA")
-            .filter(|value| !value.is_empty())
-            .map(|appdata| {
-                PathBuf::from(appdata)
-                    .join("gcloud")
-                    .join("application_default_credentials.json")
-            });
-    }
-    home_dir().map(|home| {
-        home.join(".config")
-            .join("gcloud")
-            .join("application_default_credentials.json")
-    })
-}
-
-fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("USERPROFILE")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        })
+    crate::config::adc_credentials_path()
 }
 
 fn env_present(name: &str) -> bool {
@@ -919,9 +997,22 @@ mod tests {
         let settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
 
         assert_eq!(
-            login_command_for_scope(login_scope(&settings), false, None),
+            login_command_for_scope_with_cloudsdk(login_scope(&settings), false, None, None),
             "gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/analytics.readonly"
         );
+    }
+
+    #[test]
+    fn login_command_prefixes_server_specific_cloudsdk_config() {
+        let command = login_command_for_scope_with_cloudsdk(
+            DEFAULT_ANALYTICS_SCOPE,
+            true,
+            None,
+            Some(Path::new("/tmp/ga4 adc")),
+        );
+
+        assert!(command.starts_with("CLOUDSDK_CONFIG='/tmp/ga4 adc' gcloud auth"));
+        assert!(command.contains("analytics.readonly"));
     }
 
     #[test]
@@ -970,6 +1061,7 @@ mod tests {
             true,
             Some(Path::new("/tmp/client id.json")),
             None,
+            false,
         );
 
         assert_eq!(
@@ -985,6 +1077,7 @@ mod tests {
             false,
             None,
             None,
+            false,
         );
 
         assert_eq!(
@@ -995,8 +1088,13 @@ mod tests {
 
     #[test]
     fn auth_login_cli_command_includes_quota_project() {
-        let command =
-            auth_login_cli_command(DEFAULT_ANALYTICS_SCOPE, true, None, Some("itwire-project"));
+        let command = auth_login_cli_command(
+            DEFAULT_ANALYTICS_SCOPE,
+            true,
+            None,
+            Some("itwire-project"),
+            false,
+        );
 
         assert_eq!(
             command,

@@ -36,6 +36,10 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
 
+`ga4-mcp auth login` uses a GA4-specific gcloud config directory by default so
+other Google MCPs keep their own ADC files, tokens, and scopes. Pass
+`--shared-adc` only when deliberately using the conventional shared ADC file.
+
 If you are on SSH or a headless box, use:
 
 ```bash
@@ -50,11 +54,11 @@ desktop client, save its JSON outside the repository, and rerun with
 `ga4-mcp auth login --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json`.
 
 If Google says local ADC needs a quota project, enable the Analytics APIs on a
-Google Cloud project and attach that project to ADC:
+Google Cloud project and rerun login with the quota project:
 
 ```bash
 gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
-gcloud auth application-default set-quota-project YOUR_PROJECT
+ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
 
@@ -136,8 +140,8 @@ Client behavior:
 ## Recommended Local Setup: Login Once With ADC
 
 For a user-level service bound to loopback, the least painful setup is to let
-the service use the local user's Google ADC credential when the client does not
-send a bearer token.
+the service use the local user's GA4-specific Google ADC credential when the
+client does not send a bearer token.
 
 ```bash
 ga4-mcp auth login --quota-project YOUR_PROJECT
@@ -163,7 +167,7 @@ GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 Behavior:
 
 - If the MCP client sends `Authorization: Bearer <google_access_token>`, that token is used.
-- If the client does not send a token, the server uses ADC for the logged-in local user.
+- If the client does not send a token, the server uses the GA4-specific ADC file for the logged-in local user.
 - Do not use this fallback on a public anonymous surface.
 
 Verify the process environment is using the intended mode:
@@ -282,7 +286,7 @@ Fix:
   tokens and the server is in `request_header` mode.
 - If using ADC or `request_header_or_config`, run
   `gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT`
-  and `gcloud auth application-default set-quota-project YOUR_PROJECT`, then
+  and `ga4-mcp auth login --quota-project YOUR_PROJECT`, then
   rerun `ga4-mcp auth status --verify-token`.
 
 ### `UPSTREAM_REJECTED` + HTTP `403` without quota message

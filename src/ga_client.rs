@@ -6,11 +6,15 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::future::Future;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gcp_auth::TokenProvider;
+use mcp_toolkit_auth::upstream_oauth::{
+    RefreshTokenProvider, UpstreamOAuthError, google_authorized_user_adc_from_file,
+};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Client, Method, RequestBuilder, Url};
 use schemars::JsonSchema;
@@ -18,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::config::{Settings, UpstreamTokenSource};
+use crate::config::{Settings, UpstreamTokenSource, server_adc_credentials_path};
 use crate::error::AnalyticsError;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -89,11 +93,6 @@ struct OAuthRefreshResponse {
     error_description: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct AdcUserCredentialFile {
-    quota_project_id: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 struct CachedAccessToken {
     value: String,
@@ -103,12 +102,14 @@ struct CachedAccessToken {
 #[derive(Debug, Clone)]
 enum UpstreamAuthMode {
     Adc,
+    AuthorizedUserAdcFile(PathBuf),
     OAuthRefresh(Arc<OAuthRefreshConfig>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSource {
     GoogleDefaultProviderChain,
+    GoogleAuthorizedUserAdcFileOrDefaultProviderChain,
     OAuthRefreshToken,
 }
 
@@ -116,6 +117,9 @@ impl AuthSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::GoogleDefaultProviderChain => "google_default_provider_chain",
+            Self::GoogleAuthorizedUserAdcFileOrDefaultProviderChain => {
+                "google_authorized_user_adc_file_or_default_provider_chain"
+            }
             Self::OAuthRefreshToken => "oauth_refresh_token",
         }
     }
@@ -210,6 +214,7 @@ pub struct AnalyticsApiClient {
     token_source: UpstreamTokenSource,
     token_header: Arc<str>,
     token_provider: Arc<OnceCell<Arc<dyn TokenProvider>>>,
+    oauth_token_provider: Arc<OnceCell<Arc<RefreshTokenProvider>>>,
     cached_oauth_token: Arc<RwLock<Option<CachedAccessToken>>>,
     analytics_scope: Arc<str>,
     admin_base_url: Arc<str>,
@@ -244,21 +249,13 @@ impl AnalyticsApiClient {
             .build()
             .map_err(AnalyticsError::Transport)?;
 
-        let auth_mode = match (
-            settings.oauth_client_secret_json.as_deref(),
-            settings.oauth_refresh_token.as_deref(),
-        ) {
-            (Some(client_secret_path), Some(refresh_token)) => {
-                UpstreamAuthMode::OAuthRefresh(Arc::new(parse_oauth_refresh_config(
-                    client_secret_path,
-                    refresh_token,
-                )?))
-            }
-            _ => UpstreamAuthMode::Adc,
-        };
+        let auth_mode = select_auth_mode(settings)?;
 
         let quota_project = settings.quota_project.clone().or_else(|| {
-            matches!(auth_mode, UpstreamAuthMode::Adc)
+            matches!(
+                auth_mode,
+                UpstreamAuthMode::Adc | UpstreamAuthMode::AuthorizedUserAdcFile(_)
+            )
                 .then(adc_quota_project_id)
                 .flatten()
         });
@@ -269,6 +266,7 @@ impl AnalyticsApiClient {
             token_source: settings.upstream_token_source,
             token_header: settings.upstream_token_header.clone().into(),
             token_provider: Arc::new(OnceCell::new()),
+            oauth_token_provider: Arc::new(OnceCell::new()),
             cached_oauth_token: Arc::new(RwLock::new(None)),
             analytics_scope: settings.analytics_scope.clone().into(),
             admin_base_url: settings.admin_base_url.clone().into(),
@@ -282,6 +280,9 @@ impl AnalyticsApiClient {
     pub fn auth_source(&self) -> AuthSource {
         match &self.auth_mode {
             UpstreamAuthMode::Adc => AuthSource::GoogleDefaultProviderChain,
+            UpstreamAuthMode::AuthorizedUserAdcFile(_) => {
+                AuthSource::GoogleAuthorizedUserAdcFileOrDefaultProviderChain
+            }
             UpstreamAuthMode::OAuthRefresh(_) => AuthSource::OAuthRefreshToken,
         }
     }
@@ -813,12 +814,53 @@ impl AnalyticsApiClient {
         let provider = self
             .token_provider
             .get_or_try_init(|| async {
-                gcp_auth::provider()
-                    .await
-                    .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))
+                match &self.auth_mode {
+                    UpstreamAuthMode::Adc | UpstreamAuthMode::AuthorizedUserAdcFile(_) => {
+                        gcp_auth::provider()
+                            .await
+                            .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))
+                    }
+                    UpstreamAuthMode::OAuthRefresh(_) => Err(AnalyticsError::AuthBootstrap(
+                        "OAuth refresh-token auth is handled by the refresh-token path".to_string(),
+                    )),
+                }
             })
             .await?;
         Ok(provider.clone())
+    }
+
+    async fn authorized_user_adc_provider(
+        &self,
+    ) -> Result<Option<Arc<RefreshTokenProvider>>, AnalyticsError> {
+        if let Some(provider) = self.oauth_token_provider.get() {
+            return Ok(Some(provider.clone()));
+        }
+
+        let UpstreamAuthMode::AuthorizedUserAdcFile(path) = &self.auth_mode else {
+            return Err(AnalyticsError::AuthBootstrap(
+                "authorized-user ADC provider requested for a non-ADC auth mode".to_string(),
+            ));
+        };
+
+        let scopes = vec![self.analytics_scope.as_ref().to_string()];
+        let adc = match google_authorized_user_adc_from_file(path, scopes) {
+            Ok(adc) => adc,
+            Err(err) if google_adc_file_missing(&err) => return Ok(None),
+            Err(err) => {
+                return Err(AnalyticsError::AuthBootstrap(format!(
+                    "failed to load authorized-user ADC at '{}': {err}",
+                    path.display()
+                )));
+            }
+        };
+        let provider = Arc::new(RefreshTokenProvider::new(adc.into_refresh_config()).map_err(
+            |err| AnalyticsError::AuthBootstrap(format!("invalid authorized-user ADC: {err}")),
+        )?);
+        let provider = self
+            .oauth_token_provider
+            .get_or_init(|| async { provider })
+            .await;
+        Ok(Some(provider.clone()))
     }
 
     async fn access_token(&self) -> Result<String, AnalyticsError> {
@@ -847,8 +889,27 @@ impl AnalyticsApiClient {
     }
 
     async fn configured_access_token(&self) -> Result<String, AnalyticsError> {
+        let preferred_oauth_provider =
+            if matches!(&self.auth_mode, UpstreamAuthMode::AuthorizedUserAdcFile(_)) {
+                self.authorized_user_adc_provider().await?
+            } else {
+                None
+            };
+        if let Some(provider) = preferred_oauth_provider {
+            let token = provider
+                .access_token()
+                .await
+                .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))?;
+            return Ok(token.expose_secret().to_string());
+        }
+
         match &self.auth_mode {
             UpstreamAuthMode::Adc => {
+                let provider = self.token_provider().await?;
+                let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
+                Ok(token.as_str().to_string())
+            }
+            UpstreamAuthMode::AuthorizedUserAdcFile(_) => {
                 let provider = self.token_provider().await?;
                 let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
                 Ok(token.as_str().to_string())
@@ -944,6 +1005,42 @@ fn parse_https_upstream_url(raw: &str) -> Result<Url, AnalyticsError> {
         });
     }
     Ok(url)
+}
+
+fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsError> {
+    match (
+        settings.oauth_client_secret_json.as_deref(),
+        settings.oauth_refresh_token.as_deref(),
+    ) {
+        (Some(client_secret_path), Some(refresh_token)) => {
+            return Ok(UpstreamAuthMode::OAuthRefresh(Arc::new(
+                parse_oauth_refresh_config(client_secret_path, refresh_token)?,
+            )));
+        }
+        (None, None) => {}
+        _ => {
+            return Err(AnalyticsError::AuthBootstrap(
+                "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON and GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN must both be set or both be unset; refusing to fall back to ADC with partial OAuth configuration".to_string(),
+            ));
+        }
+    }
+
+    if env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some() {
+        return Ok(UpstreamAuthMode::Adc);
+    }
+
+    if let Some(path) = server_adc_credentials_path() {
+        return Ok(UpstreamAuthMode::AuthorizedUserAdcFile(path));
+    }
+
+    Ok(UpstreamAuthMode::Adc)
+}
+
+fn google_adc_file_missing(err: &UpstreamOAuthError) -> bool {
+    matches!(
+        err,
+        UpstreamOAuthError::Io { source, .. } if source.kind() == ErrorKind::NotFound
+    )
 }
 
 fn parse_oauth_refresh_config(
@@ -1325,36 +1422,17 @@ fn adc_quota_project_id() -> Option<String> {
 }
 
 fn parse_adc_quota_project_id(raw: &str) -> Option<String> {
-    let parsed: AdcUserCredentialFile = serde_json::from_str(raw).ok()?;
-    parsed
-        .quota_project_id
-        .map(|value| value.trim().to_string())
+    serde_json::from_str::<Value>(raw)
+        .ok()?
+        .get("quota_project_id")?
+        .as_str()
+        .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn adc_credentials_path() -> Option<PathBuf> {
-    if let Some(config) = env::var_os("CLOUDSDK_CONFIG").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(config).join("application_default_credentials.json"));
-    }
-
-    if cfg!(windows)
-        && let Some(appdata) = env::var_os("APPDATA").filter(|value| !value.is_empty())
-    {
-        return Some(
-            PathBuf::from(appdata)
-                .join("gcloud")
-                .join("application_default_credentials.json"),
-        );
-    }
-
-    env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".config")
-                .join("gcloud")
-                .join("application_default_credentials.json")
-        })
+    crate::config::adc_credentials_path()
 }
 
 #[cfg(test)]

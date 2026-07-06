@@ -102,13 +102,19 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
 
+By default `ga4-mcp auth login` writes Application Default Credentials to a
+GA4-specific gcloud config directory:
+`<user-config>/ga4-mcp/gcloud/application_default_credentials.json`. Use
+`--shared-adc` only when you intentionally want the conventional shared gcloud
+ADC file.
+
 `YOUR_PROJECT` should be a Google Cloud project where both
 `analyticsadmin.googleapis.com` and `analyticsdata.googleapis.com` are enabled
 and where your Google account is allowed to use the project for quota.
 
 Result: if a client sends `Authorization: Bearer <google_access_token>`, the
 server uses that token. If the client sends no token, the server uses the local
-ADC identity from the one-time login.
+GA4-specific ADC identity from the one-time login.
 
 If Google blocks the default `gcloud` OAuth client for Analytics scopes, create
 a Google OAuth desktop client, download the JSON locally, and run:
@@ -136,11 +142,13 @@ ga4-mcp auth status --json --verify-token
 ```
 
 If verification says local ADC needs a quota project, enable the Analytics
-Admin and Data APIs on a Google Cloud project, then attach it to ADC:
+Admin and Data APIs on a Google Cloud project, then rerun login with
+`--quota-project` or run `ga4-mcp auth command --quota-project YOUR_PROJECT`
+and execute the printed quota-project command:
 
 ```bash
 gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
-gcloud auth application-default set-quota-project YOUR_PROJECT
+ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
 
@@ -212,6 +220,8 @@ cargo run --release --bin ga4-mcp
 Inside MCP, call `ga4_get_started` first after install. Use
 `ga4_auth_status` to inspect credentials, and `ga4_auth_login_command` when an
 MCP client needs a copyable `gcloud` command without running the CLI wrapper.
+That tool also targets the GA4-specific ADC file by default; pass
+`shared_adc=true` only for the conventional shared ADC file.
 
 ### 3) Optional: run streamable HTTP server
 

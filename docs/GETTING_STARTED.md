@@ -39,6 +39,11 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
 
+The login command writes to a GA4-specific ADC file by default:
+`<user-config>/ga4-mcp/gcloud/application_default_credentials.json`. Add
+`--shared-adc` only when you intentionally want the conventional shared gcloud
+ADC file.
+
 On SSH or a headless host, use `ga4-mcp auth login --headless --quota-project
 YOUR_PROJECT`. If Google rejects the Analytics scope or blocks the default
 OAuth app, create a Desktop OAuth client and rerun with
@@ -48,7 +53,7 @@ If verification says local ADC needs a quota project, run:
 
 ```bash
 gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
-gcloud auth application-default set-quota-project YOUR_PROJECT
+ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
 

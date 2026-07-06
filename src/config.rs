@@ -2,6 +2,7 @@
 //!
 //! CLI and environment-backed runtime configuration for ga4-mcp.
 
+use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -280,6 +281,10 @@ pub struct AuthLoginArgs {
     #[arg(long)]
     pub quota_project: Option<String>,
 
+    /// Use the conventional shared gcloud ADC file instead of the server-specific file.
+    #[arg(long)]
+    pub shared_adc: bool,
+
     /// Print the command that would run, without invoking gcloud.
     #[arg(long)]
     pub dry_run: bool,
@@ -302,6 +307,10 @@ pub struct AuthCommandArgs {
     /// Optional quota project to print as a follow-up command.
     #[arg(long)]
     pub quota_project: Option<String>,
+
+    /// Use the conventional shared gcloud ADC file instead of the server-specific file.
+    #[arg(long)]
+    pub shared_adc: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -452,6 +461,63 @@ fn trim_optional(value: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+pub fn adc_credentials_path() -> Option<PathBuf> {
+    server_adc_credentials_path().or_else(conventional_adc_credentials_path)
+}
+
+pub fn server_adc_credentials_path() -> Option<PathBuf> {
+    server_cloudsdk_config_dir().map(|path| path.join("application_default_credentials.json"))
+}
+
+pub fn server_cloudsdk_config_dir() -> Option<PathBuf> {
+    config_root().map(|root| root.join("ga4-mcp").join("gcloud"))
+}
+
+pub fn conventional_adc_credentials_path() -> Option<PathBuf> {
+    if let Some(config_dir) = env::var_os("CLOUDSDK_CONFIG").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(config_dir).join("application_default_credentials.json"));
+    }
+    #[cfg(windows)]
+    {
+        env::var_os("APPDATA")
+            .filter(|value| !value.is_empty())
+            .map(|appdata| {
+                PathBuf::from(appdata)
+                    .join("gcloud")
+                    .join("application_default_credentials.json")
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(|home| {
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("gcloud")
+                    .join("application_default_credentials.json")
+            })
+    }
+}
+
+fn config_root() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    #[cfg(windows)]
+    {
+        env::var_os("APPDATA")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(|home| PathBuf::from(home).join(".config"))
+    }
 }
 
 fn sanitize_base_url(raw: &str) -> Result<String> {

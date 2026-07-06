@@ -247,6 +247,14 @@
             "default": false,
             "description": "Include the headless browser flag for SSH or remote environments.",
             "type": "boolean"
+          },
+          "shared_adc": {
+            "default": null,
+            "description": "Use the conventional shared gcloud ADC file instead of the server-specific file.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "title": "AuthLoginCommandArgs",

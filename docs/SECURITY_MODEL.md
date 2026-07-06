@@ -32,12 +32,15 @@ project flows, but the MCP tool surface itself is read/report oriented.
 - `request_header`: preferred for hosted or public multi-user services. Each
   request supplies the user's Google access token.
 - `request_header_or_config`: intended for loopback developer/operator services
-  and migrations. Request tokens win; local config is fallback.
+  and migrations. Request tokens win; GA4-specific local config is fallback.
 - `config`: intended for deliberate service-owned automation using ADC, a
   service account, or configured OAuth refresh-token settings.
 
 Do not expose `request_header_or_config` as an anonymous public surface. A
 missing request token could silently fall back to a server-held Google identity.
+Local browser login stores ADC under `<user-config>/ga4-mcp/gcloud` by default;
+use `--shared-adc` only when a deployment intentionally uses conventional
+shared gcloud ADC.
 
 ## HTTP Exposure
 
