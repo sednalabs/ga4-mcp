@@ -38,7 +38,9 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 
 `ga4-mcp auth login` uses a GA4-specific gcloud config directory by default so
 other Google MCPs keep their own ADC files, tokens, and scopes. Pass
-`--shared-adc` only when deliberately using the conventional shared ADC file.
+`--shared-adc` only when deliberately using the conventional shared ADC file,
+and set `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the server with
+`--shared-adc` when the runtime should use that shared file.
 
 If you are on SSH or a headless box, use:
 
@@ -168,6 +170,8 @@ Behavior:
 
 - If the MCP client sends `Authorization: Bearer <google_access_token>`, that token is used.
 - If the client does not send a token, the server uses the GA4-specific ADC file for the logged-in local user.
+  Conventional shared ADC is used only when `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or the server
+  starts with `--shared-adc`.
 - Do not use this fallback on a public anonymous surface.
 
 Verify the process environment is using the intended mode:

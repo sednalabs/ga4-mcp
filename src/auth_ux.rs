@@ -14,8 +14,8 @@ use serde::Serialize;
 
 use crate::config::{
     AuthDoctorArgs, AuthLoginArgs, AuthStatusCliArgs, AuthSubcommand, DEFAULT_ANALYTICS_SCOPE,
-    Settings, UpstreamTokenSource, conventional_adc_credentials_path, server_adc_credentials_path,
-    server_cloudsdk_config_dir,
+    Settings, UpstreamTokenSource, conventional_adc_credentials_path,
+    conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
 };
 use crate::contract::redact_secret_text;
 use crate::ga_client::{AnalyticsApiClient, AuthSource};
@@ -59,11 +59,10 @@ struct FilePresence {
 #[derive(Debug, Clone, Serialize)]
 struct EnvPresence {
     google_application_credentials: bool,
-    google_application_credentials_file_present: bool,
     oauth_client_secret_json: bool,
-    oauth_client_secret_json_file_present: bool,
     oauth_refresh_token: bool,
     quota_project: bool,
+    shared_adc: bool,
     cloudsdk_config: bool,
 }
 
@@ -214,7 +213,7 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
         return Ok(());
     }
 
-    let detection = detect_credentials();
+    let detection = detect_credentials(args.shared_adc);
     if !detection.gcloud_available {
         return Err(anyhow!(
             "gcloud was not found on PATH. Install the Google Cloud SDK, then run:\n  {rendered}\n\nUnattended deployments can use GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON plus GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN instead."
@@ -360,7 +359,7 @@ async fn print_doctor(settings: &Settings, args: &AuthDoctorArgs) -> Result<()> 
 }
 
 async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthReport {
-    let detection = detect_credentials();
+    let detection = detect_credentials(settings.shared_adc);
     let client = AnalyticsApiClient::from_settings(settings).await;
     let mut detected_auth_source = None;
     let mut detected_quota_project = settings.quota_project.clone();
@@ -505,11 +504,12 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
         None => println!("ADC file: unknown"),
     }
     println!(
-        "Env credentials: GOOGLE_APPLICATION_CREDENTIALS={}, oauth-client={}, oauth-refresh-token={}, quota-project={}",
+        "Env credentials: GOOGLE_APPLICATION_CREDENTIALS={}, oauth-client={}, oauth-refresh-token={}, quota-project={}, shared-adc={}",
         yes_no(report.detected.env.google_application_credentials),
         yes_no(report.detected.env.oauth_client_secret_json),
         yes_no(report.detected.env.oauth_refresh_token),
         yes_no(report.detected.env.quota_project),
+        yes_no(report.detected.env.shared_adc),
     );
     match &report.verification {
         VerificationReport::NotChecked => println!("Verification: not checked"),
@@ -542,52 +542,46 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
     }
 }
 
-fn detect_credentials() -> CredentialDetection {
+fn detect_credentials(shared_adc: bool) -> CredentialDetection {
     let gcloud_version = gcloud_version_summary();
-    let adc_path = adc_credentials_path();
+    let adc_path = if shared_adc {
+        conventional_adc_credentials_path()
+    } else {
+        server_adc_credentials_path()
+    };
+    let adc_present = adc_path.as_deref().is_some_and(adc_file_present);
     CredentialDetection {
         gcloud_available: gcloud_version.is_some(),
         gcloud_version,
         adc_file: FilePresence {
-            present: adc_path.as_ref().map(|path| path.exists()).unwrap_or(false),
+            present: adc_present,
             path: adc_path.map(|path| path.display().to_string()),
         },
         env: EnvPresence {
             google_application_credentials: env_present("GOOGLE_APPLICATION_CREDENTIALS"),
-            google_application_credentials_file_present: path_env_file_present(
-                "GOOGLE_APPLICATION_CREDENTIALS",
-            ),
             oauth_client_secret_json: env_present("GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON"),
-            oauth_client_secret_json_file_present: path_env_file_present(
-                "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON",
-            ),
             oauth_refresh_token: env_present("GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN"),
             quota_project: env_present("GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT"),
+            shared_adc,
             cloudsdk_config: env_present("CLOUDSDK_CONFIG"),
         },
     }
 }
 
 pub fn local_credential_material_detected() -> bool {
-    credential_material_detected(&detect_credentials())
+    credential_material_detected(&detect_credentials(env_bool_true(
+        "GOOGLE_ANALYTICS_MCP_SHARED_ADC",
+    )))
 }
 
 fn credential_material_detected(detection: &CredentialDetection) -> bool {
     detection.adc_file.present
-        || detection.env.google_application_credentials_file_present
-        || (detection.env.oauth_client_secret_json_file_present
-            && detection.env.oauth_refresh_token)
+        || detection.env.google_application_credentials
+        || (detection.env.oauth_client_secret_json && detection.env.oauth_refresh_token)
 }
 
 fn settings_credential_material_detected(settings: &Settings) -> bool {
-    settings
-        .oauth_client_secret_json
-        .as_deref()
-        .is_some_and(|path| Path::new(path).is_file())
-        && settings
-            .oauth_refresh_token
-            .as_deref()
-            .is_some_and(|token| !token.is_empty())
+    settings.oauth_client_secret_json.is_some() && settings.oauth_refresh_token.is_some()
 }
 
 fn explicit_credential_env_detected(detection: &CredentialDetection) -> bool {
@@ -609,9 +603,8 @@ fn explicit_credential_material_detected(
     settings: &Settings,
     detection: &CredentialDetection,
 ) -> bool {
-    detection.env.google_application_credentials_file_present
-        || (detection.env.oauth_client_secret_json_file_present
-            && detection.env.oauth_refresh_token)
+    detection.env.google_application_credentials
+        || (detection.env.oauth_client_secret_json && detection.env.oauth_refresh_token)
         || settings_credential_material_detected(settings)
 }
 
@@ -966,8 +959,27 @@ fn gcloud_version_summary() -> Option<String> {
         .map(str::to_string)
 }
 
-fn adc_credentials_path() -> Option<PathBuf> {
-    crate::config::adc_credentials_path()
+fn adc_file_present(path: &Path) -> bool {
+    let root = server_adc_credentials_path()
+        .filter(|candidate| candidate == path)
+        .and_then(|_| server_cloudsdk_config_dir())
+        .or_else(|| {
+            conventional_adc_credentials_path()
+                .filter(|candidate| candidate == path)
+                .and_then(|_| conventional_cloudsdk_config_dir())
+        });
+    root.as_deref()
+        .is_some_and(|root| file_is_under_root(path, root))
+}
+
+fn file_is_under_root(path: &Path, root: &Path) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    path.starts_with(root) && path.is_file()
 }
 
 fn env_present(name: &str) -> bool {
@@ -976,10 +988,14 @@ fn env_present(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn path_env_file_present(name: &str) -> bool {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(|value| PathBuf::from(value).is_file())
+fn env_bool_true(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -1113,11 +1129,10 @@ mod tests {
             },
             env: EnvPresence {
                 google_application_credentials: false,
-                google_application_credentials_file_present: false,
                 oauth_client_secret_json: false,
-                oauth_client_secret_json_file_present: false,
                 oauth_refresh_token: false,
                 quota_project: false,
+                shared_adc: false,
                 cloudsdk_config: false,
             },
         };

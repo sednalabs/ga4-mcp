@@ -22,7 +22,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::config::{Settings, UpstreamTokenSource, server_adc_credentials_path};
+use crate::config::{
+    Settings, UpstreamTokenSource, conventional_adc_credentials_path,
+    conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
+};
 use crate::error::AnalyticsError;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -109,7 +112,7 @@ enum UpstreamAuthMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSource {
     GoogleDefaultProviderChain,
-    GoogleAuthorizedUserAdcFileOrDefaultProviderChain,
+    GoogleAuthorizedUserAdcFile,
     OAuthRefreshToken,
 }
 
@@ -117,9 +120,7 @@ impl AuthSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::GoogleDefaultProviderChain => "google_default_provider_chain",
-            Self::GoogleAuthorizedUserAdcFileOrDefaultProviderChain => {
-                "google_authorized_user_adc_file_or_default_provider_chain"
-            }
+            Self::GoogleAuthorizedUserAdcFile => "google_authorized_user_adc_file",
             Self::OAuthRefreshToken => "oauth_refresh_token",
         }
     }
@@ -251,14 +252,10 @@ impl AnalyticsApiClient {
 
         let auth_mode = select_auth_mode(settings)?;
 
-        let quota_project = settings.quota_project.clone().or_else(|| {
-            matches!(
-                auth_mode,
-                UpstreamAuthMode::Adc | UpstreamAuthMode::AuthorizedUserAdcFile(_)
-            )
-            .then(adc_quota_project_id)
-            .flatten()
-        });
+        let quota_project = settings
+            .quota_project
+            .clone()
+            .or_else(|| adc_quota_project_id_for_auth_mode(&auth_mode, settings.shared_adc));
 
         Ok(Self {
             http,
@@ -280,9 +277,7 @@ impl AnalyticsApiClient {
     pub fn auth_source(&self) -> AuthSource {
         match &self.auth_mode {
             UpstreamAuthMode::Adc => AuthSource::GoogleDefaultProviderChain,
-            UpstreamAuthMode::AuthorizedUserAdcFile(_) => {
-                AuthSource::GoogleAuthorizedUserAdcFileOrDefaultProviderChain
-            }
+            UpstreamAuthMode::AuthorizedUserAdcFile(_) => AuthSource::GoogleAuthorizedUserAdcFile,
             UpstreamAuthMode::OAuthRefresh(_) => AuthSource::OAuthRefreshToken,
         }
     }
@@ -815,11 +810,14 @@ impl AnalyticsApiClient {
             .token_provider
             .get_or_try_init(|| async {
                 match &self.auth_mode {
-                    UpstreamAuthMode::Adc | UpstreamAuthMode::AuthorizedUserAdcFile(_) => {
-                        gcp_auth::provider()
-                            .await
-                            .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))
-                    }
+                    UpstreamAuthMode::Adc => gcp_auth::provider()
+                        .await
+                        .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string())),
+                    UpstreamAuthMode::AuthorizedUserAdcFile(_) => Err(
+                        AnalyticsError::AuthBootstrap(
+                            "server-specific authorized-user ADC is handled by the toolkit refresh-token provider".to_string(),
+                        ),
+                    ),
                     UpstreamAuthMode::OAuthRefresh(_) => Err(AnalyticsError::AuthBootstrap(
                         "OAuth refresh-token auth is handled by the refresh-token path".to_string(),
                     )),
@@ -891,30 +889,24 @@ impl AnalyticsApiClient {
     }
 
     async fn configured_access_token(&self) -> Result<String, AnalyticsError> {
-        let preferred_oauth_provider =
-            if matches!(&self.auth_mode, UpstreamAuthMode::AuthorizedUserAdcFile(_)) {
-                self.authorized_user_adc_provider().await?
-            } else {
-                None
-            };
-        if let Some(provider) = preferred_oauth_provider {
-            let token = provider
-                .access_token()
-                .await
-                .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))?;
-            return Ok(token.expose_secret().to_string());
-        }
-
         match &self.auth_mode {
             UpstreamAuthMode::Adc => {
                 let provider = self.token_provider().await?;
                 let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
                 Ok(token.as_str().to_string())
             }
-            UpstreamAuthMode::AuthorizedUserAdcFile(_) => {
-                let provider = self.token_provider().await?;
-                let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
-                Ok(token.as_str().to_string())
+            UpstreamAuthMode::AuthorizedUserAdcFile(path) => {
+                let provider = self.authorized_user_adc_provider().await?.ok_or_else(|| {
+                    AnalyticsError::AuthBootstrap(format!(
+                        "server-specific GA4 ADC file was not found at '{}'; run `ga4-mcp auth login` or set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true to intentionally use conventional shared ADC",
+                        path.display()
+                    ))
+                })?;
+                let token = provider
+                    .access_token()
+                    .await
+                    .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))?;
+                Ok(token.expose_secret().to_string())
             }
             UpstreamAuthMode::OAuthRefresh(config) => {
                 if let Some(cached) = self.cached_oauth_token.read().await.as_ref() {
@@ -1027,7 +1019,7 @@ fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsEr
         }
     }
 
-    if env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some() {
+    if env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some() || settings.shared_adc {
         return Ok(UpstreamAuthMode::Adc);
     }
 
@@ -1035,7 +1027,9 @@ fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsEr
         return Ok(UpstreamAuthMode::AuthorizedUserAdcFile(path));
     }
 
-    Ok(UpstreamAuthMode::Adc)
+    Err(AnalyticsError::AuthBootstrap(
+        "failed to determine the GA4-specific ADC path; set HOME/XDG_CONFIG_HOME on Unix or APPDATA on Windows, or set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true to intentionally use conventional shared ADC".to_string(),
+    ))
 }
 
 fn google_adc_file_missing(err: &UpstreamOAuthError) -> bool {
@@ -1417,9 +1411,16 @@ pub(crate) fn sort_object(value: Value) -> Value {
     }
 }
 
-fn adc_quota_project_id() -> Option<String> {
-    let path = adc_credentials_path()?;
-    let raw = fs::read_to_string(path).ok()?;
+fn adc_quota_project_id_for_auth_mode(
+    auth_mode: &UpstreamAuthMode,
+    shared_adc: bool,
+) -> Option<String> {
+    let path = match auth_mode {
+        UpstreamAuthMode::AuthorizedUserAdcFile(path) => Some(path.clone()),
+        UpstreamAuthMode::Adc if shared_adc => conventional_adc_credentials_path(),
+        UpstreamAuthMode::Adc | UpstreamAuthMode::OAuthRefresh(_) => None,
+    }?;
+    let raw = read_adc_file(&path)?;
     parse_adc_quota_project_id(&raw)
 }
 
@@ -1433,8 +1434,21 @@ fn parse_adc_quota_project_id(raw: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn adc_credentials_path() -> Option<PathBuf> {
-    crate::config::adc_credentials_path()
+fn read_adc_file(path: &std::path::Path) -> Option<String> {
+    let root = server_adc_credentials_path()
+        .filter(|candidate| candidate == path)
+        .and_then(|_| server_cloudsdk_config_dir())
+        .or_else(|| {
+            conventional_adc_credentials_path()
+                .filter(|candidate| candidate == path)
+                .and_then(|_| conventional_cloudsdk_config_dir())
+        })?;
+    let root = root.canonicalize().ok()?;
+    let path = path.canonicalize().ok()?;
+    if !path.starts_with(root) || !path.is_file() {
+        return None;
+    }
+    fs::read_to_string(path).ok()
 }
 
 #[cfg(test)]
@@ -1518,7 +1532,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("ga4-oauth-client-{nonce}.json"));
+        let path = test_fixture_path(&format!("ga4-oauth-client-{nonce}.json"));
         let json = r#"{
             "installed": {
                 "client_id": "client-id.apps.googleusercontent.com",
@@ -1544,7 +1558,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("ga4-oauth-client-invalid-{nonce}.json"));
+        let path = test_fixture_path(&format!("ga4-oauth-client-invalid-{nonce}.json"));
         std::fs::write(&path, r#"{"client_id":"abc"}"#).expect("fixture should write");
         let err = parse_oauth_refresh_config(
             path.to_str().expect("temp path should be utf8"),
@@ -1560,7 +1574,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("ga4-oauth-client-bad-uri-{nonce}.json"));
+        let path = test_fixture_path(&format!("ga4-oauth-client-bad-uri-{nonce}.json"));
         std::fs::write(
             &path,
             r#"{"installed":{"client_id":"client","client_secret":"secret","token_uri":"https://evil.test/token"}}"#,
@@ -1572,6 +1586,12 @@ mod tests {
         )
         .expect_err("non-google token uri should fail");
         assert!(err.to_string().contains("must be one of"));
+    }
+
+    fn test_fixture_path(name: &str) -> PathBuf {
+        let root = PathBuf::from("target").join("ga4-mcp-test-fixtures");
+        std::fs::create_dir_all(&root).expect("fixture root should be writable");
+        root.join(name)
     }
 
     #[test]

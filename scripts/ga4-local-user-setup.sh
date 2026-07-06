@@ -299,6 +299,11 @@ chmod 600 "$backup"
 set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SCOPE" "https://www.googleapis.com/auth/analytics.readonly"
 set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE" "request_header_or_config"
 set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER" "authorization"
+if [[ "$SHARED_ADC" -eq 1 ]]; then
+  set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SHARED_ADC" "true"
+else
+  set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SHARED_ADC" "false"
+fi
 
 printf 'Updated %s\n' "$ENV_FILE"
 printf 'Backup written to %s\n' "$backup"

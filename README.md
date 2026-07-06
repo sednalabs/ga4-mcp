@@ -114,7 +114,9 @@ and where your Google account is allowed to use the project for quota.
 
 Result: if a client sends `Authorization: Bearer <google_access_token>`, the
 server uses that token. If the client sends no token, the server uses the local
-GA4-specific ADC identity from the one-time login.
+GA4-specific ADC identity from the one-time login. Conventional shared ADC is
+used only when `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or the server starts with
+`--shared-adc`.
 
 If Google blocks the default `gcloud` OAuth client for Analytics scopes, create
 a Google OAuth desktop client, download the JSON locally, and run:
@@ -221,7 +223,9 @@ Inside MCP, call `ga4_get_started` first after install. Use
 `ga4_auth_status` to inspect credentials, and `ga4_auth_login_command` when an
 MCP client needs a copyable `gcloud` command without running the CLI wrapper.
 That tool also targets the GA4-specific ADC file by default; pass
-`shared_adc=true` only for the conventional shared ADC file.
+`shared_adc=true` only for the conventional shared ADC file. To make the running server use that
+shared ADC file, also set `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the binary with
+`--shared-adc`.
 
 ### 3) Optional: run streamable HTTP server
 

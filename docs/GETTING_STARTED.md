@@ -42,7 +42,8 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 The login command writes to a GA4-specific ADC file by default:
 `<user-config>/ga4-mcp/gcloud/application_default_credentials.json`. Add
 `--shared-adc` only when you intentionally want the conventional shared gcloud
-ADC file.
+ADC file, and set `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the server
+with `--shared-adc` when the runtime should use that shared file.
 
 On SSH or a headless host, use `ga4-mcp auth login --headless --quota-project
 YOUR_PROJECT`. If Google rejects the Analytics scope or blocks the default

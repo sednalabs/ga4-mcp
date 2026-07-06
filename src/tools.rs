@@ -746,7 +746,7 @@ impl AnalyticsMcp {
                         "quota_project_command": "ga4-mcp auth command --quota-project YOUR_PROJECT",
                         "quota_project_note": "Only needed when Google reports local ADC requires a quota project; the project must have the Analytics Admin and Data APIs enabled.",
                         "env": [],
-                        "shared_adc_escape_hatch": "add --shared-adc only when intentionally using the conventional shared gcloud ADC file"
+                        "shared_adc_escape_hatch": "add --shared-adc only when intentionally creating the conventional shared gcloud ADC file; set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true when the runtime should use it"
                     },
                     {
                         "name": "per-request Google bearer token",
@@ -955,7 +955,7 @@ impl AnalyticsMcp {
                 "next_steps": setup_plan.next_steps.clone(),
                 "notes": [
                     "By default this command writes a GA4-specific ADC file for this OS user.",
-                    "Set shared_adc=true only when you intentionally want the conventional shared gcloud ADC file.",
+                    "Set shared_adc=true only when you intentionally want the conventional shared gcloud ADC file; set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true when the runtime should use it.",
                     "No token or client secret is returned by this tool."
                 ],
                 "client_id_file_hint": "Analytics scopes normally work with gcloud's default client, but pass client_id_file when Google rejects the requested scope.",

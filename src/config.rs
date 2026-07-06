@@ -162,6 +162,10 @@ pub struct Cli {
     #[arg(long, env = "GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT", global = true)]
     pub quota_project: Option<String>,
 
+    /// Intentionally use conventional shared gcloud ADC instead of the GA4-specific ADC file.
+    #[arg(long, env = "GOOGLE_ANALYTICS_MCP_SHARED_ADC", global = true)]
+    pub shared_adc: bool,
+
     /// Scratchpad session TTL in seconds.
     #[arg(
         long,
@@ -349,6 +353,7 @@ pub struct Settings {
     pub upstream_token_source: UpstreamTokenSource,
     pub upstream_token_header: String,
     pub quota_project: Option<String>,
+    pub shared_adc: bool,
     pub scratchpad_session_ttl: Duration,
     pub scratchpad_max_sessions: usize,
     pub scratchpad_max_tables_per_session: usize,
@@ -437,6 +442,7 @@ impl Settings {
             upstream_token_source: cli.upstream_token_source,
             upstream_token_header,
             quota_project: trim_optional(cli.quota_project),
+            shared_adc: cli.shared_adc,
             scratchpad_session_ttl: Duration::from_secs(cli.scratchpad_session_ttl_secs),
             scratchpad_max_sessions: cli.scratchpad_max_sessions,
             scratchpad_max_tables_per_session: cli.scratchpad_max_tables_per_session,
@@ -464,7 +470,11 @@ fn trim_optional(value: Option<String>) -> Option<String> {
 }
 
 pub fn adc_credentials_path() -> Option<PathBuf> {
-    server_adc_credentials_path().or_else(conventional_adc_credentials_path)
+    if shared_adc_env_enabled() {
+        conventional_adc_credentials_path()
+    } else {
+        server_adc_credentials_path()
+    }
 }
 
 pub fn server_adc_credentials_path() -> Option<PathBuf> {
@@ -476,29 +486,25 @@ pub fn server_cloudsdk_config_dir() -> Option<PathBuf> {
 }
 
 pub fn conventional_adc_credentials_path() -> Option<PathBuf> {
+    conventional_cloudsdk_config_dir()
+        .map(|path| path.join("application_default_credentials.json"))
+}
+
+pub fn conventional_cloudsdk_config_dir() -> Option<PathBuf> {
     if let Some(config_dir) = env::var_os("CLOUDSDK_CONFIG").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(config_dir).join("application_default_credentials.json"));
+        return Some(PathBuf::from(config_dir));
     }
     #[cfg(windows)]
     {
         env::var_os("APPDATA")
             .filter(|value| !value.is_empty())
-            .map(|appdata| {
-                PathBuf::from(appdata)
-                    .join("gcloud")
-                    .join("application_default_credentials.json")
-            })
+            .map(|appdata| PathBuf::from(appdata).join("gcloud"))
     }
     #[cfg(not(windows))]
     {
         env::var_os("HOME")
             .filter(|value| !value.is_empty())
-            .map(|home| {
-                PathBuf::from(home)
-                    .join(".config")
-                    .join("gcloud")
-                    .join("application_default_credentials.json")
-            })
+            .map(|home| PathBuf::from(home).join(".config").join("gcloud"))
     }
 }
 
@@ -518,6 +524,17 @@ fn config_root() -> Option<PathBuf> {
             .filter(|value| !value.is_empty())
             .map(|home| PathBuf::from(home).join(".config"))
     }
+}
+
+fn shared_adc_env_enabled() -> bool {
+    env::var("GOOGLE_ANALYTICS_MCP_SHARED_ADC")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn sanitize_base_url(raw: &str) -> Result<String> {

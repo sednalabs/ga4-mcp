@@ -39,8 +39,8 @@ project flows, but the MCP tool surface itself is read/report oriented.
 Do not expose `request_header_or_config` as an anonymous public surface. A
 missing request token could silently fall back to a server-held Google identity.
 Local browser login stores ADC under `<user-config>/ga4-mcp/gcloud` by default;
-use `--shared-adc` only when a deployment intentionally uses conventional
-shared gcloud ADC.
+use `--shared-adc` and `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` only when a
+deployment intentionally uses conventional shared gcloud ADC.
 
 ## HTTP Exposure
 
