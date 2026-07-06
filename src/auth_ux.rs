@@ -1,8 +1,8 @@
 //! Human-facing authentication helpers for the CLI and setup tools.
 
-use std::{env, fs};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::{env, fs};
 
 use anyhow::{Context, Result, anyhow};
 use mcp_toolkit_auth::provider_auth::{

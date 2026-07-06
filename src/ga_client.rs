@@ -256,8 +256,8 @@ impl AnalyticsApiClient {
                 auth_mode,
                 UpstreamAuthMode::Adc | UpstreamAuthMode::AuthorizedUserAdcFile(_)
             )
-                .then(adc_quota_project_id)
-                .flatten()
+            .then(adc_quota_project_id)
+            .flatten()
         });
 
         Ok(Self {
@@ -853,9 +853,11 @@ impl AnalyticsApiClient {
                 )));
             }
         };
-        let provider = Arc::new(RefreshTokenProvider::new(adc.into_refresh_config()).map_err(
-            |err| AnalyticsError::AuthBootstrap(format!("invalid authorized-user ADC: {err}")),
-        )?);
+        let provider = Arc::new(
+            RefreshTokenProvider::new(adc.into_refresh_config()).map_err(|err| {
+                AnalyticsError::AuthBootstrap(format!("invalid authorized-user ADC: {err}"))
+            })?,
+        );
         let provider = self
             .oauth_token_provider
             .get_or_init(|| async { provider })
