@@ -455,6 +455,11 @@ async fn build_auth_surface_layer(settings: &HttpSettings) -> Result<Option<Auth
         registration_endpoint,
         discovered_jwks_uri,
         discovered_introspection,
+        discovered_device_authorization,
+        discovered_grant_types,
+        discovered_client_id_metadata_document_supported,
+        discovered_token_endpoint_auth_methods,
+        discovered_code_challenge_methods,
     ) = if settings.auth.issuer.is_some() {
         match discover_oidc_metadata(&issuer, None).await {
             Ok(metadata) => (
@@ -467,6 +472,11 @@ async fn build_auth_surface_layer(settings: &HttpSettings) -> Result<Option<Auth
                 metadata.registration_endpoint,
                 Some(metadata.jwks_uri),
                 metadata.introspection_endpoint,
+                metadata.device_authorization_endpoint,
+                metadata.grant_types_supported,
+                metadata.client_id_metadata_document_supported,
+                metadata.token_endpoint_auth_methods_supported,
+                metadata.code_challenge_methods_supported,
             ),
             Err(err) => {
                 tracing::warn!(
@@ -474,11 +484,33 @@ async fn build_auth_surface_layer(settings: &HttpSettings) -> Result<Option<Auth
                     err = %err,
                     "failed OIDC discovery for auth surface; using fallback OAuth endpoint URLs"
                 );
-                (default_authz, default_token, None, None, None)
+                (
+                    default_authz,
+                    default_token,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
             }
         }
     } else {
-        (default_authz, default_token, None, None, None)
+        (
+            default_authz,
+            default_token,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     };
 
     let mcp_entry = IssuerEntry {
@@ -499,6 +531,11 @@ async fn build_auth_surface_layer(settings: &HttpSettings) -> Result<Option<Auth
             .introspection_url
             .clone()
             .or(discovered_introspection),
+        device_authorization_endpoint: discovered_device_authorization,
+        grant_types_supported: discovered_grant_types,
+        client_id_metadata_document_supported: discovered_client_id_metadata_document_supported,
+        token_endpoint_auth_methods_supported: discovered_token_endpoint_auth_methods,
+        code_challenge_methods_supported: discovered_code_challenge_methods,
         realm: settings.auth.realm.clone(),
         scopes_supported: settings.auth.scopes_supported.clone(),
         allowed_client_ids: settings.auth.allowed_client_ids.iter().cloned().collect(),

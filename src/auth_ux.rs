@@ -805,7 +805,13 @@ fn scope_allows_analytics_read(scope: &str) -> bool {
 pub const GCLOUD_ADC_REQUIRED_SCOPE: &str = GOOGLE_CLOUD_PLATFORM_SCOPE;
 
 pub fn adc_login_scopes(scope: &str) -> String {
-    google_adc_login_scopes(split_scopes(scope)).join(",")
+    google_adc_login_scopes(
+        scope
+            .split([',', ' ', '\n', '\t'])
+            .map(str::trim)
+            .filter(|item| !item.is_empty()),
+    )
+    .join(",")
 }
 
 fn gcloud_login_args(scope: &str, headless: bool, client_id_file: Option<&Path>) -> Vec<String> {
