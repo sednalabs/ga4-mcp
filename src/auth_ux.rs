@@ -253,7 +253,7 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
         fs::create_dir_all(dir).context("failed to create server-specific gcloud config dir")?;
     }
 
-    let mut login = ProcessCommand::new(&command_args[0]);
+    let mut login = gcloud_command();
     login.args(&command_args[1..]);
     if let Some(dir) = cloudsdk_config.as_deref() {
         login.env("CLOUDSDK_CONFIG", dir);
@@ -275,7 +275,7 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
             "Setting ADC quota project: {}",
             shell_join_with_cloudsdk_config(&quota_project_command, cloudsdk_config.as_deref())
         );
-        let mut quota = ProcessCommand::new(&quota_project_command[0]);
+        let mut quota = gcloud_command();
         quota.args(&quota_project_command[1..]);
         if let Some(dir) = cloudsdk_config.as_deref() {
             quota.env("CLOUDSDK_CONFIG", dir);
@@ -881,15 +881,26 @@ fn shell_command(args: &[String]) -> String {
 
 fn shell_join_with_cloudsdk_config(parts: &[String], cloudsdk_config: Option<&Path>) -> String {
     if let Some(dir) = cloudsdk_config {
-        let assignment = format!(
-            "CLOUDSDK_CONFIG={}",
-            shell_command(&[dir.display().to_string()])
-        );
+        let dir_str = shell_command(&[dir.display().to_string()]);
         let command = shell_command(parts);
         if command.is_empty() {
-            assignment
+            #[cfg(windows)]
+            {
+                format!("$env:CLOUDSDK_CONFIG={dir_str}")
+            }
+            #[cfg(not(windows))]
+            {
+                format!("CLOUDSDK_CONFIG={dir_str}")
+            }
         } else {
-            format!("{assignment} {command}")
+            #[cfg(windows)]
+            {
+                format!("$env:CLOUDSDK_CONFIG={dir_str}; {command}")
+            }
+            #[cfg(not(windows))]
+            {
+                format!("CLOUDSDK_CONFIG={dir_str} {command}")
+            }
         }
     } else {
         shell_command(parts)
@@ -944,10 +955,7 @@ fn split_scopes(scope: &str) -> Vec<String> {
 }
 
 fn gcloud_version_summary() -> Option<String> {
-    let output = ProcessCommand::new("gcloud")
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = gcloud_command().arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -957,6 +965,16 @@ fn gcloud_version_summary() -> Option<String> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(str::to_string)
+}
+
+fn gcloud_command() -> ProcessCommand {
+    if cfg!(windows) {
+        let mut cmd = ProcessCommand::new("cmd");
+        cmd.arg("/C").arg("gcloud");
+        cmd
+    } else {
+        ProcessCommand::new("gcloud")
+    }
 }
 
 fn adc_file_present(path: &Path) -> bool {
@@ -1027,6 +1045,10 @@ mod tests {
             Some(Path::new("/tmp/ga4 adc")),
         );
 
+        #[cfg(windows)]
+        assert!(command.starts_with("$env:CLOUDSDK_CONFIG="));
+
+        #[cfg(not(windows))]
         assert!(command.starts_with("CLOUDSDK_CONFIG='/tmp/ga4 adc' gcloud auth"));
         assert!(command.contains("analytics.readonly"));
     }

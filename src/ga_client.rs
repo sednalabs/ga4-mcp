@@ -1112,7 +1112,7 @@ fn validate_oauth_token_uri(token_uri: &str) -> Result<(), AnalyticsError> {
     }
 
     let host = parsed.host_str().unwrap_or("");
-    let path = parsed.path();
+    let path = parsed.path().trim_end_matches('/');
     let allowed = (host == "oauth2.googleapis.com" && path == "/token")
         || (host == "accounts.google.com" && path == "/o/oauth2/token");
     if !allowed {

@@ -165,14 +165,21 @@ pub fn error(err: AnalyticsError, elapsed_ms: u64) -> CallToolResult {
 
 pub fn redact_secret_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    for token in input.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
+    for (line_index, line) in input.lines().enumerate() {
+        if line_index > 0 {
+            out.push('\n');
         }
-        if looks_secret_bearing(token) {
-            out.push_str("[redacted]");
-        } else {
-            out.push_str(token);
+        let mut first = true;
+        for token in line.split_whitespace() {
+            if !first {
+                out.push(' ');
+            }
+            first = false;
+            if looks_secret_bearing(token) {
+                out.push_str("[redacted]");
+            } else {
+                out.push_str(token);
+            }
         }
     }
     out
@@ -185,6 +192,8 @@ fn looks_secret_bearing(token: &str) -> bool {
         || lower.contains("client_secret")
         || lower.contains("private_key")
         || lower.starts_with("ya29.")
+        || lower.starts_with("1//")
+        || lower.contains("1%2f%2f")
 }
 
 fn attach_elapsed(meta: Value, elapsed_ms: u64) -> Value {
@@ -243,6 +252,18 @@ mod tests {
         assert!(payload["error"]["hint"].is_string());
         assert!(payload["error"]["message"].is_string());
         assert_eq!(payload["meta"]["elapsed_ms"], json!(3));
+    }
+
+    #[test]
+    fn redacts_google_tokens_without_flattening_lines() {
+        let text = "first ya29.secret\nsecond refresh_token=1//refresh\nthird token=1%2F%2Fencoded";
+        let redacted = redact_secret_text(text);
+
+        assert_eq!(redacted.lines().count(), 3);
+        assert!(!redacted.contains("ya29.secret"));
+        assert!(!redacted.contains("1//refresh"));
+        assert!(!redacted.contains("1%2F%2Fencoded"));
+        assert!(redacted.contains("[redacted]"));
     }
 
     #[test]
