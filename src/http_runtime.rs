@@ -17,7 +17,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use mcp_toolkit_auth::surface::{AuthSurfaceConfig, AuthSurfaceLayer, IssuerEntry};
 use mcp_toolkit_auth::{Authenticator, discover_oidc_metadata};
 use mcp_toolkit_http::host::{
-    HostValidationError, validate_origin_header, validate_request_authority,
+    HostValidationError, parse_host_header, validate_origin_header, validate_request_authority,
 };
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -568,7 +568,8 @@ mod tests {
 
     use super::{
         header_text, public_base_url_from_resource_url, request_has_inbound_auth,
-        request_host_for_log, request_targets_mcp, validate_request_origin,
+        request_host_for_log, request_targets_mcp, validate_request_host,
+        validate_request_origin,
     };
 
     #[test]
