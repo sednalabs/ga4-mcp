@@ -568,8 +568,7 @@ mod tests {
 
     use super::{
         header_text, public_base_url_from_resource_url, request_has_inbound_auth,
-        request_host_for_log, request_targets_mcp, validate_request_host,
-        validate_request_origin,
+        request_host_for_log, request_targets_mcp, validate_request_host, validate_request_origin,
     };
 
     #[test]
