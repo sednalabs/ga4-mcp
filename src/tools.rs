@@ -7163,7 +7163,7 @@ mod tests {
         let (auth_source, auth_source_candidate, credential_material_detected) =
             auth_status_surface(
                 UpstreamTokenSource::RequestHeader,
-                AuthSource::AuthorizedUserAdcFile,
+                AuthSource::GoogleAuthorizedUserAdcFile,
                 true,
                 None,
                 None,
@@ -7196,14 +7196,14 @@ mod tests {
         assert_eq!(
             get_started_auth_source_candidate(
                 UpstreamTokenSource::RequestHeader,
-                AuthSource::AuthorizedUserAdcFile,
+                AuthSource::GoogleAuthorizedUserAdcFile,
             ),
             Value::Null
         );
         assert_eq!(
             get_started_auth_source_candidate(
                 UpstreamTokenSource::Config,
-                AuthSource::AuthorizedUserAdcFile,
+                AuthSource::GoogleAuthorizedUserAdcFile,
             ),
             json!("google_authorized_user_adc_file")
         );

@@ -1470,9 +1470,11 @@ fn read_adc_file(path: &std::path::Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::config::{CapabilityProfile, CliCommand};
 
     #[test]
     fn property_id_accepts_numeric_and_prefixed_values() {
@@ -1607,7 +1609,7 @@ mod tests {
 
     #[test]
     fn select_auth_mode_request_header_does_not_require_local_adc_bootstrap() {
-        let mut settings = Settings::default();
+        let mut settings = test_settings();
         settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
 
         let auth_mode = select_auth_mode(&settings).expect("request_header mode should bootstrap");
@@ -1617,7 +1619,7 @@ mod tests {
 
     #[test]
     fn select_auth_mode_request_header_ignores_partial_oauth_refresh_config() {
-        let mut settings = Settings::default();
+        let mut settings = test_settings();
         settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
         settings.oauth_client_secret_json = Some("client-secret.json".to_string());
 
@@ -1631,6 +1633,35 @@ mod tests {
         let root = PathBuf::from("target").join("ga4-mcp-test-fixtures");
         std::fs::create_dir_all(&root).expect("fixture root should be writable");
         root.join(name)
+    }
+
+    fn test_settings() -> Settings {
+        Settings {
+            analytics_scope: DEFAULT_ANALYTICS_SCOPE.to_string(),
+            admin_base_url: "https://analyticsadmin.googleapis.com".to_string(),
+            data_base_url: "https://analyticsdata.googleapis.com".to_string(),
+            http_timeout: Duration::from_secs(1),
+            max_page_size: 200,
+            max_pages: 20,
+            user_agent: "test".to_string(),
+            oauth_client_secret_json: None,
+            oauth_refresh_token: None,
+            upstream_token_source: UpstreamTokenSource::Config,
+            upstream_token_header: "x-google-access-token".to_string(),
+            quota_project: None,
+            shared_adc: false,
+            scratchpad_session_ttl: Duration::from_secs(900),
+            scratchpad_max_sessions: 64,
+            scratchpad_max_tables_per_session: 32,
+            scratchpad_max_rows_per_session: 1_000_000,
+            scratchpad_max_memory_mb: 256,
+            scratchpad_query_timeout: Duration::from_secs(15),
+            scratchpad_max_sql_bytes: 65_536,
+            capability_profile: CapabilityProfile::ReadOnly,
+            print_tools: false,
+            print_tool_schema: false,
+            command: Some(CliCommand::Serve),
+        }
     }
 
     #[test]
