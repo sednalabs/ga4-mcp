@@ -988,7 +988,7 @@ impl AnalyticsMcp {
                     "Set shared_adc=true only when you intentionally want the conventional shared gcloud ADC file; set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true when the runtime should use it.",
                     "No token or client secret is returned by this tool."
                 ],
-                "client_id_file_hint": "If Google blocks the bundled gcloud OAuth app for Analytics scopes, pass client_id_file from a Desktop OAuth client; headless mode will ask for the redirected localhost URL.",
+                "client_id_file_hint": "If Google blocks the bundled gcloud OAuth app for Analytics scopes, pass client_id_file from a Desktop OAuth client; headless mode will ask for the redirected loopback callback URL.",
                 "quota_project_hint": "If verification says local ADC requires a quota project, enable analyticsadmin.googleapis.com and analyticsdata.googleapis.com on that project, run the quota_project_command, then verify again.",
                 "local_http_env": {
                     "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE": "request_header_or_config",

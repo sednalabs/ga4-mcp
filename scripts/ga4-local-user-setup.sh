@@ -30,7 +30,7 @@ Options:
   --client-id-file PATH    Optional Google OAuth desktop client JSON. Without
                            --shared-adc this uses ga4-mcp browser OAuth and
                            avoids gcloud's bundled OAuth app.
-  --callback-port PORT     Optional fixed localhost callback port for
+  --callback-port PORT     Optional fixed loopback callback port for
                            ga4-mcp browser OAuth.
   --quota-project ID       Optional Google Cloud project used for ADC quota.
   --env-file PATH          Service env file to update.
@@ -41,7 +41,7 @@ Options:
   --skip-login             Only update the service env file.
   --headless               Do not launch a browser; print a Google login URL.
                            With --client-id-file, paste the redirected
-                           localhost URL back into ga4-mcp.
+                           callback URL back into ga4-mcp.
                            Without --client-id-file, pass gcloud's
                            --no-launch-browser flag.
   --no-launch-browser      Alias for --headless in direct ga4-mcp OAuth mode;

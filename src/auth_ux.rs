@@ -779,9 +779,9 @@ async fn run_direct_browser_oauth_login(
 
     let token_set = if args.headless {
         println!(
-            "Headless mode requested. Open the URL on a trusted machine. When Google redirects to localhost, copy the full browser address-bar URL and paste it below."
+            "Headless mode requested. Open the URL on a trusted machine. When Google redirects to the loopback callback, copy the full browser address-bar URL and paste it below."
         );
-        let callback_url = read_secret_line("Paste redirected localhost URL, then press Enter: ")?;
+        let callback_url = read_secret_line("Paste redirected callback URL, then press Enter: ")?;
         pending
             .finish_with_callback_url(callback_url.trim())
             .await
