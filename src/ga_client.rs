@@ -1474,7 +1474,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::config::{CapabilityProfile, CliCommand};
+    use crate::config::{CapabilityProfile, CliCommand, DEFAULT_ANALYTICS_SCOPE};
 
     #[test]
     fn property_id_accepts_numeric_and_prefixed_values() {
