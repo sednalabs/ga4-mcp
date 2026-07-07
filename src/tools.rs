@@ -719,6 +719,19 @@ impl AnalyticsMcp {
         let quota_project = self.client.quota_project().unwrap_or("<PROJECT_ID>");
         let upstream_token_source = self.client.upstream_token_source();
         let upstream_token_header = self.client.upstream_token_header();
+        let auth_source_candidate = get_started_auth_source_candidate(
+            upstream_token_source,
+            self.client.auth_source(),
+        );
+        let first_login_step = if upstream_token_source == UpstreamTokenSource::RequestHeader {
+            format!(
+                "Keep GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header and configure the MCP client OAuth flow so each request sends a Google access token in {upstream_token_header}."
+            )
+        } else {
+            format!(
+                "Run ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json for the easiest unblocked SSH/browser login."
+            )
+        };
         let status_command = if upstream_token_source == UpstreamTokenSource::RequestHeader {
             "ga4-mcp auth status".to_string()
         } else {
@@ -740,8 +753,12 @@ impl AnalyticsMcp {
             json!({
                 "server": "ga4-mcp",
                 "capability_profile": self.capability_profile().as_str(),
-                "auth_source_candidate": self.client.auth_source().as_str(),
-                "auth_source_note": "A candidate server credential source is not proof credentials exist; call ga4_auth_status or auth status --verify-token.",
+                "auth_source_candidate": auth_source_candidate,
+                "auth_source_note": if upstream_token_source == UpstreamTokenSource::RequestHeader {
+                    "request_header mode authenticates Google API calls from the caller-supplied request token; server credential candidates are intentionally suppressed."
+                } else {
+                    "A candidate server credential source is not proof credentials exist; call ga4_auth_status or auth status --verify-token."
+                },
                 "scope": self.client.analytics_scope(),
                 "upstream_token_source": upstream_token_source.as_str(),
                 "upstream_token_header": upstream_token_header,
@@ -754,7 +771,7 @@ impl AnalyticsMcp {
                     "doctor": doctor_command
                 },
                 "first_steps": [
-                    format!("Run ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json for the easiest unblocked SSH/browser login."),
+                    first_login_step,
                     first_status_step,
                     "If Google blocks the bundled gcloud OAuth app for Analytics scopes, use --client-id-file /path/to/client_id.json from a Desktop OAuth client; ga4-mcp will use direct browser OAuth and its own credential file.",
                     format!(
@@ -854,25 +871,19 @@ impl AnalyticsMcp {
             (json!({ "checked": false }), None, None)
         };
         let auth_source_candidate = self.client.auth_source();
-        let credential_material_detected = credential_material_detected_for_auth_source(
-            auth_source_candidate,
-            local_credential_material_detected(),
-        );
-        let auth_source = if matches!(
-            auth_source_candidate,
-            AuthSource::GoogleDefaultProviderChain
-        ) && !credential_material_detected
-            && token_ok != Some(true)
-        {
-            Value::Null
-        } else {
-            json!(auth_source_candidate.as_str())
-        };
+        let (auth_source, auth_source_candidate, credential_material_detected) =
+            auth_status_surface(
+                self.client.upstream_token_source(),
+                auth_source_candidate,
+                local_credential_material_detected(),
+                token_ok,
+                verification_issue,
+            );
 
         Ok(contract_success(
             json!({
                 "auth_source": auth_source,
-                "auth_source_candidate": auth_source_candidate.as_str(),
+                "auth_source_candidate": auth_source_candidate,
                 "scope": self.client.analytics_scope(),
                 "capability_profile": self.capability_profile().as_str(),
                 "upstream_token_source": self.client.upstream_token_source().as_str(),
@@ -5851,6 +5862,60 @@ fn credential_material_detected_for_auth_source(
     local_detected || !matches!(auth_source, AuthSource::GoogleDefaultProviderChain)
 }
 
+fn request_header_credential_material_detected(
+    token_ok: Option<bool>,
+    verification_issue: Option<&str>,
+) -> bool {
+    match token_ok {
+        Some(true) => true,
+        Some(false) => !matches!(verification_issue, Some("missing_request_access_token")),
+        None => false,
+    }
+}
+
+fn auth_status_surface(
+    upstream_token_source: UpstreamTokenSource,
+    auth_source_candidate: AuthSource,
+    local_detected: bool,
+    token_ok: Option<bool>,
+    verification_issue: Option<&str>,
+) -> (Value, Value, bool) {
+    if upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return (
+            json!("request_header"),
+            Value::Null,
+            request_header_credential_material_detected(token_ok, verification_issue),
+        );
+    }
+
+    let credential_material_detected =
+        credential_material_detected_for_auth_source(auth_source_candidate, local_detected);
+    let auth_source = if matches!(auth_source_candidate, AuthSource::GoogleDefaultProviderChain)
+        && !credential_material_detected
+        && token_ok != Some(true)
+    {
+        Value::Null
+    } else {
+        json!(auth_source_candidate.as_str())
+    };
+    (
+        auth_source,
+        json!(auth_source_candidate.as_str()),
+        credential_material_detected,
+    )
+}
+
+fn get_started_auth_source_candidate(
+    upstream_token_source: UpstreamTokenSource,
+    auth_source_candidate: AuthSource,
+) -> Value {
+    if upstream_token_source == UpstreamTokenSource::RequestHeader {
+        Value::Null
+    } else {
+        json!(auth_source_candidate.as_str())
+    }
+}
+
 fn login_scope_for_mcp_command(current_scope: &str) -> &str {
     if scope_allows_analytics_read(current_scope) {
         current_scope
@@ -7081,6 +7146,60 @@ mod tests {
             steps
                 .iter()
                 .all(|step| !step.contains("Run ga4-mcp auth login for local browser login."))
+        );
+    }
+
+    #[test]
+    fn auth_status_surface_honors_request_header_runtime_mode() {
+        let (auth_source, auth_source_candidate, credential_material_detected) =
+            auth_status_surface(
+                UpstreamTokenSource::RequestHeader,
+                AuthSource::AuthorizedUserAdcFile,
+                true,
+                None,
+                None,
+            );
+
+        assert_eq!(auth_source, json!("request_header"));
+        assert_eq!(auth_source_candidate, Value::Null);
+        assert!(!credential_material_detected);
+    }
+
+    #[test]
+    fn request_header_credential_material_detected_tracks_request_token_presence() {
+        assert!(!request_header_credential_material_detected(
+            None,
+            None
+        ));
+        assert!(!request_header_credential_material_detected(
+            Some(false),
+            Some("missing_request_access_token")
+        ));
+        assert!(request_header_credential_material_detected(
+            Some(false),
+            Some("upstream_forbidden")
+        ));
+        assert!(request_header_credential_material_detected(
+            Some(true),
+            None
+        ));
+    }
+
+    #[test]
+    fn get_started_hides_server_auth_candidate_in_request_header_mode() {
+        assert_eq!(
+            get_started_auth_source_candidate(
+                UpstreamTokenSource::RequestHeader,
+                AuthSource::AuthorizedUserAdcFile,
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            get_started_auth_source_candidate(
+                UpstreamTokenSource::Config,
+                AuthSource::AuthorizedUserAdcFile,
+            ),
+            json!("google_authorized_user_adc_file")
         );
     }
 

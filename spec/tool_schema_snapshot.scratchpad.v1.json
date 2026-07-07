@@ -177,7 +177,6 @@
           "property_id",
           "requests"
         ],
-        "title": "BatchRunReportsArgs",
         "type": "object"
       },
       "name": "batch_run_reports"
@@ -225,7 +224,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "CheckReportCompatibilityArgs",
         "type": "object"
       },
       "name": "check_report_compatibility"
@@ -284,7 +282,6 @@
             ]
           }
         },
-        "title": "AuthLoginCommandArgs",
         "type": "object"
       },
       "name": "ga4_auth_login_command"
@@ -300,7 +297,6 @@
             "type": "boolean"
           }
         },
-        "title": "AuthStatusArgs",
         "type": "object"
       },
       "name": "ga4_auth_status"
@@ -340,7 +336,6 @@
         "required": [
           "account_id"
         ],
-        "title": "AccountArgs",
         "type": "object"
       },
       "name": "get_account_data_sharing_settings"
@@ -371,7 +366,6 @@
             ]
           }
         },
-        "title": "GetAccountSummariesArgs",
         "type": "object"
       },
       "name": "get_account_summaries"
@@ -403,7 +397,6 @@
         "required": [
           "property_id"
         ],
-        "title": "PropertyArgs",
         "type": "object"
       },
       "name": "get_custom_dimensions_and_metrics"
@@ -435,7 +428,6 @@
         "required": [
           "property_id"
         ],
-        "title": "PropertyArgs",
         "type": "object"
       },
       "name": "get_property_data_retention_settings"
@@ -467,7 +459,6 @@
         "required": [
           "property_id"
         ],
-        "title": "PropertyArgs",
         "type": "object"
       },
       "name": "get_property_details"
@@ -519,7 +510,6 @@
         "required": [
           "property_id"
         ],
-        "title": "PropertyListArgs",
         "type": "object"
       },
       "name": "list_google_ads_links"
@@ -571,7 +561,6 @@
         "required": [
           "property_id"
         ],
-        "title": "PropertyListArgs",
         "type": "object"
       },
       "name": "list_property_annotations"
@@ -738,7 +727,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "PreviewReportRequestArgs",
         "type": "object"
       },
       "name": "preview_report_request"
@@ -901,7 +889,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "RunAccessReportAccountArgs",
         "type": "object"
       },
       "name": "run_account_access_report"
@@ -1059,7 +1046,6 @@
           "metrics",
           "pivots"
         ],
-        "title": "RunPivotReportArgs",
         "type": "object"
       },
       "name": "run_pivot_report"
@@ -1222,7 +1208,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "RunAccessReportPropertyArgs",
         "type": "object"
       },
       "name": "run_property_access_report"
@@ -1358,7 +1343,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "RunRealtimeReportArgs",
         "type": "object"
       },
       "name": "run_realtime_report"
@@ -1525,7 +1509,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "RunReportArgs",
         "type": "object"
       },
       "name": "run_report"

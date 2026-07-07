@@ -31,7 +31,8 @@ use crate::server::AnalyticsMcp;
 struct GuardState {
     settings: HttpSettings,
     allowed_request_hosts: Vec<String>,
-    allow_mcp_auth_headers: bool,
+    accepts_upstream_request_tokens: bool,
+    upstream_token_header: String,
 }
 
 /// Serve the GA4 MCP server on streamable HTTP transport.
@@ -50,7 +51,8 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
     let guard_state = GuardState {
         settings: settings.clone(),
         allowed_request_hosts: settings.allowed_hosts.iter().cloned().collect(),
-        allow_mcp_auth_headers: server.accepts_upstream_request_tokens(),
+        accepts_upstream_request_tokens: server.accepts_upstream_request_tokens(),
+        upstream_token_header: server.client.upstream_token_header().to_string(),
     };
     let mut router = Router::new()
         .route("/health", get(health))
@@ -194,7 +196,11 @@ async fn inbound_auth_guard(
 
     if request_targets_mcp(req.uri().path())
         && request_has_inbound_auth(req.headers())
-        && !state.allow_mcp_auth_headers
+        && (!state.accepts_upstream_request_tokens
+            || request_has_disallowed_inbound_auth(
+                req.headers(),
+                &state.upstream_token_header,
+            ))
     {
         mcp_toolkit_observability::emit_event(
             mcp_toolkit_observability::Level::WARN,
@@ -207,7 +213,7 @@ async fn inbound_auth_guard(
         );
         return (
             StatusCode::BAD_REQUEST,
-            "Authorization headers are not accepted on /mcp unless request-header upstream token mode is enabled",
+            "Authorization headers are not accepted on /mcp unless request-header upstream token mode explicitly uses that header",
         )
             .into_response();
     }
@@ -558,6 +564,17 @@ fn request_has_inbound_auth(headers: &axum::http::HeaderMap) -> bool {
     headers.contains_key(AUTHORIZATION) || headers.contains_key(PROXY_AUTHORIZATION)
 }
 
+fn request_has_disallowed_inbound_auth(
+    headers: &axum::http::HeaderMap,
+    upstream_token_header: &str,
+) -> bool {
+    let allows_authorization = upstream_token_header.eq_ignore_ascii_case(AUTHORIZATION.as_str());
+    let allows_proxy_authorization =
+        upstream_token_header.eq_ignore_ascii_case(PROXY_AUTHORIZATION.as_str());
+    (headers.contains_key(AUTHORIZATION) && !allows_authorization)
+        || (headers.contains_key(PROXY_AUTHORIZATION) && !allows_proxy_authorization)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -567,8 +584,9 @@ mod tests {
     use axum::http::header::{AUTHORIZATION, HOST, PROXY_AUTHORIZATION};
 
     use super::{
-        header_text, public_base_url_from_resource_url, request_has_inbound_auth,
-        request_host_for_log, request_targets_mcp, validate_request_host, validate_request_origin,
+        header_text, public_base_url_from_resource_url, request_has_disallowed_inbound_auth,
+        request_has_inbound_auth, request_host_for_log, request_targets_mcp,
+        validate_request_host, validate_request_origin,
     };
 
     #[test]
@@ -595,6 +613,45 @@ mod tests {
             "Basic YWxhZGRpbjpvcGVuc2VzYW1l".parse().expect("header"),
         );
         assert!(request_has_inbound_auth(&headers));
+    }
+
+    #[test]
+    fn dedicated_upstream_header_still_rejects_authorization_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer token".parse().expect("header"));
+        assert!(request_has_disallowed_inbound_auth(
+            &headers,
+            "x-google-access-token"
+        ));
+
+        headers.remove(AUTHORIZATION);
+        headers.insert(
+            PROXY_AUTHORIZATION,
+            "Basic YWxhZGRpbjpvcGVuc2VzYW1l".parse().expect("header"),
+        );
+        assert!(request_has_disallowed_inbound_auth(
+            &headers,
+            "x-google-access-token"
+        ));
+    }
+
+    #[test]
+    fn matching_upstream_auth_header_is_allowed_but_other_auth_headers_are_not() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer token".parse().expect("header"));
+        assert!(!request_has_disallowed_inbound_auth(
+            &headers,
+            "authorization"
+        ));
+
+        headers.insert(
+            PROXY_AUTHORIZATION,
+            "Basic YWxhZGRpbjpvcGVuc2VzYW1l".parse().expect("header"),
+        );
+        assert!(request_has_disallowed_inbound_auth(
+            &headers,
+            "authorization"
+        ));
     }
 
     #[test]
