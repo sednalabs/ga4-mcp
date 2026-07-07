@@ -906,7 +906,7 @@ fn post_login_runtime_steps_with_env(
         steps.push(runtime_scope_step(login_scope));
     }
     if original_settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-        let fallback = local_fallback_step();
+        let fallback = local_fallback_step(&original_settings.upstream_token_header);
         if !steps.contains(&fallback) {
             steps.push(fallback);
         }
@@ -926,8 +926,10 @@ fn runtime_scope_step(scope: &str) -> String {
     )
 }
 
-fn local_fallback_step() -> String {
-    "For the lowest-friction local/loopback service, set GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token; keep request_header for hosted per-user services where every client supplies a Google token.".to_string()
+fn local_fallback_step(header: &str) -> String {
+    format!(
+        "For the lowest-friction local/loopback service, set GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER={header}; keep request_header for hosted per-user services where every client supplies a Google token."
+    )
 }
 
 fn request_header_verification_step(header: &str) -> String {
@@ -1082,7 +1084,7 @@ fn next_steps(
                 steps.push("If Google rejects the Analytics scope, rerun login with `--client-id-file /path/to/client_id.json` from a Desktop OAuth client.".to_string());
             }
             if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                steps.push(local_fallback_step());
+                steps.push(local_fallback_step(&settings.upstream_token_header));
             }
             steps.push("For unattended deployments, prefer GOOGLE_APPLICATION_CREDENTIALS or OAuth refresh-token env configuration.".to_string());
             steps
@@ -1101,7 +1103,7 @@ fn next_steps(
                 steps.push(format!("Run `{login_command}` after explicit credential configuration is fixed or cleared."));
             }
             if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                steps.push(local_fallback_step());
+                steps.push(local_fallback_step(&settings.upstream_token_header));
             }
             steps.push("For unattended deployments, prefer GOOGLE_APPLICATION_CREDENTIALS or OAuth refresh-token env configuration.".to_string());
             steps
@@ -1517,6 +1519,26 @@ mod tests {
             steps
                 .iter()
                 .any(|step| step.contains("request_header_or_config"))
+        );
+    }
+
+    #[test]
+    fn request_header_mode_local_fallback_uses_configured_header() {
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+        settings.upstream_token_header = "x-forwarded-google-token".to_string();
+
+        let steps = post_login_runtime_steps(&settings, DEFAULT_ANALYTICS_SCOPE);
+
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.contains("x-forwarded-google-token"))
+        );
+        assert!(
+            steps
+                .iter()
+                .all(|step| !step.contains("x-google-access-token"))
         );
     }
 

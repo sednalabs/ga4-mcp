@@ -17,7 +17,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use mcp_toolkit_auth::surface::{AuthSurfaceConfig, AuthSurfaceLayer, IssuerEntry};
 use mcp_toolkit_auth::{Authenticator, discover_oidc_metadata};
 use mcp_toolkit_http::host::{
-    HostValidationError, parse_host_header, validate_host_header, validate_origin_header,
+    HostValidationError, validate_origin_header, validate_request_authority,
 };
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -30,7 +30,7 @@ use crate::server::AnalyticsMcp;
 #[derive(Clone)]
 struct GuardState {
     settings: HttpSettings,
-    allowed_origin_hosts: Vec<String>,
+    allowed_request_hosts: Vec<String>,
     allow_mcp_auth_headers: bool,
 }
 
@@ -49,7 +49,7 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
 
     let guard_state = GuardState {
         settings: settings.clone(),
-        allowed_origin_hosts: settings.allowed_hosts.iter().cloned().collect(),
+        allowed_request_hosts: settings.allowed_hosts.iter().cloned().collect(),
         allow_mcp_auth_headers: server.accepts_upstream_request_tokens(),
     };
     let mut router = Router::new()
@@ -300,12 +300,12 @@ async fn host_guard(
     req: axum::extract::Request,
     next: Next,
 ) -> axum::response::Response {
-    if let Err(err) = validate_request_host(&req, &state.settings.allowed_hosts) {
+    if let Err(err) = validate_request_host(&req, &state.allowed_request_hosts) {
         let status = err.status_code();
         let message = err.message();
         return (status, message).into_response();
     }
-    if let Err(err) = validate_request_origin(&req, &state.allowed_origin_hosts) {
+    if let Err(err) = validate_request_origin(&req, &state.allowed_request_hosts) {
         let status = err.status_code();
         let message = err.message();
         return (status, message).into_response();
@@ -343,25 +343,9 @@ async fn client_ip_guard(
 
 fn validate_request_host(
     req: &axum::extract::Request,
-    allowed_hosts: &std::collections::HashSet<String>,
+    allowed_hosts: &[String],
 ) -> Result<(), HostValidationError> {
-    match validate_host_header(req.headers(), allowed_hosts) {
-        Ok(_) => Ok(()),
-        Err(HostValidationError::MissingHost) => {
-            let authority = req
-                .uri()
-                .authority()
-                .map(|value| value.as_str())
-                .ok_or(HostValidationError::MissingHost)?;
-            let parsed = parse_host_header(authority).ok_or(HostValidationError::InvalidHost)?;
-            if allowed_hosts.contains(&parsed.host) {
-                Ok(())
-            } else {
-                Err(HostValidationError::NotAllowed)
-            }
-        }
-        Err(err) => Err(err),
-    }
+    validate_request_authority(Some(req.uri()), req.headers(), allowed_hosts).map(|_| ())
 }
 
 fn validate_request_origin(
@@ -679,6 +663,32 @@ mod tests {
             .expect("request");
 
         validate_request_origin(&req, &allowed_hosts).expect("allowed origin should pass");
+    }
+
+    #[test]
+    fn validate_request_host_accepts_allowlisted_host_and_port() {
+        let allowed_hosts = vec!["ga4-mcp.example:9443".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("https://ga4-mcp.example:9443/mcp")
+            .header(HOST, "ga4-mcp.example:9443")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_host(&req, &allowed_hosts).expect("allowlisted host:port should pass");
+    }
+
+    #[test]
+    fn validate_request_origin_accepts_allowed_origin_with_port() {
+        let allowed_hosts = vec!["ga4-mcp.example:9443".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("https://ga4-mcp.example:9443/mcp")
+            .header(HOST, "ga4-mcp.example:9443")
+            .header("origin", "https://ga4-mcp.example:9443")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_origin(&req, &allowed_hosts)
+            .expect("allowlisted origin with port should pass");
     }
 
     #[test]
