@@ -753,7 +753,10 @@ async fn run_direct_browser_oauth_login(
 
     println!("Starting Google Analytics browser OAuth login.");
     println!("Scope: {scope}");
-    println!("Credential file: server-specific ADC ({})", adc_path.display());
+    println!(
+        "Credential file: server-specific ADC ({})",
+        adc_path.display()
+    );
     println!("OAuth client file: {}", client_id_file.display());
     if let Some(project) = quota_project.as_deref() {
         println!("Quota project: {project}");
@@ -778,8 +781,7 @@ async fn run_direct_browser_oauth_login(
         println!(
             "Headless mode requested. Open the URL on a trusted machine. When Google redirects to localhost, copy the full browser address-bar URL and paste it below."
         );
-        let callback_url =
-            read_secret_line("Paste redirected localhost URL, then press Enter: ")?;
+        let callback_url = read_secret_line("Paste redirected localhost URL, then press Enter: ")?;
         pending
             .finish_with_callback_url(callback_url.trim())
             .await
@@ -1078,10 +1080,7 @@ fn gcloud_login_args(
 }
 
 fn with_gcloud_account_arg(mut args: Vec<String>, account: Option<&str>) -> Vec<String> {
-    let Some(account) = account
-        .map(str::trim)
-        .filter(|account| !account.is_empty())
-    else {
+    let Some(account) = account.map(str::trim).filter(|account| !account.is_empty()) else {
         return args;
     };
     let insert_at = args

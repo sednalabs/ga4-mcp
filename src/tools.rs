@@ -946,13 +946,15 @@ impl AnalyticsMcp {
         let follow_up_commands = if client_id_file.is_some() && !shared_adc {
             Vec::new()
         } else {
-            quota_project.as_deref().map(|project| {
-                vec![quota_project_command_with_cloudsdk(
-                    project,
-                    cloudsdk_config.as_deref(),
-                )]
-            })
-            .unwrap_or_default()
+            quota_project
+                .as_deref()
+                .map(|project| {
+                    vec![quota_project_command_with_cloudsdk(
+                        project,
+                        cloudsdk_config.as_deref(),
+                    )]
+                })
+                .unwrap_or_default()
         };
         Ok(contract_success(
             json!({
