@@ -140,7 +140,9 @@ fn tool_snapshot_exposes_tabular_request_controls_for_contract_v1() {
 
     let default_tool_names = tool_names(&snapshot);
     assert!(
-        !default_tool_names.iter().any(|name| name == "scratchpad_query"),
+        !default_tool_names
+            .iter()
+            .any(|name| name == "scratchpad_query"),
         "default read_only snapshot must not advertise scratchpad_query"
     );
 
@@ -158,8 +160,7 @@ fn tool_snapshot_exposes_tabular_request_controls_for_contract_v1() {
         );
     }
 
-    let scratchpad_query_keys =
-        tool_input_property_names(&scratchpad_snapshot, "scratchpad_query");
+    let scratchpad_query_keys = tool_input_property_names(&scratchpad_snapshot, "scratchpad_query");
     for required in [
         "max_rows",
         "cursor",

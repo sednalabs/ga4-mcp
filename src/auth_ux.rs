@@ -423,7 +423,8 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
             detected_auth_source = Some(client.auth_source());
             detected_quota_project = client.quota_project().map(str::to_string);
             if verify_token {
-                let result = if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+                let result = if settings.upstream_token_source == UpstreamTokenSource::RequestHeader
+                {
                     Ok(VerificationReport::RequestHeaderRequired {
                         header: settings.upstream_token_header.clone(),
                     })
@@ -996,7 +997,9 @@ fn next_steps(
                             .to_string(),
                     );
                 }
-                steps.push("Then restart the MCP client and call get_account_summaries.".to_string());
+                steps.push(
+                    "Then restart the MCP client and call get_account_summaries.".to_string(),
+                );
                 steps
             } else {
                 let mut steps = vec![
@@ -1109,7 +1112,10 @@ fn next_steps(
                     &settings.upstream_token_header,
                 )]
             } else {
-                vec!["Run `ga4-mcp auth status --verify-token` to prove Google API access.".to_string()]
+                vec![
+                    "Run `ga4-mcp auth status --verify-token` to prove Google API access."
+                        .to_string(),
+                ]
             }
         }
     }

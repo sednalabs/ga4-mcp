@@ -87,7 +87,9 @@ async fn read_only_profile_hides_scratchpad_tools_from_visible_surfaces() {
 
     let tool_names = server.tool_names();
     assert!(
-        tool_names.iter().all(|name| !name.starts_with("scratchpad_")),
+        tool_names
+            .iter()
+            .all(|name| !name.starts_with("scratchpad_")),
         "read_only profile should not export scratchpad tools: {tool_names:?}"
     );
 

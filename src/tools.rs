@@ -7041,11 +7041,15 @@ mod tests {
             Some("missing_request_access_token"),
         );
 
-        assert!(steps
-            .iter()
-            .any(|step| step.contains("x-forwarded-google-token")));
-        assert!(steps
-            .iter()
-            .all(|step| !step.contains("Run ga4-mcp auth login for local browser login.")));
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.contains("x-forwarded-google-token"))
+        );
+        assert!(
+            steps
+                .iter()
+                .all(|step| !step.contains("Run ga4-mcp auth login for local browser login."))
+        );
     }
 }
