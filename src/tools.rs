@@ -38,6 +38,8 @@ use crate::ga_client::{
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
 
+/// Upper bound for report row limits accepted by tool request validation.
+/// Applies to client-provided `limit` values (for limit/offset style report pagination).
 const MAX_REPORT_LIMIT: u64 = 250_000;
 const MAX_BATCH_REPORT_REQUESTS: usize = 5;
 const MAX_DIMENSIONS: usize = 50;
@@ -3110,6 +3112,32 @@ fn parse_positive_u64(value: &Value) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+fn build_compatibility_reason_codes(
+    missing_metadata: bool,
+    has_incompatible_dimensions: bool,
+    has_incompatible_metrics: bool,
+) -> Vec<String> {
+    let mut reason_codes = Vec::new();
+
+    if missing_metadata {
+        reason_codes.push("MISSING_COMPATIBILITY_METADATA".to_string());
+    }
+    if has_incompatible_dimensions {
+        reason_codes.push("INCOMPATIBLE_DIMENSIONS".to_string());
+    }
+    if has_incompatible_metrics {
+        reason_codes.push("INCOMPATIBLE_METRICS".to_string());
+    }
+
+    let is_fully_compatible =
+        !missing_metadata && !has_incompatible_dimensions && !has_incompatible_metrics;
+    if is_fully_compatible {
+        reason_codes.push("COMPATIBLE".to_string());
+    }
+
+    reason_codes
+}
+
 fn summarize_report_compatibility(compatibility: &Value) -> Value {
     let dimensions = compatibility
         .get("dimensionCompatibilities")
@@ -3127,22 +3155,17 @@ fn summarize_report_compatibility(compatibility: &Value) -> Value {
     let (compatible_metrics, incompatible_metrics) =
         split_compatibility_names(&metrics, "metricMetadata");
 
-    let mut reason_codes = Vec::new();
     let missing_metadata = dimensions.is_empty() || metrics.is_empty();
-    if missing_metadata {
-        reason_codes.push("MISSING_COMPATIBILITY_METADATA".to_string());
-    }
-    if !incompatible_dimensions.is_empty() {
-        reason_codes.push("INCOMPATIBLE_DIMENSIONS".to_string());
-    }
-    if !incompatible_metrics.is_empty() {
-        reason_codes.push("INCOMPATIBLE_METRICS".to_string());
-    }
+    let has_incompatible_dimensions = !incompatible_dimensions.is_empty();
+    let has_incompatible_metrics = !incompatible_metrics.is_empty();
+
+    let reason_codes = build_compatibility_reason_codes(
+        missing_metadata,
+        has_incompatible_dimensions,
+        has_incompatible_metrics,
+    );
     let is_fully_compatible =
-        incompatible_dimensions.is_empty() && incompatible_metrics.is_empty() && !missing_metadata;
-    if is_fully_compatible {
-        reason_codes.push("COMPATIBLE".to_string());
-    }
+        !missing_metadata && !has_incompatible_dimensions && !has_incompatible_metrics;
 
     json!({
         "is_fully_compatible": is_fully_compatible,
@@ -3855,17 +3878,11 @@ fn value_as_trimmed_string(value: &Value) -> Option<String> {
     if raw.is_empty() { None } else { Some(raw) }
 }
 
-fn normalize_ga_date_literal(raw: &str) -> Option<String> {
-    let value = raw.trim();
-    if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let year = value[0..4].parse::<u32>().ok()?;
-    let month = value[4..6].parse::<u32>().ok()?;
-    let day = value[6..8].parse::<u32>().ok()?;
+fn is_valid_ymd(year: u32, month: u32, day: u32) -> bool {
     if month == 0 || month > 12 {
-        return None;
+        return false;
     }
+
     let max_day = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -3876,9 +3893,21 @@ fn normalize_ga_date_literal(raw: &str) -> Option<String> {
                 28
             }
         }
-        _ => return None,
+        _ => return false,
     };
-    if day == 0 || day > max_day {
+
+    day != 0 && day <= max_day
+}
+
+fn normalize_ga_date_literal(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let year = value[0..4].parse::<u32>().ok()?;
+    let month = value[4..6].parse::<u32>().ok()?;
+    let day = value[6..8].parse::<u32>().ok()?;
+    if !is_valid_ymd(year, month, day) {
         return None;
     }
     Some(format!("{year:04}-{month:02}-{day:02}"))
@@ -4581,18 +4610,31 @@ fn execute_scratchpad_projection(
 }
 
 fn query_row_count(conn: &duckdb::Connection, sql: &str) -> Result<usize, AnalyticsError> {
+    let sql_preview = {
+        let text = safe_text(sql);
+        const MAX_SQL_PREVIEW_CHARS: usize = 512;
+        if text.chars().count() > MAX_SQL_PREVIEW_CHARS {
+            let truncated = text.chars().take(MAX_SQL_PREVIEW_CHARS).collect::<String>();
+            format!("{truncated}…")
+        } else {
+            text
+        }
+    };
+
     let mut stmt = conn.prepare(sql).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to prepare scratchpad row-count query: {err}"
+            "failed to prepare scratchpad row-count query (sql: {sql_preview}): {err}"
         ))
     })?;
     let mut rows = stmt.query([]).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to execute scratchpad row-count query: {err}"
+            "failed to execute scratchpad row-count query (sql: {sql_preview}): {err}"
         ))
     })?;
     let Some(row) = rows.next().map_err(|err| {
-        AnalyticsError::ScratchpadEngine(format!("failed to fetch scratchpad row-count row: {err}"))
+        AnalyticsError::ScratchpadEngine(format!(
+            "failed to fetch scratchpad row-count row (sql: {sql_preview}): {err}"
+        ))
     })?
     else {
         return Ok(0);
@@ -4600,7 +4642,7 @@ fn query_row_count(conn: &duckdb::Connection, sql: &str) -> Result<usize, Analyt
 
     let value = row.get_ref(0).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to decode scratchpad row-count value: {err}"
+            "failed to decode scratchpad row-count value (sql: {sql_preview}): {err}"
         ))
     })?;
     Ok(duck_value_to_usize(DuckValue::from(value)))
@@ -5687,7 +5729,7 @@ fn collect_runtime_memory_pressure(
 fn probe_duckdb_memory_usage(conn: &duckdb::Connection) -> Result<(u64, u64), AnalyticsError> {
     let mut stmt = conn
         .prepare(
-            "SELECT CAST(memory_usage AS VARCHAR), CAST(memory_limit AS VARCHAR)
+            "SELECT memory_usage, memory_limit
              FROM pragma_database_size()",
         )
         .map_err(|err| {
@@ -5708,20 +5750,20 @@ fn probe_duckdb_memory_usage(conn: &duckdb::Connection) -> Result<(u64, u64), An
         ));
     };
 
-    let used_raw = row.get::<_, String>(0).map_err(|err| {
+    let used_raw = row.get::<_, i64>(0).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!("failed to decode duckdb memory usage: {err}"))
     })?;
-    let limit_raw = row.get::<_, String>(1).map_err(|err| {
+    let limit_raw = row.get::<_, i64>(1).map_err(|err| {
         AnalyticsError::ScratchpadEngine(format!("failed to decode duckdb memory limit: {err}"))
     })?;
-    let used_bytes = parse_duckdb_size_bytes(&used_raw).ok_or_else(|| {
+    let used_bytes = u64::try_from(used_raw).map_err(|_| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to parse duckdb memory usage value '{used_raw}'"
+            "duckdb memory usage is out of range for u64: {used_raw}"
         ))
     })?;
-    let limit_bytes = parse_duckdb_size_bytes(&limit_raw).ok_or_else(|| {
+    let limit_bytes = u64::try_from(limit_raw).map_err(|_| {
         AnalyticsError::ScratchpadEngine(format!(
-            "failed to parse duckdb memory limit value '{limit_raw}'"
+            "duckdb memory limit is out of range for u64: {limit_raw}"
         ))
     })?;
 
