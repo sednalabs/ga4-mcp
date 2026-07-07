@@ -730,16 +730,7 @@ impl AnalyticsMcp {
                 "Run ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json for the easiest unblocked SSH/browser login."
             )
         };
-        let status_command = if upstream_token_source == UpstreamTokenSource::RequestHeader {
-            "ga4-mcp auth status".to_string()
-        } else {
-            "ga4-mcp auth status --verify-token".to_string()
-        };
-        let doctor_command = if upstream_token_source == UpstreamTokenSource::RequestHeader {
-            "ga4-mcp auth doctor".to_string()
-        } else {
-            "ga4-mcp auth doctor --verify-token".to_string()
-        };
+        let recommended_cli = get_started_recommended_cli(upstream_token_source, quota_project);
         let first_status_step = if upstream_token_source == UpstreamTokenSource::RequestHeader {
             format!(
                 "Call ga4_auth_status with verify_token=true while sending {upstream_token_header} to prove Google Analytics access without returning a token. For local fallback, switch GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE to request_header_or_config and then run ga4-mcp auth status --verify-token."
@@ -760,14 +751,7 @@ impl AnalyticsMcp {
                 "scope": self.client.analytics_scope(),
                 "upstream_token_source": upstream_token_source.as_str(),
                 "upstream_token_header": upstream_token_header,
-                "recommended_cli": {
-                    "login": format!("ga4-mcp auth login --quota-project {quota_project}"),
-                    "login_headless": format!("ga4-mcp auth login --headless --quota-project {quota_project}"),
-                    "login_with_client_id_file": format!("ga4-mcp auth login --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
-                    "login_headless_with_client_id_file": format!("ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
-                    "status": status_command,
-                    "doctor": doctor_command
-                },
+                "recommended_cli": recommended_cli,
                 "first_steps": [
                     first_login_step,
                     first_status_step,
@@ -5916,6 +5900,31 @@ fn get_started_auth_source_candidate(
     }
 }
 
+fn get_started_recommended_cli(
+    upstream_token_source: UpstreamTokenSource,
+    quota_project: &str,
+) -> Value {
+    if upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return json!({
+            "login": null,
+            "login_headless": null,
+            "login_with_client_id_file": null,
+            "login_headless_with_client_id_file": null,
+            "status": "ga4-mcp auth status",
+            "doctor": "ga4-mcp auth doctor"
+        });
+    }
+
+    json!({
+        "login": format!("ga4-mcp auth login --quota-project {quota_project}"),
+        "login_headless": format!("ga4-mcp auth login --headless --quota-project {quota_project}"),
+        "login_with_client_id_file": format!("ga4-mcp auth login --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
+        "login_headless_with_client_id_file": format!("ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
+        "status": "ga4-mcp auth status --verify-token",
+        "doctor": "ga4-mcp auth doctor --verify-token"
+    })
+}
+
 fn login_scope_for_mcp_command(current_scope: &str) -> &str {
     if scope_allows_analytics_read(current_scope) {
         current_scope
@@ -7198,6 +7207,22 @@ mod tests {
             ),
             json!("google_authorized_user_adc_file")
         );
+    }
+
+    #[test]
+    fn get_started_recommended_cli_omits_server_login_in_request_header_mode() {
+        let recommended_cli =
+            get_started_recommended_cli(UpstreamTokenSource::RequestHeader, "quota-project");
+
+        assert_eq!(recommended_cli["login"], Value::Null);
+        assert_eq!(recommended_cli["login_headless"], Value::Null);
+        assert_eq!(recommended_cli["login_with_client_id_file"], Value::Null);
+        assert_eq!(
+            recommended_cli["login_headless_with_client_id_file"],
+            Value::Null
+        );
+        assert_eq!(recommended_cli["status"], json!("ga4-mcp auth status"));
+        assert_eq!(recommended_cli["doctor"], json!("ga4-mcp auth doctor"));
     }
 
     #[test]
