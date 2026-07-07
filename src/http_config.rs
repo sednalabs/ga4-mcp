@@ -648,10 +648,11 @@ mod tests {
 
     fn base_http_settings() -> HttpSettings {
         HttpSettings {
-            bind_addr: "127.0.0.1:9420".parse().expect("bind addr"),
+            bind_addr: DEFAULT_BIND_ADDR.parse().expect("bind addr"),
             allow_non_loopback: false,
-            allowed_hosts: ["localhost".to_string()].into_iter().collect(),
-            allowed_cidrs: vec!["127.0.0.1/32".parse().expect("cidr")],
+            allowed_hosts: parse_allowed_hosts(DEFAULT_ALLOWED_HOSTS),
+            allowed_cidrs: parse_allowed_cidrs(DEFAULT_ALLOWED_CIDRS, "GA4_MCP_ALLOWED_CIDRS")
+                .expect("default CIDRs"),
             tls_cert_path: None,
             tls_key_path: None,
             auth: HttpAuthSettings::disabled(),

@@ -907,7 +907,7 @@ fn post_login_runtime_steps_with_env(
     }
     if original_settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
         let fallback = local_fallback_step();
-        if !steps.iter().any(|step| step == &fallback) {
+        if !steps.contains(&fallback) {
             steps.push(fallback);
         }
     }

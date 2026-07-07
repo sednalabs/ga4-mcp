@@ -16,7 +16,9 @@ use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use mcp_toolkit_auth::surface::{AuthSurfaceConfig, AuthSurfaceLayer, IssuerEntry};
 use mcp_toolkit_auth::{Authenticator, discover_oidc_metadata};
-use mcp_toolkit_http::host::{HostValidationError, parse_host_header, validate_host_header};
+use mcp_toolkit_http::host::{
+    HostValidationError, parse_host_header, validate_host_header, validate_origin_header,
+};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -28,6 +30,7 @@ use crate::server::AnalyticsMcp;
 #[derive(Clone)]
 struct GuardState {
     settings: HttpSettings,
+    allowed_origin_hosts: Vec<String>,
     allow_mcp_auth_headers: bool,
 }
 
@@ -46,6 +49,7 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
 
     let guard_state = GuardState {
         settings: settings.clone(),
+        allowed_origin_hosts: settings.allowed_hosts.iter().cloned().collect(),
         allow_mcp_auth_headers: server.accepts_upstream_request_tokens(),
     };
     let mut router = Router::new()
@@ -301,6 +305,11 @@ async fn host_guard(
         let message = err.message();
         return (status, message).into_response();
     }
+    if let Err(err) = validate_request_origin(&req, &state.allowed_origin_hosts) {
+        let status = err.status_code();
+        let message = err.message();
+        return (status, message).into_response();
+    }
     next.run(req).await
 }
 
@@ -353,6 +362,13 @@ fn validate_request_host(
         }
         Err(err) => Err(err),
     }
+}
+
+fn validate_request_origin(
+    req: &axum::extract::Request,
+    allowed_hosts: &[String],
+) -> Result<(), HostValidationError> {
+    validate_origin_header(req.headers(), allowed_hosts)
 }
 
 fn public_base_url(settings: &HttpSettings) -> String {
@@ -560,13 +576,15 @@ fn request_has_inbound_auth(headers: &axum::http::HeaderMap) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
     use axum::http::HeaderMap;
+    use axum::http::StatusCode;
     use axum::http::Uri;
     use axum::http::header::{AUTHORIZATION, HOST, PROXY_AUTHORIZATION};
 
     use super::{
         header_text, public_base_url_from_resource_url, request_has_inbound_auth,
-        request_host_for_log, request_targets_mcp,
+        request_host_for_log, request_targets_mcp, validate_request_origin,
     };
 
     #[test]
@@ -636,5 +654,44 @@ mod tests {
         );
         assert!(header_text(&headers, "x-empty").is_none());
         assert!(header_text(&headers, "missing").is_none());
+    }
+
+    #[test]
+    fn validate_request_origin_accepts_missing_origin() {
+        let allowed_hosts = vec!["localhost".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("http://localhost:9420/mcp")
+            .header(HOST, "localhost")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_origin(&req, &allowed_hosts).expect("missing origin should pass");
+    }
+
+    #[test]
+    fn validate_request_origin_accepts_allowed_origin() {
+        let allowed_hosts = vec!["localhost".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("http://localhost:9420/mcp")
+            .header(HOST, "localhost")
+            .header("origin", "http://localhost:3000")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_origin(&req, &allowed_hosts).expect("allowed origin should pass");
+    }
+
+    #[test]
+    fn validate_request_origin_rejects_unexpected_origin() {
+        let allowed_hosts = vec!["localhost".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("http://localhost:9420/mcp")
+            .header(HOST, "localhost")
+            .header("origin", "https://evil.example")
+            .body(Body::empty())
+            .expect("request");
+
+        let err = validate_request_origin(&req, &allowed_hosts).expect_err("origin rejection");
+        assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
     }
 }
