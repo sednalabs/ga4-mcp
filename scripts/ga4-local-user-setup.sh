@@ -22,7 +22,8 @@ Configure a local user-level GA4 MCP service for low-friction Google auth.
 
 The script:
   1. Runs GA4 browser OAuth or gcloud application-default login for the target Google user.
-  2. Configures the service to use request tokens when present, otherwise ADC.
+  2. Configures loopback services to use request tokens when present, otherwise ADC.
+     Non-loopback services are forced into per-request token mode.
   3. Restarts the user systemd service when it exists.
 
 Options:
@@ -56,8 +57,9 @@ Options:
   -h, --help               Show this help.
 
 This is intended for loopback/local user services. If the env file binds the
-service to a non-loopback address without inbound auth enabled, the script
-refuses to configure server-side credential fallback.
+service to a non-loopback address, the script configures `request_header`
+instead of local ADC fallback so the running service cannot drift onto a
+server-held Google identity.
 EOF
 }
 
@@ -324,17 +326,17 @@ auth_enabled="$(env_value GA4_MCP_AUTH_ENABLED "$ENV_FILE")"
 bind_addr="${bind_addr:-127.0.0.1:9420}"
 auth_enabled="${auth_enabled:-0}"
 
-if ! is_loopback_bind "$bind_addr" && [[ "$auth_enabled" != "1" ]]; then
-  die "refusing to enable server-side credential fallback for non-loopback bind '$bind_addr' without GA4_MCP_AUTH_ENABLED=1"
-fi
-
 backup="${ENV_FILE}.bak.$(date +%Y%m%d%H%M%S)"
 cp "$ENV_FILE" "$backup"
 chmod 600 "$backup"
 
 set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SCOPE" "https://www.googleapis.com/auth/analytics.readonly"
-set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE" "request_header_or_config"
-set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER" "authorization"
+if is_loopback_bind "$bind_addr"; then
+  set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE" "request_header_or_config"
+else
+  set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE" "request_header"
+fi
+set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER" "x-google-access-token"
 if [[ "$SHARED_ADC" -eq 1 ]]; then
   set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SHARED_ADC" "true"
 else

@@ -54,16 +54,23 @@ impl AnalyticsMcp {
     }
 
     pub fn tool_names(&self) -> Vec<String> {
-        self.tool_router
-            .list_all()
+        self.visible_tools()
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect()
     }
 
     pub fn tool_schema_snapshot(&self) -> Value {
-        tool_schema_snapshot_value(&self.tool_router.list_all())
+        tool_schema_snapshot_value(&self.visible_tools())
             .expect("registered tool definitions should serialize")
+    }
+
+    fn visible_tools(&self) -> Vec<rmcp::model::Tool> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .filter(|tool| self.is_tool_allowed(tool.name.as_ref()))
+            .collect()
     }
 
     fn is_tool_allowed(&self, tool_name: &str) -> bool {
@@ -97,7 +104,7 @@ impl ServerHandler for AnalyticsMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
-        let tools = self.tool_router.list_all();
+        let tools = self.visible_tools();
         std::future::ready(Ok(ListToolsResult {
             meta: None,
             tools,

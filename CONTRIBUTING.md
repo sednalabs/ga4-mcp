@@ -26,6 +26,7 @@ cargo check
 cargo test
 ./scripts/sql_policy_toolkit_conformance.sh
 cargo run -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
+cargo run -- --capability-profile scratchpad --print-tool-schema > spec/tool_schema_snapshot.scratchpad.v1.json
 ```
 
 Docs-only changes should at least pass:
