@@ -16,9 +16,9 @@ Most confusion happens when these two are mixed together.
 Use exactly one of these defaults unless you have a specific reason not to:
 
 - **Local user service**: `request_header_or_config`.
-  Log in once with Google ADC, set a quota project, and local clients do not
-  need to pass bearer tokens. This is the benchmark path for a loopback
-  developer/operator service.
+  Log in once, write a GA4-specific credential file, set a quota project, and
+  local clients do not need to pass bearer tokens. This is the benchmark path
+  for a loopback developer/operator service.
 - **Hosted or public service**: `request_header`.
   The server must not silently act as one shared Google user. Each client sends
   its own Google access token.
@@ -36,11 +36,11 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
 
-`ga4-mcp auth login` uses a GA4-specific gcloud config directory by default so
-other Google MCPs keep their own ADC files, tokens, and scopes. Pass
-`--shared-adc` only when deliberately using the conventional shared ADC file,
-and set `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the server with
-`--shared-adc` when the runtime should use that shared file.
+`ga4-mcp auth login` uses a GA4-specific credential file by default so other
+Google MCPs keep their own ADC files, tokens, and scopes. Pass `--shared-adc`
+only when deliberately using the conventional shared ADC file, and set
+`GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the server with `--shared-adc`
+when the runtime should use that shared file.
 
 If you are on SSH or a headless box, use:
 
@@ -51,9 +51,20 @@ ga4-mcp auth login --headless --quota-project YOUR_PROJECT
 The CLI prints the underlying `gcloud` command, then `gcloud` prints a URL and
 waits for browser consent from a trusted machine.
 
-If Google blocks the default client for Analytics scopes, create a Google OAuth
-desktop client, save its JSON outside the repository, and rerun with
-`ga4-mcp auth login --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json`.
+If Google blocks the bundled gcloud client for Analytics scopes, create a
+Google OAuth Desktop client, save its JSON outside the repository, and rerun
+with direct browser OAuth:
+
+```bash
+ga4-mcp auth login --headless --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
+```
+
+With `--client-id-file` and no `--shared-adc`, `ga4-mcp` does not use gcloud's
+bundled OAuth app. It opens or prints the Google authorization URL, accepts the
+loopback callback itself, and stores the authorized-user credential in the
+GA4-specific ADC file. On a headless host, copy the final
+`http://127.0.0.1:...` browser address-bar URL and paste it back into the
+terminal if the browser cannot reach the remote loopback listener.
 
 If Google says local ADC needs a quota project, enable the Analytics APIs on a
 Google Cloud project and rerun login with the quota project:
@@ -139,7 +150,7 @@ Client behavior:
 - Client sends `Authorization: Bearer <google_access_token>` on MCP requests.
 - Server uses that same token for GA4 API calls.
 
-## Recommended Local Setup: Login Once With ADC
+## Recommended Local Setup: Login Once
 
 For a user-level service bound to loopback, the least painful setup is to let
 the service use the local user's GA4-specific Google ADC credential when the
@@ -156,8 +167,11 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 Headless/SSH variant:
 
 ```bash
-ga4-mcp auth login --headless --quota-project YOUR_PROJECT
+ga4-mcp auth login --headless --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
 ```
+
+The `--client-id-file` headless variant is the recommended unblocker when
+Google shows "This app is blocked" for the bundled gcloud OAuth app.
 
 Configure the MCP process environment:
 
@@ -195,15 +209,15 @@ that has GA4 access.
 If a tool call fails with Google `403`, the Google login worked but that Google
 identity does not have access to the requested GA4 account or property.
 
-`--no-launch-browser` is the normal SSH-friendly path when the default `gcloud`
-OAuth client works. With `--client-id-file`, current `gcloud` releases may use
-remote-bootstrap mode; that mode expects another trusted machine with both a
-browser and `gcloud`.
+`--no-launch-browser` is still available through the gcloud fallback when the
+default `gcloud` OAuth client works. The lower-friction path for blocked GA4
+Analytics scopes is the direct `ga4-mcp auth login --client-id-file ...` flow,
+which only needs a browser on the trusted machine, not gcloud on that machine.
 
 Google's limited-input device flow is not the right fallback for this GA4 MCP:
 the documented device flow scope set is limited and does not include
 `https://www.googleapis.com/auth/analytics.readonly`. Use a desktop OAuth
-client JSON plus ADC instead.
+client JSON plus the GA4-specific credential file instead.
 
 ## Copilot Studio OAuth Mapping
 

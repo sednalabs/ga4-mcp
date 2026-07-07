@@ -261,9 +261,9 @@ pub struct AuthCli {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum AuthSubcommand {
-    /// Run the browser-based gcloud Application Default Credentials login flow.
+    /// Run browser login and write the GA4-specific credential file.
     Login(AuthLoginArgs),
-    /// Print the exact gcloud login command without running it.
+    /// Print the exact login command without running it.
     Command(AuthCommandArgs),
     /// Show the configured credential source and optional Google API verification result.
     Status(AuthStatusCliArgs),
@@ -273,13 +273,24 @@ pub enum AuthSubcommand {
 
 #[derive(Debug, Clone, Args)]
 pub struct AuthLoginArgs {
-    /// Print a browser URL instead of launching a browser where supported by gcloud.
+    /// Print a browser URL instead of launching a browser.
     #[arg(long)]
     pub headless: bool,
 
-    /// Optional Google OAuth client id file for gcloud ADC login.
+    /// Optional Google OAuth client id file for direct browser OAuth.
+    ///
+    /// By default this uses the toolkit browser OAuth flow and writes the
+    /// GA4-specific ADC file. With --shared-adc it is passed through to gcloud.
     #[arg(long)]
     pub client_id_file: Option<PathBuf>,
+
+    /// Optional Google account hint for browser login.
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// Optional fixed loopback callback port for direct browser OAuth.
+    #[arg(long)]
+    pub callback_port: Option<u16>,
 
     /// Optional quota project to set after successful login.
     #[arg(long)]
@@ -300,13 +311,24 @@ pub struct AuthLoginArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct AuthCommandArgs {
-    /// Include the headless browser flag in the printed gcloud command.
+    /// Include the headless browser flag in the printed login command.
     #[arg(long)]
     pub headless: bool,
 
-    /// Optional Google OAuth client id file for gcloud ADC login.
+    /// Optional Google OAuth client id file for direct browser OAuth.
+    ///
+    /// By default this prints a ga4-mcp browser OAuth command. With --shared-adc
+    /// it prints a gcloud ADC command.
     #[arg(long)]
     pub client_id_file: Option<PathBuf>,
+
+    /// Optional Google account hint for browser login.
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// Optional fixed loopback callback port for direct browser OAuth.
+    #[arg(long)]
+    pub callback_port: Option<u16>,
 
     /// Optional quota project to print as a follow-up command.
     #[arg(long)]

@@ -24,8 +24,10 @@ Use the narrow GA4 read scope whenever possible:
 https://www.googleapis.com/auth/analytics.readonly
 ```
 
-The optional `cloud-platform` scope is commonly needed by `gcloud` ADC and quota
-project flows, but the MCP tool surface itself is read/report oriented.
+The optional `cloud-platform` scope is commonly needed by `gcloud` ADC and
+some quota-project flows, but the direct `ga4-mcp auth login --client-id-file
+...` browser flow requests only the configured Analytics scope. The MCP tool
+surface itself is read/report oriented.
 
 ## Upstream Token Sources
 
@@ -38,9 +40,12 @@ project flows, but the MCP tool surface itself is read/report oriented.
 
 Do not expose `request_header_or_config` as an anonymous public surface. A
 missing request token could silently fall back to a server-held Google identity.
-Local browser login stores ADC under `<user-config>/ga4-mcp/gcloud` by default;
-use `--shared-adc` and `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` only when a
-deployment intentionally uses conventional shared gcloud ADC.
+Local browser login stores a GA4-specific authorized-user ADC file under
+`<user-config>/ga4-mcp/gcloud` by default. With `--client-id-file` and no
+`--shared-adc`, `ga4-mcp` uses its own browser OAuth helper and does not use
+gcloud's bundled OAuth app. Use `--shared-adc` and
+`GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` only when a deployment intentionally
+uses conventional shared gcloud ADC.
 
 ## HTTP Exposure
 

@@ -15,12 +15,12 @@ clap = { version = "4.5.60", features = ["derive", "env"] }
 duckdb = { version = "1.4.4", default-features = false, features = ["bundled"] }
 gcp_auth = "0.12.6"
 ipnet = "2.11.0"
-mcp-toolkit-http = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "679d7a4d93ba33f582ea8ac3f23e15e0c2d133f9", package = "mcp-toolkit-http" }
-mcp-toolkit-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "679d7a4d93ba33f582ea8ac3f23e15e0c2d133f9", package = "mcp-toolkit-core" }
-mcp-toolkit-auth = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "679d7a4d93ba33f582ea8ac3f23e15e0c2d133f9", package = "mcp-toolkit-auth" }
-mcp-toolkit-observability = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "679d7a4d93ba33f582ea8ac3f23e15e0c2d133f9", package = "mcp-toolkit-observability", features = ["tracing-bridge"] }
-mcp-toolkit-policy-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "679d7a4d93ba33f582ea8ac3f23e15e0c2d133f9", package = "mcp-toolkit-policy-core" }
-mcp-toolkit-policy-runtime = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "679d7a4d93ba33f582ea8ac3f23e15e0c2d133f9", package = "mcp-toolkit-policy-runtime" }
+mcp-toolkit-http = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "2beafbca15beded091b22cdab2c2b3f876e358c8", package = "mcp-toolkit-http" }
+mcp-toolkit-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "2beafbca15beded091b22cdab2c2b3f876e358c8", package = "mcp-toolkit-core" }
+mcp-toolkit-auth = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "2beafbca15beded091b22cdab2c2b3f876e358c8", package = "mcp-toolkit-auth" }
+mcp-toolkit-observability = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "2beafbca15beded091b22cdab2c2b3f876e358c8", package = "mcp-toolkit-observability", features = ["tracing-bridge"] }
+mcp-toolkit-policy-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "2beafbca15beded091b22cdab2c2b3f876e358c8", package = "mcp-toolkit-policy-core" }
+mcp-toolkit-policy-runtime = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "2beafbca15beded091b22cdab2c2b3f876e358c8", package = "mcp-toolkit-policy-runtime" }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "http2", "query", "rustls"] }
 rmcp = { version = "=1.8.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
 rustls = { version = "0.23.36", features = ["ring"] }
@@ -33,4 +33,4 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
-mcp-toolkit-testing = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "679d7a4d93ba33f582ea8ac3f23e15e0c2d133f9", package = "mcp-toolkit-testing" }
+mcp-toolkit-testing = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "2beafbca15beded091b22cdab2c2b3f876e358c8", package = "mcp-toolkit-testing" }
