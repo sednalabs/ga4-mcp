@@ -104,6 +104,7 @@ struct CachedAccessToken {
 
 #[derive(Debug, Clone)]
 enum UpstreamAuthMode {
+    RequestHeaderOnly,
     Adc,
     AuthorizedUserAdcFile(PathBuf),
     OAuthRefresh(Arc<OAuthRefreshConfig>),
@@ -111,6 +112,7 @@ enum UpstreamAuthMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSource {
+    RequestHeader,
     GoogleDefaultProviderChain,
     GoogleAuthorizedUserAdcFile,
     OAuthRefreshToken,
@@ -119,6 +121,7 @@ pub enum AuthSource {
 impl AuthSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::RequestHeader => "request_header",
             Self::GoogleDefaultProviderChain => "google_default_provider_chain",
             Self::GoogleAuthorizedUserAdcFile => "google_authorized_user_adc_file",
             Self::OAuthRefreshToken => "oauth_refresh_token",
@@ -276,6 +279,7 @@ impl AnalyticsApiClient {
 
     pub fn auth_source(&self) -> AuthSource {
         match &self.auth_mode {
+            UpstreamAuthMode::RequestHeaderOnly => AuthSource::RequestHeader,
             UpstreamAuthMode::Adc => AuthSource::GoogleDefaultProviderChain,
             UpstreamAuthMode::AuthorizedUserAdcFile(_) => AuthSource::GoogleAuthorizedUserAdcFile,
             UpstreamAuthMode::OAuthRefresh(_) => AuthSource::OAuthRefreshToken,
@@ -810,6 +814,10 @@ impl AnalyticsApiClient {
             .token_provider
             .get_or_try_init(|| async {
                 match &self.auth_mode {
+                    UpstreamAuthMode::RequestHeaderOnly => Err(AnalyticsError::AuthBootstrap(
+                        "request_header mode does not use a configured Google credential source"
+                            .to_string(),
+                    )),
                     UpstreamAuthMode::Adc => gcp_auth::provider()
                         .await
                         .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string())),
@@ -890,6 +898,10 @@ impl AnalyticsApiClient {
 
     async fn configured_access_token(&self) -> Result<String, AnalyticsError> {
         match &self.auth_mode {
+            UpstreamAuthMode::RequestHeaderOnly => Err(AnalyticsError::AuthBootstrap(
+                "request_header mode requires the caller to supply a Google access token on each request"
+                    .to_string(),
+            )),
             UpstreamAuthMode::Adc => {
                 let provider = self.token_provider().await?;
                 let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
@@ -1017,6 +1029,10 @@ fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsEr
                 "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON and GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN must both be set or both be unset; refusing to fall back to ADC with partial OAuth configuration".to_string(),
             ));
         }
+    }
+
+    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return Ok(UpstreamAuthMode::RequestHeaderOnly);
     }
 
     if env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some() || settings.shared_adc {
@@ -1416,6 +1432,7 @@ fn adc_quota_project_id_for_auth_mode(
     shared_adc: bool,
 ) -> Option<String> {
     let path = match auth_mode {
+        UpstreamAuthMode::RequestHeaderOnly => None,
         UpstreamAuthMode::AuthorizedUserAdcFile(path) => Some(path.clone()),
         UpstreamAuthMode::Adc if shared_adc => conventional_adc_credentials_path(),
         UpstreamAuthMode::Adc | UpstreamAuthMode::OAuthRefresh(_) => None,
@@ -1586,6 +1603,17 @@ mod tests {
         )
         .expect_err("non-google token uri should fail");
         assert!(err.to_string().contains("must be one of"));
+    }
+
+    #[test]
+    fn select_auth_mode_request_header_does_not_require_local_adc_bootstrap() {
+        let mut settings = Settings::default();
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+
+        let auth_mode =
+            select_auth_mode(&settings).expect("request_header mode should bootstrap");
+
+        assert!(matches!(auth_mode, UpstreamAuthMode::RequestHeaderOnly));
     }
 
     fn test_fixture_path(name: &str) -> PathBuf {
