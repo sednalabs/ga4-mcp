@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::config::{
-    Settings, UpstreamTokenSource, conventional_adc_credentials_path,
+    DEFAULT_ANALYTICS_SCOPE, Settings, UpstreamTokenSource, conventional_adc_credentials_path,
     conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
 };
 use crate::error::AnalyticsError;
