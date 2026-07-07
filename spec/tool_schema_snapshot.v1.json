@@ -231,13 +231,32 @@
       "name": "check_report_compatibility"
     },
     {
-      "description": "Return a copyable gcloud Application Default Credentials login command for GA4.",
+      "description": "Return copyable Google Analytics auth login commands, including direct browser OAuth when a client id file is supplied.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "account": {
+            "default": null,
+            "description": "Optional Google account hint for browser login.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "callback_port": {
+            "default": null,
+            "description": "Optional fixed loopback callback port for direct browser OAuth.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "client_id_file": {
             "default": null,
-            "description": "Optional Google OAuth client id file for gcloud ADC login.",
+            "description": "Optional Google OAuth client id file for direct browser OAuth.",
             "type": [
               "string",
               "null"
@@ -247,6 +266,14 @@
             "default": false,
             "description": "Include the headless browser flag for SSH or remote environments.",
             "type": "boolean"
+          },
+          "quota_project": {
+            "default": null,
+            "description": "Optional quota project to include as a follow-up command.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "shared_adc": {
             "default": null,

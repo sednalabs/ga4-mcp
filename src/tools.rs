@@ -82,9 +82,15 @@ pub struct AuthLoginCommandArgs {
     /// Include the headless browser flag for SSH or remote environments.
     #[serde(default)]
     pub headless: bool,
-    /// Optional Google OAuth client id file for gcloud ADC login.
+    /// Optional Google OAuth client id file for direct browser OAuth.
     #[serde(default)]
     pub client_id_file: Option<String>,
+    /// Optional Google account hint for browser login.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Optional fixed loopback callback port for direct browser OAuth.
+    #[serde(default)]
+    pub callback_port: Option<u16>,
     /// Optional quota project to include as a follow-up command.
     #[serde(default)]
     pub quota_project: Option<String>,
@@ -722,18 +728,19 @@ impl AnalyticsMcp {
                     "login": format!("ga4-mcp auth login --quota-project {quota_project}"),
                     "login_headless": format!("ga4-mcp auth login --headless --quota-project {quota_project}"),
                     "login_with_client_id_file": format!("ga4-mcp auth login --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
+                    "login_headless_with_client_id_file": format!("ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
                     "status": "ga4-mcp auth status --verify-token",
                     "doctor": "ga4-mcp auth doctor --verify-token"
                 },
                 "first_steps": [
-                    format!("Run ga4-mcp auth login --headless --quota-project {quota_project} for the easiest local browser login."),
+                    format!("Run ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json for the easiest unblocked SSH/browser login."),
                     "Call ga4-mcp auth status --verify-token or ga4_auth_status with verify_token=true to prove Google Analytics access without returning a token.",
-                    "If Google blocks the default OAuth app for Analytics scopes, rerun with --client-id-file /path/to/client_id.json from a Desktop OAuth client.",
+                    "If Google blocks the bundled gcloud OAuth app for Analytics scopes, use --client-id-file /path/to/client_id.json from a Desktop OAuth client; ga4-mcp will use direct browser OAuth and its own credential file.",
                     "For the lowest-friction local or loopback HTTP service, use GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization.",
                     "For a hosted per-user service, keep GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header so each client supplies its own Google token.",
                     "By default ga4-mcp auth login writes a GA4-specific ADC file so sibling Google MCPs keep their own tokens and scopes.",
                     "If verification says local ADC requires a quota project, enable analyticsadmin.googleapis.com and analyticsdata.googleapis.com on that project, then rerun ga4-mcp auth login --quota-project YOUR_PROJECT.",
-                    format!("If Google rejects the Analytics scope during login, create a Desktop OAuth client and rerun ga4-mcp auth login --quota-project {quota_project} --client-id-file /path/to/client_id.json."),
+                    format!("If Google blocks the bundled gcloud OAuth app during login, create a Desktop OAuth client and rerun ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json."),
                     "Call get_account_summaries to discover accessible GA4 accounts and properties."
                 ],
                 "credential_options": [
@@ -743,8 +750,10 @@ impl AnalyticsMcp {
                         "command": format!("ga4-mcp auth login --quota-project {quota_project}"),
                         "headless_command": format!("ga4-mcp auth login --headless --quota-project {quota_project}"),
                         "client_id_file_command": format!("ga4-mcp auth login --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
+                        "client_id_file_headless_command": format!("ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
                         "quota_project_command": "ga4-mcp auth command --quota-project YOUR_PROJECT",
                         "quota_project_note": "Only needed when Google reports local ADC requires a quota project; the project must have the Analytics Admin and Data APIs enabled.",
+                        "client_id_file_note": "Use a Desktop OAuth client JSON when Google blocks the bundled gcloud OAuth app. Without --shared-adc, ga4-mcp handles browser OAuth directly and writes its GA4-specific credential file.",
                         "env": [],
                         "shared_adc_escape_hatch": "add --shared-adc only when intentionally creating the conventional shared gcloud ADC file; set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true when the runtime should use it"
                     },
@@ -848,10 +857,10 @@ impl AnalyticsMcp {
         ))
     }
 
-    /// Return a gcloud ADC login command.
+    /// Return copyable GA4 auth login commands.
     #[tool(
         name = "ga4_auth_login_command",
-        description = "Return a copyable gcloud Application Default Credentials login command for GA4."
+        description = "Return copyable Google Analytics auth login commands, including direct browser OAuth when a client id file is supplied."
     )]
     async fn ga4_auth_login_command(
         &self,
@@ -884,28 +893,16 @@ impl AnalyticsMcp {
             server_adc_credentials_path()
         };
         let client_id_file = args.client_id_file.as_deref().map(Path::new);
-        let command = login_command_for_scope_with_cloudsdk(
+        let gcloud_command = login_command_for_scope_with_cloudsdk(
             scope,
             args.headless,
-            client_id_file,
+            if shared_adc { client_id_file } else { None },
             cloudsdk_config.as_deref(),
         );
         let headless_command = login_command_for_scope_with_cloudsdk(
             scope,
             true,
-            client_id_file,
-            cloudsdk_config.as_deref(),
-        );
-        let client_id_file_command = login_command_for_scope_with_cloudsdk(
-            scope,
-            args.headless,
-            Some(Path::new("/path/to/client_id.json")),
-            cloudsdk_config.as_deref(),
-        );
-        let client_id_file_headless_command = login_command_for_scope_with_cloudsdk(
-            scope,
-            true,
-            Some(Path::new("/path/to/client_id.json")),
+            if shared_adc { client_id_file } else { None },
             cloudsdk_config.as_deref(),
         );
         let preferred_cli = auth_login_cli_command(
@@ -914,25 +911,55 @@ impl AnalyticsMcp {
             client_id_file,
             quota_project.as_deref(),
             shared_adc,
+            args.account.as_deref(),
+            args.callback_port,
         );
+        let client_id_file_command = auth_login_cli_command(
+            scope,
+            args.headless,
+            Some(Path::new("/path/to/client_id.json")),
+            quota_project.as_deref(),
+            shared_adc,
+            args.account.as_deref(),
+            args.callback_port,
+        );
+        let client_id_file_headless_command = auth_login_cli_command(
+            scope,
+            true,
+            Some(Path::new("/path/to/client_id.json")),
+            quota_project.as_deref(),
+            shared_adc,
+            args.account.as_deref(),
+            args.callback_port,
+        );
+        let command = if client_id_file.is_some() && !shared_adc {
+            preferred_cli.clone()
+        } else {
+            gcloud_command.clone()
+        };
         let setup_plan = google_provider_auth_config(scope).adc_setup_plan();
         let after_login = after_login_instruction(
             self.client.upstream_token_source(),
             self.client.analytics_scope(),
             scope,
         );
-        let follow_up_commands = quota_project
-            .as_deref()
-            .map(|project| {
-                vec![quota_project_command_with_cloudsdk(
-                    project,
-                    cloudsdk_config.as_deref(),
-                )]
-            })
-            .unwrap_or_default();
+        let follow_up_commands = if client_id_file.is_some() && !shared_adc {
+            Vec::new()
+        } else {
+            quota_project
+                .as_deref()
+                .map(|project| {
+                    vec![quota_project_command_with_cloudsdk(
+                        project,
+                        cloudsdk_config.as_deref(),
+                    )]
+                })
+                .unwrap_or_default()
+        };
         Ok(contract_success(
             json!({
                 "command": command,
+                "gcloud_command": gcloud_command,
                 "preferred_cli": preferred_cli,
                 "headless_command": headless_command,
                 "client_id_file_command": client_id_file_command,
@@ -950,15 +977,18 @@ impl AnalyticsMcp {
                 "scope": scope,
                 "headless": args.headless,
                 "client_id_file": args.client_id_file,
+                "account": args.account,
+                "callback_port": args.callback_port,
                 "quota_project": quota_project,
                 "after_login": after_login,
                 "next_steps": setup_plan.next_steps.clone(),
                 "notes": [
                     "By default this command writes a GA4-specific ADC file for this OS user.",
+                    "When client_id_file is supplied without shared_adc, ga4-mcp uses toolkit browser OAuth and stores the result as a GA4-specific ADC file instead of using gcloud's bundled OAuth app.",
                     "Set shared_adc=true only when you intentionally want the conventional shared gcloud ADC file; set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true when the runtime should use it.",
                     "No token or client secret is returned by this tool."
                 ],
-                "client_id_file_hint": "Analytics scopes normally work with gcloud's default client, but pass client_id_file when Google rejects the requested scope.",
+                "client_id_file_hint": "If Google blocks the bundled gcloud OAuth app for Analytics scopes, pass client_id_file from a Desktop OAuth client; headless mode will ask for the redirected loopback callback URL.",
                 "quota_project_hint": "If verification says local ADC requires a quota project, enable analyticsadmin.googleapis.com and analyticsdata.googleapis.com on that project, run the quota_project_command, then verify again.",
                 "local_http_env": {
                     "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE": "request_header_or_config",
@@ -5848,7 +5878,7 @@ fn auth_next_steps(
             }
             steps.push("Run ga4-mcp auth status --verify-token, or call ga4_auth_status with verify_token=true, when you are ready to prove credentials.".to_string());
             steps.push(format!(
-                "If credentials are missing, run {login_command} or call ga4_auth_login_command for the gcloud command."
+                "If credentials are missing, run {login_command} or call ga4_auth_login_command for a copyable login command."
             ));
             if upstream_token_source == UpstreamTokenSource::RequestHeader {
                 steps.push("For local ADC fallback, switch GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE to request_header_or_config; keep request_header for hosted per-user services.".to_string());
@@ -5881,7 +5911,7 @@ fn auth_next_steps(
                     "If the token check reports that local ADC requires a quota project, run `{}`.",
                     setup_plan.quota_project.shell
                 ),
-                "Call ga4_auth_login_command if you need a copyable gcloud command inside MCP."
+                "Call ga4_auth_login_command if you need a copyable login command inside MCP."
                     .to_string(),
                 "For unattended deployments, set GOOGLE_APPLICATION_CREDENTIALS or OAuth refresh-token env configuration.".to_string(),
                 "Ensure the authenticated Google principal has access to the GA4 account/property."

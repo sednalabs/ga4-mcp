@@ -6,7 +6,8 @@ the default read-only tool profile.
 ## Prerequisites
 
 - Rust toolchain compatible with edition 2024.
-- Google Cloud SDK (`gcloud`) when using Application Default Credentials (ADC).
+- Google Cloud SDK (`gcloud`) only when intentionally using the gcloud ADC
+  fallback or shared ADC.
 - Access to the GA4 account or property you want to inspect.
 - Google Analytics Admin API and Google Analytics Data API enabled in the
   Google Cloud project used for OAuth or quota.
@@ -46,9 +47,19 @@ ADC file, and set `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the server
 with `--shared-adc` when the runtime should use that shared file.
 
 On SSH or a headless host, use `ga4-mcp auth login --headless --quota-project
-YOUR_PROJECT`. If Google rejects the Analytics scope or blocks the default
-OAuth app, create a Desktop OAuth client and rerun with
-`ga4-mcp auth login --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json`.
+YOUR_PROJECT`. If Google rejects the Analytics scope or blocks the bundled
+gcloud OAuth app, create a Desktop OAuth client and rerun with direct browser
+OAuth:
+
+```bash
+ga4-mcp auth login --headless --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
+```
+
+Open the printed URL on a trusted machine. If the browser ends on
+`http://127.0.0.1:...` and cannot connect back to the remote host, copy the
+full address-bar URL and paste it into the terminal. With `--client-id-file`
+and no `--shared-adc`, `ga4-mcp` stores the result in its own GA4-specific
+credential file and does not use gcloud's bundled OAuth app.
 
 If verification says local ADC needs a quota project, run:
 

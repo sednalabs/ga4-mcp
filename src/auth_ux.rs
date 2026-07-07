@@ -1,5 +1,7 @@
 //! Human-facing authentication helpers for the CLI and setup tools.
 
+use std::io::{self, Write};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::{env, fs};
@@ -9,6 +11,10 @@ use mcp_toolkit_auth::provider_auth::{
     GOOGLE_CLOUD_PLATFORM_SCOPE, GoogleProviderAuthConfig, GoogleProviderAuthFailureKind,
     classify_google_provider_auth_error, format_provider_auth_command, google_adc_login_scopes,
     google_adc_quota_project_command,
+};
+use mcp_toolkit_auth::upstream_oauth::{
+    BrowserLaunchMode, LoopbackOAuthOptions, google_oauth_client_from_file,
+    save_google_authorized_user_adc, start_loopback_authorization,
 };
 use serde::Serialize;
 
@@ -112,7 +118,7 @@ pub fn login_command_for_scope_with_cloudsdk(
     cloudsdk_config: Option<&Path>,
 ) -> String {
     shell_join_with_cloudsdk_config(
-        &gcloud_login_args(scope, headless, client_id_file),
+        &gcloud_login_args(scope, headless, client_id_file, None),
         cloudsdk_config,
     )
 }
@@ -130,6 +136,8 @@ pub fn auth_login_cli_command(
     client_id_file: Option<&Path>,
     quota_project: Option<&str>,
     shared_adc: bool,
+    account: Option<&str>,
+    callback_port: Option<u16>,
 ) -> String {
     let mut args = vec!["ga4-mcp".to_string()];
     if scope != DEFAULT_ANALYTICS_SCOPE {
@@ -144,6 +152,14 @@ pub fn auth_login_cli_command(
     if let Some(path) = client_id_file {
         args.push("--client-id-file".to_string());
         args.push(path.display().to_string());
+    }
+    if let Some(account) = account.filter(|account| !account.trim().is_empty()) {
+        args.push("--account".to_string());
+        args.push(account.trim().to_string());
+    }
+    if let Some(port) = callback_port {
+        args.push("--callback-port".to_string());
+        args.push(port.to_string());
     }
     if let Some(project) = quota_project.filter(|project| !project.trim().is_empty()) {
         args.push("--quota-project".to_string());
@@ -191,13 +207,22 @@ fn analytics_scope_arg_present() -> bool {
 
 async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
     let scope = login_scope(settings).to_string();
-    let command_args = gcloud_login_args(&scope, args.headless, args.client_id_file.as_deref());
+    let command_args = gcloud_login_args(
+        &scope,
+        args.headless,
+        args.client_id_file.as_deref(),
+        args.account.as_deref(),
+    );
     let cloudsdk_config = require_login_cloudsdk_config(args.shared_adc)?;
     let rendered = shell_join_with_cloudsdk_config(&command_args, cloudsdk_config.as_deref());
     let quota_project = args
         .quota_project
         .clone()
         .or_else(|| settings.quota_project.clone());
+
+    if use_direct_browser_oauth(args) {
+        return run_direct_browser_oauth_login(settings, args, &scope, quota_project).await;
+    }
 
     if args.dry_run {
         println!("{rendered}");
@@ -240,7 +265,7 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
     }
     if args.client_id_file.is_none() {
         println!(
-            "Tip: if Google rejects the Analytics scope, create a Desktop OAuth client and rerun with `--client-id-file /path/to/client_id.json`."
+            "Tip: if Google blocks the bundled gcloud OAuth app for Analytics scopes, create a Desktop OAuth client and rerun with `--client-id-file /path/to/client_id.json`."
         );
     }
     if args.headless {
@@ -263,7 +288,7 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
         let mut message = format!("gcloud login failed with status {status}");
         if args.client_id_file.is_none() {
             message.push_str(
-                ". If Google blocked the default OAuth app for Analytics scopes, rerun with `--client-id-file /path/to/client_id.json` from a Desktop OAuth client.",
+                ". If Google blocked the bundled gcloud OAuth app for Analytics scopes, rerun with `--client-id-file /path/to/client_id.json` from a Desktop OAuth client.",
             );
         }
         return Err(anyhow!(message));
@@ -316,8 +341,30 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
 
 fn print_login_command(settings: &Settings, args: &crate::config::AuthCommandArgs) -> Result<()> {
     let scope = login_scope(settings);
-    let command = gcloud_login_args(scope, args.headless, args.client_id_file.as_deref());
     let cloudsdk_config = require_login_cloudsdk_config(args.shared_adc)?;
+    if args.client_id_file.is_some() && !args.shared_adc {
+        println!(
+            "{}",
+            auth_login_cli_command(
+                scope,
+                args.headless,
+                args.client_id_file.as_deref(),
+                args.quota_project
+                    .as_deref()
+                    .or(settings.quota_project.as_deref()),
+                args.shared_adc,
+                args.account.as_deref(),
+                args.callback_port,
+            )
+        );
+        return Ok(());
+    }
+    let command = gcloud_login_args(
+        scope,
+        args.headless,
+        args.client_id_file.as_deref(),
+        args.account.as_deref(),
+    );
     println!(
         "{}",
         shell_join_with_cloudsdk_config(&command, cloudsdk_config.as_deref())
@@ -646,6 +693,157 @@ fn verification_ok(report: &AuthReport) -> bool {
     matches!(report.verification, VerificationReport::Ok)
 }
 
+fn use_direct_browser_oauth(args: &AuthLoginArgs) -> bool {
+    args.client_id_file.is_some() && !args.shared_adc
+}
+
+async fn run_direct_browser_oauth_login(
+    settings: &Settings,
+    args: &AuthLoginArgs,
+    scope: &str,
+    quota_project: Option<String>,
+) -> Result<()> {
+    let client_id_file = args
+        .client_id_file
+        .as_deref()
+        .expect("direct browser OAuth requires client_id_file");
+    let adc_path = server_adc_credentials_path().ok_or_else(|| {
+        anyhow!(
+            "failed to determine the GA4-specific ADC path; set HOME/XDG_CONFIG_HOME on Unix or APPDATA on Windows, or pass --shared-adc to intentionally use conventional shared ADC"
+        )
+    })?;
+    let rendered = auth_login_cli_command(
+        scope,
+        args.headless,
+        Some(client_id_file),
+        quota_project.as_deref(),
+        false,
+        args.account.as_deref(),
+        args.callback_port,
+    );
+    if args.dry_run {
+        println!("{rendered}");
+        return Ok(());
+    }
+
+    let client = google_oauth_client_from_file(client_id_file).with_context(|| {
+        format!(
+            "failed to load Google OAuth client file at {}",
+            client_id_file.display()
+        )
+    })?;
+    let mut options = LoopbackOAuthOptions::google_reauth();
+    options.bind_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    options.port = args.callback_port;
+    options.browser = if args.headless {
+        BrowserLaunchMode::Disabled
+    } else {
+        BrowserLaunchMode::BestEffortSystem
+    };
+    if let Some(account) = args
+        .account
+        .as_deref()
+        .map(str::trim)
+        .filter(|account| !account.is_empty())
+    {
+        options
+            .extra_authorization_params
+            .push(("login_hint".to_string(), account.to_string()));
+    }
+
+    println!("Starting Google Analytics browser OAuth login.");
+    println!("Scope: {scope}");
+    println!(
+        "Credential file: server-specific ADC ({})",
+        adc_path.display()
+    );
+    println!("OAuth client file: {}", client_id_file.display());
+    if let Some(project) = quota_project.as_deref() {
+        println!("Quota project: {project}");
+    } else {
+        println!("Quota project: not configured");
+    }
+    println!(
+        "Tip: this flow uses your OAuth client directly, so it avoids the bundled gcloud OAuth app that Google can block for Analytics scopes."
+    );
+    println!(
+        "Tip: this login uses a GA4-specific ADC file so other Google MCPs keep their own tokens and scopes."
+    );
+
+    let pending = start_loopback_authorization(client.clone(), split_scopes(scope), options)
+        .await
+        .context("failed to start Google browser OAuth")?;
+    println!("Authorization URL:");
+    println!("{}", pending.authorization_url());
+    println!("Redirect URI: {}", pending.redirect_uri());
+
+    let token_set = if args.headless {
+        println!(
+            "Headless mode requested. Open the URL on a trusted machine. When Google redirects to the loopback callback, copy the full browser address-bar URL and paste it below."
+        );
+        let callback_url = read_secret_line("Paste redirected callback URL, then press Enter: ")?;
+        pending
+            .finish_with_callback_url(callback_url.trim())
+            .await
+            .context("failed to finish pasted Google OAuth callback")?
+    } else {
+        if !pending
+            .launch_browser()
+            .context("failed to launch browser for Google OAuth")?
+        {
+            println!("Open the Authorization URL in your browser.");
+        }
+        pending
+            .finish()
+            .await
+            .context("failed to finish Google OAuth callback")?
+    };
+
+    save_google_authorized_user_adc(&adc_path, &client, token_set, quota_project.as_deref())
+        .with_context(|| {
+            format!(
+                "failed to write GA4-specific ADC file at {}",
+                adc_path.display()
+            )
+        })?;
+    println!("Google login completed.");
+
+    if args.no_verify {
+        println!("Verification skipped. Run `ga4-mcp auth status --verify-token` when ready.");
+        for step in post_login_runtime_steps(settings, scope) {
+            println!("{step}");
+        }
+        return Ok(());
+    }
+
+    let mut verify_settings = settings.clone();
+    verify_settings.analytics_scope = scope.to_string();
+    verify_settings.quota_project = quota_project;
+    let mut report = build_auth_report(&verify_settings, true).await;
+    add_post_login_runtime_steps(settings, scope, &mut report);
+    print_human_report(&report, true);
+    if verification_ok(&report) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "login completed, but Google Analytics verification did not pass"
+        ))
+    }
+}
+
+fn read_secret_line(prompt: &str) -> Result<String> {
+    print!("{prompt}");
+    io::stdout().flush().context("failed to flush prompt")?;
+    let mut value = String::new();
+    io::stdin()
+        .read_line(&mut value)
+        .context("failed to read OAuth callback URL from stdin")?;
+    if value.trim().is_empty() {
+        return Err(anyhow!("OAuth callback URL was empty"));
+    }
+    Ok(value)
+}
+
 fn add_post_login_runtime_steps(
     original_settings: &Settings,
     login_scope: &str,
@@ -866,13 +1064,32 @@ pub fn adc_login_scopes(scope: &str) -> String {
     .join(",")
 }
 
-fn gcloud_login_args(scope: &str, headless: bool, client_id_file: Option<&Path>) -> Vec<String> {
+fn gcloud_login_args(
+    scope: &str,
+    headless: bool,
+    client_id_file: Option<&Path>,
+    account: Option<&str>,
+) -> Vec<String> {
     let config = google_provider_auth_config(scope);
-    if let Some(path) = client_id_file {
+    let args = if let Some(path) = client_id_file {
         config.adc_login_command_with_client_id_file(headless, &path.display().to_string())
     } else {
         config.adc_login_command(headless)
-    }
+    };
+    with_gcloud_account_arg(args, account)
+}
+
+fn with_gcloud_account_arg(mut args: Vec<String>, account: Option<&str>) -> Vec<String> {
+    let Some(account) = account.map(str::trim).filter(|account| !account.is_empty()) else {
+        return args;
+    };
+    let insert_at = args
+        .iter()
+        .position(|part| part == "login")
+        .map(|index| index + 1)
+        .unwrap_or(args.len());
+    args.insert(insert_at, account.to_string());
+    args
 }
 
 fn shell_command(args: &[String]) -> String {
@@ -1100,6 +1317,8 @@ mod tests {
             Some(Path::new("/tmp/client id.json")),
             None,
             false,
+            None,
+            None,
         );
 
         assert_eq!(
@@ -1116,6 +1335,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
         );
 
         assert_eq!(
@@ -1132,12 +1353,45 @@ mod tests {
             None,
             Some("itwire-project"),
             false,
+            None,
+            None,
         );
 
         assert_eq!(
             command,
             "ga4-mcp auth login --headless --quota-project itwire-project"
         );
+    }
+
+    #[test]
+    fn auth_login_cli_command_includes_account_and_callback_port() {
+        let command = auth_login_cli_command(
+            DEFAULT_ANALYTICS_SCOPE,
+            true,
+            Some(Path::new("/tmp/client.json")),
+            Some("itwire-project"),
+            false,
+            Some("user@example.com"),
+            Some(8091),
+        );
+
+        assert_eq!(
+            command,
+            "ga4-mcp auth login --headless --client-id-file /tmp/client.json --account user@example.com --callback-port 8091 --quota-project itwire-project"
+        );
+    }
+
+    #[test]
+    fn gcloud_login_args_can_include_account_hint() {
+        let command = shell_command(&gcloud_login_args(
+            DEFAULT_ANALYTICS_SCOPE,
+            true,
+            None,
+            Some("user@example.com"),
+        ));
+
+        assert!(command.starts_with("gcloud auth application-default login user@example.com "));
+        assert!(command.contains("--no-launch-browser"));
     }
 
     #[test]

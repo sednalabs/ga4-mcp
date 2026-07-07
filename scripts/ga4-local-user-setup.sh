@@ -4,6 +4,7 @@ set -euo pipefail
 SCOPES="https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform"
 ACCOUNT=""
 CLIENT_ID_FILE=""
+CALLBACK_PORT=""
 QUOTA_PROJECT=""
 ENV_FILE=""
 SERVICE="ga4-mcp-http.service"
@@ -11,6 +12,7 @@ RUN_LOGIN=1
 RESTART_SERVICE=1
 LOGIN_BROWSER_MODE="auto"
 SHARED_ADC=0
+GA4_MCP_BIN="${GA4_MCP_BIN:-ga4-mcp}"
 
 usage() {
   cat <<'EOF'
@@ -19,13 +21,17 @@ Usage: scripts/ga4-local-user-setup.sh [options]
 Configure a local user-level GA4 MCP service for low-friction Google auth.
 
 The script:
-  1. Runs gcloud application-default login for the target Google user.
+  1. Runs GA4 browser OAuth or gcloud application-default login for the target Google user.
   2. Configures the service to use request tokens when present, otherwise ADC.
   3. Restarts the user systemd service when it exists.
 
 Options:
   --account EMAIL          Google account to log in, e.g. user@example.com.
-  --client-id-file PATH    Optional Google OAuth desktop client JSON.
+  --client-id-file PATH    Optional Google OAuth desktop client JSON. Without
+                           --shared-adc this uses ga4-mcp browser OAuth and
+                           avoids gcloud's bundled OAuth app.
+  --callback-port PORT     Optional fixed loopback callback port for
+                           ga4-mcp browser OAuth.
   --quota-project ID       Optional Google Cloud project used for ADC quota.
   --env-file PATH          Service env file to update.
                            Default: discovered from systemd, then
@@ -33,14 +39,17 @@ Options:
   --service NAME           User systemd service to restart.
                            Default: ga4-mcp-http.service
   --skip-login             Only update the service env file.
-  --headless               Do not launch a browser; print a Google login URL
-                           and wait for the auth code on this machine.
-                           Alias for --no-launch-browser unless
-                           --client-id-file is set; current gcloud requires
-                           --no-browser for that combination.
-  --no-launch-browser      Pass gcloud's --no-launch-browser flag.
+  --headless               Do not launch a browser; print a Google login URL.
+                           With --client-id-file, paste the redirected
+                           callback URL back into ga4-mcp.
+                           Without --client-id-file, pass gcloud's
+                           --no-launch-browser flag.
+  --no-launch-browser      Alias for --headless in direct ga4-mcp OAuth mode;
+                           otherwise pass gcloud's --no-launch-browser flag.
   --no-browser             Pass gcloud's --no-browser remote-bootstrap flag.
-                           This requires another machine with gcloud.
+                           In direct ga4-mcp OAuth mode this behaves like
+                           --headless and does not require gcloud on the browser
+                           machine.
   --shared-adc             Use the conventional shared gcloud ADC file instead
                            of the GA4-specific credential file.
   --no-restart             Do not restart the user systemd service.
@@ -104,6 +113,12 @@ while [[ $# -gt 0 ]]; do
     --client-id-file)
       [[ $# -ge 2 ]] || die "--client-id-file requires a value"
       CLIENT_ID_FILE="$2"
+      shift 2
+      ;;
+    --callback-port)
+      [[ $# -ge 2 ]] || die "--callback-port requires a value"
+      CALLBACK_PORT="$2"
+      [[ "$CALLBACK_PORT" =~ ^[0-9]+$ ]] || die "--callback-port must be a number"
       shift 2
       ;;
     --quota-project)
@@ -234,47 +249,68 @@ set_env_value() {
 }
 
 if [[ "$RUN_LOGIN" -eq 1 ]]; then
-  command -v gcloud >/dev/null 2>&1 || die "gcloud is required for ADC login"
-  if [[ "$SHARED_ADC" -eq 0 ]]; then
-    mkdir -p "$GCLOUD_CONFIG_DIR"
-    printf 'Using GA4-specific gcloud config: %s\n' "$GCLOUD_CONFIG_DIR"
-  else
-    printf 'Using conventional shared gcloud ADC.\n'
-  fi
-  login_cmd=(gcloud auth application-default login)
-  if [[ -n "$ACCOUNT" ]]; then
-    login_cmd+=("$ACCOUNT")
-  fi
-  if [[ -n "$CLIENT_ID_FILE" ]]; then
+  if [[ -n "$CLIENT_ID_FILE" && "$SHARED_ADC" -eq 0 ]]; then
     [[ -f "$CLIENT_ID_FILE" ]] || die "OAuth client JSON not found: $CLIENT_ID_FILE"
-    login_cmd+=("--client-id-file=$CLIENT_ID_FILE")
-  fi
-  case "$LOGIN_BROWSER_MODE" in
-    no-launch-browser)
-      if [[ -n "$CLIENT_ID_FILE" ]]; then
-        printf 'gcloud requires --no-browser when --client-id-file is set; using remote-bootstrap mode.\n' >&2
-        login_cmd+=("--no-browser")
-      else
-        login_cmd+=("--no-launch-browser")
-      fi
-      ;;
-    no-browser)
-      login_cmd+=("--no-browser")
-      ;;
-  esac
-  login_cmd+=("--scopes=$SCOPES")
+    command -v "$GA4_MCP_BIN" >/dev/null 2>&1 || die "$GA4_MCP_BIN is required for direct GA4 browser OAuth"
+    login_cmd=("$GA4_MCP_BIN" auth login "--client-id-file" "$CLIENT_ID_FILE")
+    if [[ "$LOGIN_BROWSER_MODE" != "auto" ]]; then
+      login_cmd+=("--headless")
+    fi
+    if [[ -n "$ACCOUNT" ]]; then
+      login_cmd+=("--account" "$ACCOUNT")
+    fi
+    if [[ -n "$CALLBACK_PORT" ]]; then
+      login_cmd+=("--callback-port" "$CALLBACK_PORT")
+    fi
+    if [[ -n "$QUOTA_PROJECT" ]]; then
+      login_cmd+=("--quota-project" "$QUOTA_PROJECT")
+    fi
 
-  printf 'Running Google ADC login'
-  if [[ -n "$ACCOUNT" ]]; then
-    printf ' for %s' "$ACCOUNT"
+    printf 'Running GA4 browser OAuth login with %s...\n' "$GA4_MCP_BIN"
+    "${login_cmd[@]}"
+  else
+    command -v gcloud >/dev/null 2>&1 || die "gcloud is required for ADC login"
+    if [[ "$SHARED_ADC" -eq 0 ]]; then
+      mkdir -p "$GCLOUD_CONFIG_DIR"
+      printf 'Using GA4-specific gcloud config: %s\n' "$GCLOUD_CONFIG_DIR"
+    else
+      printf 'Using conventional shared gcloud ADC.\n'
+    fi
+    login_cmd=(gcloud auth application-default login)
+    if [[ -n "$ACCOUNT" ]]; then
+      login_cmd+=("$ACCOUNT")
+    fi
+    if [[ -n "$CLIENT_ID_FILE" ]]; then
+      [[ -f "$CLIENT_ID_FILE" ]] || die "OAuth client JSON not found: $CLIENT_ID_FILE"
+      login_cmd+=("--client-id-file=$CLIENT_ID_FILE")
+    fi
+    case "$LOGIN_BROWSER_MODE" in
+      no-launch-browser)
+        if [[ -n "$CLIENT_ID_FILE" ]]; then
+          printf 'gcloud requires --no-browser when --client-id-file is set; using remote-bootstrap mode.\n' >&2
+          login_cmd+=("--no-browser")
+        else
+          login_cmd+=("--no-launch-browser")
+        fi
+        ;;
+      no-browser)
+        login_cmd+=("--no-browser")
+        ;;
+    esac
+    login_cmd+=("--scopes=$SCOPES")
+
+    printf 'Running Google ADC login'
+    if [[ -n "$ACCOUNT" ]]; then
+      printf ' for %s' "$ACCOUNT"
+    fi
+    printf '...\n'
+    run_gcloud "${login_cmd[@]}"
+    if [[ -n "$QUOTA_PROJECT" ]]; then
+      printf 'Setting ADC quota project to %s...\n' "$QUOTA_PROJECT"
+      run_gcloud gcloud auth application-default set-quota-project "$QUOTA_PROJECT"
+    fi
+    run_gcloud gcloud auth application-default print-access-token >/dev/null
   fi
-  printf '...\n'
-  run_gcloud "${login_cmd[@]}"
-  if [[ -n "$QUOTA_PROJECT" ]]; then
-    printf 'Setting ADC quota project to %s...\n' "$QUOTA_PROJECT"
-    run_gcloud gcloud auth application-default set-quota-project "$QUOTA_PROJECT"
-  fi
-  run_gcloud gcloud auth application-default print-access-token >/dev/null
 fi
 
 mkdir -p "$(dirname "$ENV_FILE")"

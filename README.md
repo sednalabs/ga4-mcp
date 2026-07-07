@@ -79,8 +79,9 @@ As of 2026-02-24, the upstream README describes a smaller core tool set (`get_ac
 
 Straight answer:
 
-- Local user-level service on your own machine: log in once with Google ADC
-  and set a quota project. This is the benchmark happy path.
+- Local user-level service on your own machine: log in once, write a
+  GA4-specific credential file, and set a quota project. This is the benchmark
+  happy path.
 - Hosted/public/multi-user service: use `request_header`; every client request
   must carry that user's Google bearer token.
 - Non-interactive automation: use `config` with ADC, a service account, or an
@@ -90,7 +91,7 @@ Required Google scope for all modes:
 
 - `https://www.googleapis.com/auth/analytics.readonly`
 
-#### Local user setup: login once with ADC
+#### Local user setup: login once
 
 Use this for a loopback user service on your own machine.
 
@@ -102,11 +103,11 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
 
-By default `ga4-mcp auth login` writes Application Default Credentials to a
-GA4-specific gcloud config directory:
-`<user-config>/ga4-mcp/gcloud/application_default_credentials.json`. Use
-`--shared-adc` only when you intentionally want the conventional shared gcloud
-ADC file.
+By default `ga4-mcp auth login` writes a GA4-specific Application Default
+Credentials file at
+`<user-config>/ga4-mcp/gcloud/application_default_credentials.json`. Other
+Google MCPs keep their own tokens and scopes. Use `--shared-adc` only when you
+intentionally want the conventional shared gcloud ADC file.
 
 `YOUR_PROJECT` should be a Google Cloud project where both
 `analyticsadmin.googleapis.com` and `analyticsdata.googleapis.com` are enabled
@@ -118,27 +119,33 @@ GA4-specific ADC identity from the one-time login. Conventional shared ADC is
 used only when `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or the server starts with
 `--shared-adc`.
 
-If Google blocks the default `gcloud` OAuth client for Analytics scopes, create
-a Google OAuth desktop client, download the JSON locally, and run:
+If Google blocks the bundled `gcloud` OAuth client for Analytics scopes, create
+a Google OAuth Desktop client, download the JSON locally, and run:
 
 ```bash
 ga4-mcp auth login --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
 ```
 
+With `--client-id-file` and no `--shared-adc`, `ga4-mcp` uses the toolkit
+browser OAuth flow directly and stores the result in the GA4-specific credential
+file. It does not use gcloud's bundled OAuth app.
+
 Headless or SSH login:
 
 ```bash
-ga4-mcp auth login --headless --quota-project YOUR_PROJECT
+ga4-mcp auth login --headless --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
 ```
 
-The headless flow asks `gcloud` not to launch a browser. Complete the printed
-Google consent flow from a trusted machine and keep the resulting ADC file
-private.
+The headless direct OAuth flow prints a Google URL and a loopback redirect URI.
+Open the URL on a trusted machine. After Google redirects to
+`http://127.0.0.1:...`, the browser may show that it cannot connect to the
+remote host; copy the full address-bar URL and paste it back into the terminal.
+Keep the resulting credential file and OAuth client JSON private.
 
 Useful auth commands:
 
 ```bash
-ga4-mcp auth command --headless --quota-project YOUR_PROJECT
+ga4-mcp auth command --headless --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
 ga4-mcp auth doctor --verify-token
 ga4-mcp auth status --json --verify-token
 ```
@@ -153,6 +160,9 @@ gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.co
 ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
+
+If Google blocks that login, rerun the same command with
+`--client-id-file /path/to/oauth-client.json`.
 
 #### Server-side credential mode
 
