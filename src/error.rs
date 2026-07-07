@@ -193,9 +193,9 @@ impl AnalyticsError {
             Self::MissingRequestAccessToken { .. } => Some(
                 "Configure the MCP client OAuth flow so each request sends a Google access token in the configured upstream token header.",
             ),
-            Self::MalformedRequestAccessToken { .. } => Some(
-                "Send a valid OAuth access token in the configured upstream token header.",
-            ),
+            Self::MalformedRequestAccessToken { .. } => {
+                Some("Send a valid OAuth access token in the configured upstream token header.")
+            }
             Self::Transport(_) => Some("Check network connectivity and upstream API availability."),
             Self::UpstreamJson(_) => {
                 Some("Retry later; upstream payload may be transiently malformed.")
