@@ -11,7 +11,7 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 - [x] Contract policy is V1-only (no legacy mode).
 - [x] Tool schema snapshot regenerated from current build.
 - [x] Core validation commands executed in clean sequence.
-- [x] Scratchpad tools included in schema snapshot.
+- [x] Read-only and scratchpad schema snapshots regenerated for their respective capability profiles.
 - [x] Policy gating (`read_only` vs `scratchpad`) documented.
 - [x] Operator runbook with request/response examples published.
 - [x] Public documentation front door reviewed for release-facing links.
@@ -26,6 +26,7 @@ cargo check
 cargo test
 ./scripts/sql_policy_toolkit_conformance.sh
 cargo run --bin ga4-mcp -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
+cargo run --bin ga4-mcp -- --capability-profile scratchpad --print-tool-schema > spec/tool_schema_snapshot.scratchpad.v1.json
 ```
 
 Observed result:
@@ -34,8 +35,9 @@ Observed result:
 - `cargo test`: pass
 - `sql_policy_toolkit_conformance`: pass
 - schema snapshot generation: pass
+- scratchpad schema snapshot generation: pass
 
-## Tool Inventory (from `spec/tool_schema_snapshot.v1.json`)
+## Read-Only Tool Inventory (from `spec/tool_schema_snapshot.v1.json`)
 
 - `get_account_summaries`
 - `get_account_data_sharing_settings`
@@ -52,6 +54,9 @@ Observed result:
 - `run_property_access_report`
 - `run_realtime_report`
 - `run_report`
+
+## Scratchpad Tool Inventory (from `spec/tool_schema_snapshot.scratchpad.v1.json`)
+
 - `scratchpad_close_session`
 - `scratchpad_describe_table`
 - `scratchpad_drop_table`

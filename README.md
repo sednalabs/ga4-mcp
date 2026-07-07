@@ -100,7 +100,7 @@ ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
-export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 By default `ga4-mcp auth login` writes a GA4-specific Application Default
@@ -113,7 +113,7 @@ intentionally want the conventional shared gcloud ADC file.
 `analyticsadmin.googleapis.com` and `analyticsdata.googleapis.com` are enabled
 and where your Google account is allowed to use the project for quota.
 
-Result: if a client sends `Authorization: Bearer <google_access_token>`, the
+Result: if a client sends `x-google-access-token: Bearer <google_access_token>`, the
 server uses that token. If the client sends no token, the server uses the local
 GA4-specific ADC identity from the one-time login. Conventional shared ADC is
 used only when `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or the server starts with
@@ -194,23 +194,24 @@ export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config
 
 ```bash
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header
-export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 In this mode, each MCP request must carry a Google access token (usually
-`Authorization: Bearer <token>`), acquired by the client's interactive OAuth flow.
+`x-google-access-token: Bearer <token>`), acquired by the client's interactive OAuth flow.
 
 #### Hybrid local mode
 
 ```bash
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
-export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 Use this for loopback user-level services when you want painless local ADC
 fallback without breaking clients that already send per-request Google tokens.
-Do not expose this mode publicly unless inbound MCP auth is enabled and
-configured deliberately.
+Do not expose this mode publicly. Non-loopback HTTP should stay in
+`request_header` mode so the server cannot fall back to a server-held Google
+identity.
 
 Google OAuth endpoints for client configuration:
 
@@ -360,6 +361,11 @@ All settings are available as CLI flags and env vars.
 - `--print-tools`
 - `--print-tool-schema`
 
+`--print-tools` and `--print-tool-schema` are profile-aware. The default
+`read_only` profile excludes `scratchpad_*` tools from both surfaces. Use
+`--capability-profile scratchpad` when you intentionally want the expanded
+scratchpad surface.
+
 ### Streamable HTTP and inbound auth mode
 
 - `GA4_MCP_BIND_ADDR`
@@ -401,9 +407,11 @@ All settings are available as CLI flags and env vars.
 - Input validation fails closed on malformed ids/arguments.
 - Capability profile gates scratchpad access.
 - Non-loopback HTTP requires explicit allow + TLS.
+- Browser `Origin` headers are checked against the same allowlisted host set as `Host`, so browser-based callers cannot present an unrelated host origin.
 - When `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config`, auth headers on `/mcp` are rejected if inbound auth is off.
-- When `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header` (or `request_header_or_config`), request tokens are accepted and used per call.
-- `request_header_or_config` is the local convenience mode: request token first, ADC/OAuth-refresh fallback second.
+- `request_header` is the only supported non-loopback/public upstream-token mode.
+- `request_header_or_config` is the loopback/local convenience mode: request token first, ADC/OAuth-refresh fallback second.
+- When inbound MCP auth is enabled, upstream Google tokens must stay on a dedicated non-`authorization` header such as `x-google-access-token`; the runtime rejects `authorization` for both roles.
 - `/health` is not auto-whitelisted by the auth surface; when inbound auth is enabled, unauthenticated health checks are denied unless you front the route separately.
 - Inbound OAuth verification (when enabled) is for MCP access control. Upstream GA token source is independently controlled by `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE`.
 - For non-loopback exposure with auth enabled, strict OAuth parsing is required and configured auth URLs must use `https://`.
@@ -417,6 +425,7 @@ cargo test
 ./scripts/sql_policy_toolkit_conformance.sh
 cargo run -- --print-tools
 cargo run -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
+cargo run -- --capability-profile scratchpad --print-tool-schema > spec/tool_schema_snapshot.scratchpad.v1.json
 ```
 
 ### Live smoke verification (production-facing)

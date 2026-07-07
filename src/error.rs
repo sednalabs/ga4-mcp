@@ -191,11 +191,11 @@ impl AnalyticsError {
                 "Ensure either ADC is configured with analytics.readonly scope or OAuth refresh-token auth settings are valid.",
             ),
             Self::MissingRequestAccessToken { .. } => Some(
-                "Configure the MCP client OAuth flow so each request sends a Google access token (usually in Authorization: Bearer <token>).",
+                "Configure the MCP client OAuth flow so each request sends a Google access token in the configured upstream token header.",
             ),
-            Self::MalformedRequestAccessToken { .. } => Some(
-                "Send a valid OAuth access token header. For Authorization header use: Bearer <token>.",
-            ),
+            Self::MalformedRequestAccessToken { .. } => {
+                Some("Send a valid OAuth access token in the configured upstream token header.")
+            }
             Self::Transport(_) => Some("Check network connectivity and upstream API availability."),
             Self::UpstreamJson(_) => {
                 Some("Retry later; upstream payload may be transiently malformed.")

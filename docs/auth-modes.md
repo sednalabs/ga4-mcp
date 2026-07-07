@@ -33,7 +33,7 @@ ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
-export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 `ga4-mcp auth login` uses a GA4-specific credential file by default so other
@@ -79,11 +79,11 @@ ga4-mcp auth status --verify-token
 
 | Goal | Inbound MCP auth | Upstream Google auth | Key settings |
 |---|---|---|---|
-| Per-user Google login (recommended for hosted agents) | Off | Request token from client | `GA4_MCP_AUTH_ENABLED=0`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization` |
-| Extra boundary + per-user Google login | On (`jwks`/`introspection`) | Request token from client | `GA4_MCP_AUTH_ENABLED=1`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header` with non-conflicting header |
+| Per-user Google login (recommended for hosted agents) | Off | Request token from client | `GA4_MCP_AUTH_ENABLED=0`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token` |
+| Extra boundary + per-user Google login | On (`jwks`/`introspection`) | Request token from client | `GA4_MCP_AUTH_ENABLED=1`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token` |
 | Local user-level service | Off on loopback | Header first, local ADC fallback | `GA4_MCP_BIND_ADDR=127.0.0.1:9420`, `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config` |
 | Internal automation with server identity | Optional | Server-held credentials | `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config` |
-| Migration period | Optional | Header first, then server fallback | `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config` |
+| Migration period | Optional | Header first, then server fallback | Loopback only; keep `GA4_MCP_BIND_ADDR=127.0.0.1:9420` with `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config` |
 
 ## Upstream Google Auth Modes
 
@@ -141,13 +141,13 @@ Google identity that should be used upstream.
 ```bash
 GA4_MCP_AUTH_ENABLED=0
 GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header
-GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 Client behavior:
 
 - Client runs interactive Google OAuth.
-- Client sends `Authorization: Bearer <google_access_token>` on MCP requests.
+- Client sends `x-google-access-token: Bearer <google_access_token>` on MCP requests.
 - Server uses that same token for GA4 API calls.
 
 ## Recommended Local Setup: Login Once
@@ -161,7 +161,7 @@ ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
-export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 Headless/SSH variant:
@@ -177,16 +177,16 @@ Configure the MCP process environment:
 
 ```bash
 GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
-GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 Behavior:
 
-- If the MCP client sends `Authorization: Bearer <google_access_token>`, that token is used.
+- If the MCP client sends `x-google-access-token: Bearer <google_access_token>`, that token is used.
 - If the client does not send a token, the server uses the GA4-specific ADC file for the logged-in local user.
   Conventional shared ADC is used only when `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or the server
   starts with `--shared-adc`.
-- Do not use this fallback on a public anonymous surface.
+- Do not use this fallback on a public or non-loopback surface.
 
 Verify the process environment is using the intended mode:
 
@@ -198,7 +198,7 @@ Expected env:
 
 ```bash
 GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
-GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 If a tool call fails with `authentication bootstrap failed: no available
@@ -236,7 +236,7 @@ Google DCR note:
 
 If inbound MCP auth is enabled and you also need a separate upstream Google token:
 
-- Do not reuse `authorization` for both roles unless your client can safely represent both.
+- Do not reuse `authorization` for both roles when inbound MCP auth is enabled; GA4 rejects that configuration so the MCP bearer token and upstream Google bearer token stay separate.
 - Prefer:
   - `GA4_MCP_AUTH_ENABLED=1` for MCP auth token handling
   - `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token` for upstream Google token
@@ -325,4 +325,4 @@ Meaning:
 
 Fix:
 
-- Set `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header` (or `request_header_or_config`).
+- Set `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header` (or `request_header_or_config` on loopback/local services only).

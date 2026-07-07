@@ -25,7 +25,7 @@ the Google access token that should be used upstream:
 
 ```bash
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header
-export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 Use `request_header_or_config` for a loopback developer/operator service. A
@@ -37,7 +37,7 @@ ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
-export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token
 ```
 
 The login command writes to a GA4-specific ADC file by default:
@@ -149,6 +149,7 @@ cargo check
 cargo test
 ./scripts/sql_policy_toolkit_conformance.sh
 cargo run -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
+cargo run -- --capability-profile scratchpad --print-tool-schema > spec/tool_schema_snapshot.scratchpad.v1.json
 ```
 
 Live Google tests are opt-in and require real credentials. Do not run them for

@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use ga4_mcp::config::{Cli, Settings};
 use ga4_mcp::ga_client::AnalyticsApiClient;
-use ga4_mcp::http_config::HttpSettings;
+use ga4_mcp::http_config::{HttpSettings, validate_http_runtime_credential_posture};
 use ga4_mcp::http_runtime::run_http_server;
 use ga4_mcp::scratchpad::{
     DuckDbEngine, ScratchpadSessionConfig, ScratchpadSessionManager, SharedScratchpadEngine,
@@ -32,6 +32,11 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
     let settings = Settings::from_cli(cli)?;
     let http_settings = HttpSettings::from_env()?;
+    validate_http_runtime_credential_posture(
+        &http_settings,
+        settings.upstream_token_source,
+        &settings.upstream_token_header,
+    )?;
     let client = Arc::new(AnalyticsApiClient::from_settings(&settings).await?);
 
     let scratchpad_engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new()?);

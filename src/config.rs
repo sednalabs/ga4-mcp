@@ -149,12 +149,13 @@ pub struct Cli {
 
     /// Request header name used when `upstream_token_source` reads request tokens.
     ///
-    /// Use `authorization` for standard `Authorization: Bearer <token>` flows.
+    /// Prefer `x-google-access-token` so inbound MCP auth and upstream Google
+    /// bearer tokens stay on separate headers.
     #[arg(
         long,
         env = "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER",
         global = true,
-        default_value = "authorization"
+        default_value = "x-google-access-token"
     )]
     pub upstream_token_header: String,
 
@@ -232,11 +233,11 @@ pub struct Cli {
     )]
     pub capability_profile: CapabilityProfile,
 
-    /// Print registered tool names and exit.
+    /// Print tool names visible to the active capability profile and exit.
     #[arg(long)]
     pub print_tools: bool,
 
-    /// Print full tool schema snapshot JSON and exit.
+    /// Print tool schema visible to the active capability profile and exit.
     #[arg(long)]
     pub print_tool_schema: bool,
 
@@ -612,7 +613,7 @@ mod tests {
             oauth_client_secret_json: None,
             oauth_refresh_token: None,
             upstream_token_source: UpstreamTokenSource::Config,
-            upstream_token_header: "authorization".to_string(),
+            upstream_token_header: "x-google-access-token".to_string(),
             quota_project: None,
             shared_adc: false,
             scratchpad_session_ttl_secs: DEFAULT_SCRATCHPAD_SESSION_TTL_SECS,

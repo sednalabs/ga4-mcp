@@ -16,7 +16,9 @@ use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use mcp_toolkit_auth::surface::{AuthSurfaceConfig, AuthSurfaceLayer, IssuerEntry};
 use mcp_toolkit_auth::{Authenticator, discover_oidc_metadata};
-use mcp_toolkit_http::host::{HostValidationError, parse_host_header, validate_host_header};
+use mcp_toolkit_http::host::{
+    HostValidationError, parse_host_header, validate_origin_header, validate_request_authority,
+};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -28,7 +30,9 @@ use crate::server::AnalyticsMcp;
 #[derive(Clone)]
 struct GuardState {
     settings: HttpSettings,
-    allow_mcp_auth_headers: bool,
+    allowed_request_hosts: Vec<String>,
+    accepts_upstream_request_tokens: bool,
+    upstream_token_header: String,
 }
 
 /// Serve the GA4 MCP server on streamable HTTP transport.
@@ -46,7 +50,9 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
 
     let guard_state = GuardState {
         settings: settings.clone(),
-        allow_mcp_auth_headers: server.accepts_upstream_request_tokens(),
+        allowed_request_hosts: settings.allowed_hosts.iter().cloned().collect(),
+        accepts_upstream_request_tokens: server.accepts_upstream_request_tokens(),
+        upstream_token_header: server.client.upstream_token_header().to_string(),
     };
     let mut router = Router::new()
         .route("/health", get(health))
@@ -190,7 +196,8 @@ async fn inbound_auth_guard(
 
     if request_targets_mcp(req.uri().path())
         && request_has_inbound_auth(req.headers())
-        && !state.allow_mcp_auth_headers
+        && (!state.accepts_upstream_request_tokens
+            || request_has_disallowed_inbound_auth(req.headers(), &state.upstream_token_header))
     {
         mcp_toolkit_observability::emit_event(
             mcp_toolkit_observability::Level::WARN,
@@ -203,7 +210,7 @@ async fn inbound_auth_guard(
         );
         return (
             StatusCode::BAD_REQUEST,
-            "Authorization headers are not accepted on /mcp unless request-header upstream token mode is enabled",
+            "Authorization headers are not accepted on /mcp unless request-header upstream token mode explicitly uses that header",
         )
             .into_response();
     }
@@ -296,7 +303,12 @@ async fn host_guard(
     req: axum::extract::Request,
     next: Next,
 ) -> axum::response::Response {
-    if let Err(err) = validate_request_host(&req, &state.settings.allowed_hosts) {
+    if let Err(err) = validate_request_host(&req, &state.allowed_request_hosts) {
+        let status = err.status_code();
+        let message = err.message();
+        return (status, message).into_response();
+    }
+    if let Err(err) = validate_request_origin(&req, &state.allowed_request_hosts) {
         let status = err.status_code();
         let message = err.message();
         return (status, message).into_response();
@@ -334,25 +346,16 @@ async fn client_ip_guard(
 
 fn validate_request_host(
     req: &axum::extract::Request,
-    allowed_hosts: &std::collections::HashSet<String>,
+    allowed_hosts: &[String],
 ) -> Result<(), HostValidationError> {
-    match validate_host_header(req.headers(), allowed_hosts) {
-        Ok(_) => Ok(()),
-        Err(HostValidationError::MissingHost) => {
-            let authority = req
-                .uri()
-                .authority()
-                .map(|value| value.as_str())
-                .ok_or(HostValidationError::MissingHost)?;
-            let parsed = parse_host_header(authority).ok_or(HostValidationError::InvalidHost)?;
-            if allowed_hosts.contains(&parsed.host) {
-                Ok(())
-            } else {
-                Err(HostValidationError::NotAllowed)
-            }
-        }
-        Err(err) => Err(err),
-    }
+    validate_request_authority(Some(req.uri()), req.headers(), allowed_hosts).map(|_| ())
+}
+
+fn validate_request_origin(
+    req: &axum::extract::Request,
+    allowed_hosts: &[String],
+) -> Result<(), HostValidationError> {
+    validate_origin_header(req.headers(), allowed_hosts)
 }
 
 fn public_base_url(settings: &HttpSettings) -> String {
@@ -558,15 +561,29 @@ fn request_has_inbound_auth(headers: &axum::http::HeaderMap) -> bool {
     headers.contains_key(AUTHORIZATION) || headers.contains_key(PROXY_AUTHORIZATION)
 }
 
+fn request_has_disallowed_inbound_auth(
+    headers: &axum::http::HeaderMap,
+    upstream_token_header: &str,
+) -> bool {
+    let allows_authorization = upstream_token_header.eq_ignore_ascii_case(AUTHORIZATION.as_str());
+    let allows_proxy_authorization =
+        upstream_token_header.eq_ignore_ascii_case(PROXY_AUTHORIZATION.as_str());
+    (headers.contains_key(AUTHORIZATION) && !allows_authorization)
+        || (headers.contains_key(PROXY_AUTHORIZATION) && !allows_proxy_authorization)
+}
+
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
     use axum::http::HeaderMap;
+    use axum::http::StatusCode;
     use axum::http::Uri;
     use axum::http::header::{AUTHORIZATION, HOST, PROXY_AUTHORIZATION};
 
     use super::{
-        header_text, public_base_url_from_resource_url, request_has_inbound_auth,
-        request_host_for_log, request_targets_mcp,
+        header_text, public_base_url_from_resource_url, request_has_disallowed_inbound_auth,
+        request_has_inbound_auth, request_host_for_log, request_targets_mcp, validate_request_host,
+        validate_request_origin,
     };
 
     #[test]
@@ -593,6 +610,45 @@ mod tests {
             "Basic YWxhZGRpbjpvcGVuc2VzYW1l".parse().expect("header"),
         );
         assert!(request_has_inbound_auth(&headers));
+    }
+
+    #[test]
+    fn dedicated_upstream_header_still_rejects_authorization_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer token".parse().expect("header"));
+        assert!(request_has_disallowed_inbound_auth(
+            &headers,
+            "x-google-access-token"
+        ));
+
+        headers.remove(AUTHORIZATION);
+        headers.insert(
+            PROXY_AUTHORIZATION,
+            "Basic YWxhZGRpbjpvcGVuc2VzYW1l".parse().expect("header"),
+        );
+        assert!(request_has_disallowed_inbound_auth(
+            &headers,
+            "x-google-access-token"
+        ));
+    }
+
+    #[test]
+    fn matching_upstream_auth_header_is_allowed_but_other_auth_headers_are_not() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer token".parse().expect("header"));
+        assert!(!request_has_disallowed_inbound_auth(
+            &headers,
+            "authorization"
+        ));
+
+        headers.insert(
+            PROXY_AUTHORIZATION,
+            "Basic YWxhZGRpbjpvcGVuc2VzYW1l".parse().expect("header"),
+        );
+        assert!(request_has_disallowed_inbound_auth(
+            &headers,
+            "authorization"
+        ));
     }
 
     #[test]
@@ -636,5 +692,70 @@ mod tests {
         );
         assert!(header_text(&headers, "x-empty").is_none());
         assert!(header_text(&headers, "missing").is_none());
+    }
+
+    #[test]
+    fn validate_request_origin_accepts_missing_origin() {
+        let allowed_hosts = vec!["ga4-mcp.example".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("https://ga4-mcp.example/mcp")
+            .header(HOST, "ga4-mcp.example")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_origin(&req, &allowed_hosts).expect("missing origin should pass");
+    }
+
+    #[test]
+    fn validate_request_origin_accepts_allowed_origin() {
+        let allowed_hosts = vec!["ga4-mcp.example".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("https://ga4-mcp.example/mcp")
+            .header(HOST, "ga4-mcp.example")
+            .header("origin", "https://ga4-mcp.example")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_origin(&req, &allowed_hosts).expect("allowed origin should pass");
+    }
+
+    #[test]
+    fn validate_request_host_accepts_allowlisted_host_and_port() {
+        let allowed_hosts = vec!["ga4-mcp.example:9443".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("https://ga4-mcp.example:9443/mcp")
+            .header(HOST, "ga4-mcp.example:9443")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_host(&req, &allowed_hosts).expect("allowlisted host:port should pass");
+    }
+
+    #[test]
+    fn validate_request_origin_accepts_allowed_origin_with_port() {
+        let allowed_hosts = vec!["ga4-mcp.example:9443".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("https://ga4-mcp.example:9443/mcp")
+            .header(HOST, "ga4-mcp.example:9443")
+            .header("origin", "https://ga4-mcp.example:9443")
+            .body(Body::empty())
+            .expect("request");
+
+        validate_request_origin(&req, &allowed_hosts)
+            .expect("allowlisted origin with port should pass");
+    }
+
+    #[test]
+    fn validate_request_origin_rejects_unexpected_origin() {
+        let allowed_hosts = vec!["ga4-mcp.example".to_string()];
+        let req = axum::http::Request::builder()
+            .uri("https://ga4-mcp.example/mcp")
+            .header(HOST, "ga4-mcp.example")
+            .header("origin", "https://evil.example")
+            .body(Body::empty())
+            .expect("request");
+
+        let err = validate_request_origin(&req, &allowed_hosts).expect_err("origin rejection");
+        assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
     }
 }

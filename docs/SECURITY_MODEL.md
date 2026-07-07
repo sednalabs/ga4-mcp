@@ -40,6 +40,8 @@ surface itself is read/report oriented.
 
 Do not expose `request_header_or_config` as an anonymous public surface. A
 missing request token could silently fall back to a server-held Google identity.
+For non-loopback/public HTTP, use `request_header` so each client supplies its
+own Google token and the runtime cannot drift onto a shared server credential.
 Local browser login stores a GA4-specific authorized-user ADC file under
 `<user-config>/ga4-mcp/gcloud` by default. With `--client-id-file` and no
 `--shared-adc`, `ga4-mcp` uses its own browser OAuth helper and does not use

@@ -84,6 +84,7 @@ struct QuotaProjectStatus {
 enum VerificationReport {
     NotChecked,
     Ok,
+    RequestHeaderRequired { header: String },
     Failed { error: String, hint: Option<String> },
     ConfigError { error: String },
 }
@@ -317,7 +318,14 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
 
     println!("Google login completed.");
     if args.no_verify {
-        println!("Verification skipped. Run `ga4-mcp auth status --verify-token` when ready.");
+        if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+            println!(
+                "Verification skipped. Call ga4_auth_status with verify_token=true while sending {} when ready.",
+                settings.upstream_token_header
+            );
+        } else {
+            println!("Verification skipped. Run `ga4-mcp auth status --verify-token` when ready.");
+        }
         for step in post_login_runtime_steps(settings, &scope) {
             println!("{step}");
         }
@@ -330,12 +338,12 @@ async fn run_login(settings: &Settings, args: &AuthLoginArgs) -> Result<()> {
     let mut report = build_auth_report(&verify_settings, true).await;
     add_post_login_runtime_steps(settings, &scope, &mut report);
     print_human_report(&report, true);
-    if verification_ok(&report) {
-        Ok(())
-    } else {
+    if verification_blocks_login_completion(&report) {
         Err(anyhow!(
             "login completed, but Google Analytics verification did not pass"
         ))
+    } else {
+        Ok(())
     }
 }
 
@@ -417,12 +425,14 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
             if verify_token {
                 let result = if settings.upstream_token_source == UpstreamTokenSource::RequestHeader
                 {
-                    client.verify_config_token().await
+                    Ok(VerificationReport::RequestHeaderRequired {
+                        header: settings.upstream_token_header.clone(),
+                    })
                 } else {
-                    client.verify_token().await
+                    client.verify_token().await.map(|()| VerificationReport::Ok)
                 };
                 match result {
-                    Ok(()) => VerificationReport::Ok,
+                    Ok(report) => report,
                     Err(err) => VerificationReport::Failed {
                         error: redact_secret_text(&err.to_string()),
                         hint: err.hint().map(str::to_string),
@@ -440,15 +450,18 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
         credential_material_detected(&detection) || settings_credential_material_detected(settings);
     let explicit_credential_needs_repair =
         explicit_credential_config_needs_repair(settings, &detection);
-    let auth_source = visible_auth_source(
+    let (auth_source, auth_source_candidate) = reported_auth_sources(
+        settings,
         detected_auth_source,
         credential_material_detected,
         &verification,
     );
-    let auth_source_candidate = detected_auth_source.map(|source| source.as_str().to_string());
-    let config_valid = auth_source.is_some()
-        && !explicit_credential_needs_repair
-        && !matches!(verification, VerificationReport::ConfigError { .. });
+    let config_valid = reported_config_valid(
+        settings,
+        auth_source.as_deref(),
+        &verification,
+        explicit_credential_needs_repair,
+    );
     let quota_project = effective_quota_project(settings, detected_quota_project.as_deref());
     let ready = report_ready(settings, &verification, config_valid);
     let next_steps = next_steps(settings, &detection, &verification, verify_token);
@@ -561,6 +574,12 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
     match &report.verification {
         VerificationReport::NotChecked => println!("Verification: not checked"),
         VerificationReport::Ok => println!("Verification: ok"),
+        VerificationReport::RequestHeaderRequired { header } => {
+            println!("Verification: requires request header");
+            println!(
+                "Hint: standalone CLI cannot verify request_header mode; call ga4_auth_status with verify_token=true while sending {header}, or switch local loopback use to request_header_or_config and rerun `ga4-mcp auth status --verify-token`."
+            );
+        }
         VerificationReport::Failed { error, hint } => {
             println!("Verification: failed");
             println!("Error: {error}");
@@ -575,7 +594,10 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
     }
     println!(
         "Ready: {}",
-        if matches!(report.verification, VerificationReport::NotChecked) {
+        if matches!(
+            &report.verification,
+            VerificationReport::NotChecked | VerificationReport::RequestHeaderRequired { .. }
+        ) {
             "not verified"
         } else {
             yes_no(report.ready)
@@ -679,6 +701,43 @@ fn visible_auth_source(
     }
 }
 
+fn reported_auth_sources(
+    settings: &Settings,
+    detected_auth_source: Option<AuthSource>,
+    credential_material_detected: bool,
+    verification: &VerificationReport,
+) -> (Option<String>, Option<String>) {
+    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return (Some("request_header".to_string()), None);
+    }
+
+    (
+        visible_auth_source(
+            detected_auth_source,
+            credential_material_detected,
+            verification,
+        ),
+        detected_auth_source.map(|source| source.as_str().to_string()),
+    )
+}
+
+fn reported_config_valid(
+    settings: &Settings,
+    auth_source: Option<&str>,
+    verification: &VerificationReport,
+    explicit_credential_needs_repair: bool,
+) -> bool {
+    if matches!(verification, VerificationReport::ConfigError { .. }) {
+        return false;
+    }
+
+    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return true;
+    }
+
+    auth_source.is_some() && !explicit_credential_needs_repair
+}
+
 fn report_ready(
     settings: &Settings,
     verification: &VerificationReport,
@@ -689,8 +748,11 @@ fn report_ready(
         && scope_allows_analytics_read(&settings.analytics_scope)
 }
 
-fn verification_ok(report: &AuthReport) -> bool {
-    matches!(report.verification, VerificationReport::Ok)
+fn verification_blocks_login_completion(report: &AuthReport) -> bool {
+    matches!(
+        &report.verification,
+        VerificationReport::Failed { .. } | VerificationReport::ConfigError { .. }
+    )
 }
 
 fn use_direct_browser_oauth(args: &AuthLoginArgs) -> bool {
@@ -809,7 +871,14 @@ async fn run_direct_browser_oauth_login(
     println!("Google login completed.");
 
     if args.no_verify {
-        println!("Verification skipped. Run `ga4-mcp auth status --verify-token` when ready.");
+        if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+            println!(
+                "Verification skipped. Call ga4_auth_status with verify_token=true while sending {} when ready.",
+                settings.upstream_token_header
+            );
+        } else {
+            println!("Verification skipped. Run `ga4-mcp auth status --verify-token` when ready.");
+        }
         for step in post_login_runtime_steps(settings, scope) {
             println!("{step}");
         }
@@ -822,12 +891,12 @@ async fn run_direct_browser_oauth_login(
     let mut report = build_auth_report(&verify_settings, true).await;
     add_post_login_runtime_steps(settings, scope, &mut report);
     print_human_report(&report, true);
-    if verification_ok(&report) {
-        Ok(())
-    } else {
+    if verification_blocks_login_completion(&report) {
         Err(anyhow!(
             "login completed, but Google Analytics verification did not pass"
         ))
+    } else {
+        Ok(())
     }
 }
 
@@ -877,7 +946,10 @@ fn post_login_runtime_steps_with_env(
         steps.push(runtime_scope_step(login_scope));
     }
     if original_settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-        steps.push(local_fallback_step());
+        let fallback = local_fallback_step(&original_settings.upstream_token_header);
+        if !steps.contains(&fallback) {
+            steps.push(fallback);
+        }
     }
     steps
 }
@@ -894,8 +966,16 @@ fn runtime_scope_step(scope: &str) -> String {
     )
 }
 
-fn local_fallback_step() -> String {
-    "For the lowest-friction local/loopback service, set GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization; keep request_header for hosted per-user services where every client supplies a Google token.".to_string()
+fn local_fallback_step(header: &str) -> String {
+    format!(
+        "For the lowest-friction local/loopback service, set GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER={header}; keep request_header for hosted per-user services where every client supplies a Google token."
+    )
+}
+
+fn request_header_verification_step(header: &str) -> String {
+    format!(
+        "Call ga4_auth_status with verify_token=true while sending {header}. For local or loopback fallback, switch GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and rerun `ga4-mcp auth status --verify-token`."
+    )
 }
 
 fn next_steps(
@@ -926,7 +1006,7 @@ fn next_steps(
                 steps.push(read_scope_step);
             }
             if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                steps.push(local_fallback_step());
+                steps.push(local_fallback_step(&settings.upstream_token_header));
             }
             steps.push(
                 "Restart MCP clients that keep long-lived stdio or HTTP server processes."
@@ -950,19 +1030,22 @@ fn next_steps(
                     steps.push(read_scope_step);
                 }
                 if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                    steps.push(local_fallback_step());
+                    steps.push(request_header_verification_step(
+                        &settings.upstream_token_header,
+                    ));
+                } else {
+                    steps.push(
+                        "Run `ga4-mcp auth status --verify-token` to prove Google API access."
+                            .to_string(),
+                    );
                 }
-                steps.extend([
-                    "Run `ga4-mcp auth status --verify-token` to prove Google API access."
-                        .to_string(),
+                steps.push(
                     "Then restart the MCP client and call get_account_summaries.".to_string(),
-                ]);
+                );
                 steps
             } else {
                 let mut steps = vec![
                     format!("Run `{login_command}` for browser login."),
-                    "Then run `ga4-mcp auth status --verify-token` to prove Google API access."
-                        .to_string(),
                     "Restart the MCP client and call get_account_summaries.".to_string(),
                 ];
                 if explicit_credential_config_detected(settings, detection) {
@@ -972,10 +1055,35 @@ fn next_steps(
                     steps.insert(0, read_scope_step);
                 }
                 if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                    steps.push(local_fallback_step());
+                    steps.insert(
+                        1,
+                        request_header_verification_step(&settings.upstream_token_header),
+                    );
+                } else {
+                    steps.insert(
+                        1,
+                        "Then run `ga4-mcp auth status --verify-token` to prove Google API access."
+                            .to_string(),
+                    );
                 }
                 steps
             }
+        }
+        VerificationReport::RequestHeaderRequired { header } => {
+            let mut steps = Vec::new();
+            if missing_analytics_scope {
+                steps.push(read_scope_step);
+            }
+            steps.push(request_header_verification_step(header));
+            steps.push(
+                "Restart MCP clients that keep long-lived stdio or HTTP server processes."
+                    .to_string(),
+            );
+            steps.push(
+                "Call get_account_summaries after runtime auth is verified to discover accessible GA4 accounts and properties."
+                    .to_string(),
+            );
+            steps
         }
         VerificationReport::Failed { error, .. } => {
             let mut steps = Vec::new();
@@ -1016,7 +1124,7 @@ fn next_steps(
                 steps.push("If Google rejects the Analytics scope, rerun login with `--client-id-file /path/to/client_id.json` from a Desktop OAuth client.".to_string());
             }
             if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                steps.push(local_fallback_step());
+                steps.push(local_fallback_step(&settings.upstream_token_header));
             }
             steps.push("For unattended deployments, prefer GOOGLE_APPLICATION_CREDENTIALS or OAuth refresh-token env configuration.".to_string());
             steps
@@ -1035,13 +1143,22 @@ fn next_steps(
                 steps.push(format!("Run `{login_command}` after explicit credential configuration is fixed or cleared."));
             }
             if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                steps.push(local_fallback_step());
+                steps.push(local_fallback_step(&settings.upstream_token_header));
             }
             steps.push("For unattended deployments, prefer GOOGLE_APPLICATION_CREDENTIALS or OAuth refresh-token env configuration.".to_string());
             steps
         }
         VerificationReport::NotChecked => {
-            vec!["Run `ga4-mcp auth status --verify-token` to prove Google API access.".to_string()]
+            if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+                vec![request_header_verification_step(
+                    &settings.upstream_token_header,
+                )]
+            } else {
+                vec![
+                    "Run `ga4-mcp auth status --verify-token` to prove Google API access."
+                        .to_string(),
+                ]
+            }
         }
     }
 }
@@ -1446,6 +1563,63 @@ mod tests {
     }
 
     #[test]
+    fn request_header_mode_local_fallback_uses_configured_header() {
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+        settings.upstream_token_header = "x-forwarded-google-token".to_string();
+
+        let steps = post_login_runtime_steps(&settings, DEFAULT_ANALYTICS_SCOPE);
+
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.contains("x-forwarded-google-token"))
+        );
+        assert!(
+            steps
+                .iter()
+                .all(|step| !step.contains("x-google-access-token"))
+        );
+    }
+
+    #[test]
+    fn request_header_verification_steps_do_not_require_cli_token_check() {
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+
+        let steps = next_steps(
+            &settings,
+            &CredentialDetection {
+                gcloud_available: true,
+                gcloud_version: Some("Google Cloud SDK 999.0.0".to_string()),
+                adc_file: FilePresence {
+                    path: Some("/tmp/adc.json".to_string()),
+                    present: true,
+                },
+                env: EnvPresence {
+                    google_application_credentials: false,
+                    oauth_client_secret_json: false,
+                    oauth_refresh_token: false,
+                    quota_project: false,
+                    shared_adc: false,
+                    cloudsdk_config: false,
+                },
+            },
+            &VerificationReport::RequestHeaderRequired {
+                header: "x-google-access-token".to_string(),
+            },
+            true,
+        );
+
+        assert!(steps.iter().any(|step| step.contains("ga4_auth_status")));
+        assert!(
+            steps
+                .iter()
+                .all(|step| !step.contains("Run `ga4-mcp auth status --verify-token`"))
+        );
+    }
+
+    #[test]
     fn adc_without_material_is_not_reported_as_configured_before_verification() {
         assert_eq!(
             visible_auth_source(
@@ -1455,6 +1629,39 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn request_header_mode_reports_the_runtime_token_path_as_the_auth_source() {
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+
+        let (auth_source, auth_source_candidate) = reported_auth_sources(
+            &settings,
+            Some(AuthSource::GoogleDefaultProviderChain),
+            false,
+            &VerificationReport::RequestHeaderRequired {
+                header: "x-google-access-token".to_string(),
+            },
+        );
+
+        assert_eq!(auth_source.as_deref(), Some("request_header"));
+        assert_eq!(auth_source_candidate, None);
+    }
+
+    #[test]
+    fn request_header_mode_is_config_valid_without_server_side_credentials() {
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+
+        assert!(reported_config_valid(
+            &settings,
+            Some("request_header"),
+            &VerificationReport::RequestHeaderRequired {
+                header: "x-google-access-token".to_string(),
+            },
+            true,
+        ));
     }
 
     fn test_settings(scope: &str) -> Settings {
@@ -1469,7 +1676,7 @@ mod tests {
             oauth_client_secret_json: None,
             oauth_refresh_token: None,
             upstream_token_source: UpstreamTokenSource::Config,
-            upstream_token_header: "authorization".to_string(),
+            upstream_token_header: "x-google-access-token".to_string(),
             quota_project: None,
             shared_adc: false,
             scratchpad_session_ttl: std::time::Duration::from_secs(900),

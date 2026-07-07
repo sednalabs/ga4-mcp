@@ -11,6 +11,8 @@ use anyhow::{Result, anyhow};
 use ipnet::IpNet;
 use mcp_toolkit_auth::{AuthConfig, AuthMode, AuthSecurityProfile, ClientAuthMethod};
 
+use crate::config::UpstreamTokenSource;
+
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:9420";
 const DEFAULT_ALLOWED_HOSTS: &str = "localhost,127.0.0.1,::1";
 const DEFAULT_ALLOWED_CIDRS: &str = "127.0.0.1/32,::1/128";
@@ -416,6 +418,27 @@ fn ensure_https_url_if_set(var_name: &str, value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_http_runtime_credential_posture(
+    settings: &HttpSettings,
+    upstream_token_source: UpstreamTokenSource,
+    upstream_token_header: &str,
+) -> Result<()> {
+    if settings.auth.enabled
+        && upstream_token_source.uses_request_header()
+        && upstream_token_header.eq_ignore_ascii_case("authorization")
+    {
+        return Err(anyhow!(
+            "GA4_MCP_AUTH_ENABLED=1 cannot share the authorization header with upstream Google tokens; set GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=x-google-access-token"
+        ));
+    }
+    if settings.allow_non_loopback && upstream_token_source != UpstreamTokenSource::RequestHeader {
+        return Err(anyhow!(
+            "non-loopback HTTP exposure must use GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header so each client supplies its own Google token; request_header_or_config and config can fall back to server-held credentials"
+        ));
+    }
+    Ok(())
+}
+
 fn parse_csv(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(str::trim)
@@ -621,5 +644,45 @@ mod tests {
         auth.resource_url = Some("http://127.0.0.1:9420/mcp".to_string());
         validate_public_exposure_auth_posture(false, &auth)
             .expect("loopback deployment should not enforce public posture");
+    }
+
+    fn base_http_settings() -> HttpSettings {
+        HttpSettings {
+            bind_addr: DEFAULT_BIND_ADDR.parse().expect("bind addr"),
+            allow_non_loopback: false,
+            allowed_hosts: parse_allowed_hosts(DEFAULT_ALLOWED_HOSTS),
+            allowed_cidrs: parse_allowed_cidrs(DEFAULT_ALLOWED_CIDRS, "GA4_MCP_ALLOWED_CIDRS")
+                .expect("default CIDRs"),
+            tls_cert_path: None,
+            tls_key_path: None,
+            auth: HttpAuthSettings::disabled(),
+        }
+    }
+
+    #[test]
+    fn runtime_posture_rejects_public_server_fallback_even_with_inbound_auth() {
+        let mut settings = base_http_settings();
+        settings.allow_non_loopback = true;
+        settings.auth.enabled = true;
+        let err = validate_http_runtime_credential_posture(
+            &settings,
+            UpstreamTokenSource::RequestHeaderOrConfig,
+            "x-google-access-token",
+        )
+        .expect_err("public server fallback should fail");
+        assert!(err.to_string().contains("request_header"));
+    }
+
+    #[test]
+    fn runtime_posture_rejects_authorization_header_collision_when_auth_enabled() {
+        let mut settings = base_http_settings();
+        settings.auth.enabled = true;
+        let err = validate_http_runtime_credential_posture(
+            &settings,
+            UpstreamTokenSource::RequestHeader,
+            "authorization",
+        )
+        .expect_err("authorization header collision should fail");
+        assert!(err.to_string().contains("x-google-access-token"));
     }
 }

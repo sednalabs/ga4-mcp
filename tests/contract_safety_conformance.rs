@@ -37,6 +37,16 @@ fn tool_input_schema(snapshot: &Value, tool_name: &str) -> Value {
         .expect("input schema should exist")
 }
 
+fn tool_names(snapshot: &Value) -> Vec<String> {
+    snapshot["tools"]
+        .as_array()
+        .expect("tools array should exist")
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
 #[test]
 fn contract_success_tabular_emits_required_v1_fields() {
     let mut tabular = TabularMeta::rows(100, 25, vec![ColumnMeta::new("event_name")]);
@@ -122,6 +132,19 @@ fn tool_snapshot_exposes_tabular_request_controls_for_contract_v1() {
         .expect("tool schema snapshot should be readable");
     let snapshot: Value =
         serde_json::from_str(&snapshot_raw).expect("tool schema snapshot should be valid JSON");
+    let scratchpad_snapshot_raw =
+        std::fs::read_to_string("spec/tool_schema_snapshot.scratchpad.v1.json")
+            .expect("scratchpad tool schema snapshot should be readable");
+    let scratchpad_snapshot: Value = serde_json::from_str(&scratchpad_snapshot_raw)
+        .expect("scratchpad tool schema snapshot should be valid JSON");
+
+    let default_tool_names = tool_names(&snapshot);
+    assert!(
+        !default_tool_names
+            .iter()
+            .any(|name| name == "scratchpad_query"),
+        "default read_only snapshot must not advertise scratchpad_query"
+    );
 
     let run_report_keys = tool_input_property_names(&snapshot, "run_report");
     for required in [
@@ -137,7 +160,7 @@ fn tool_snapshot_exposes_tabular_request_controls_for_contract_v1() {
         );
     }
 
-    let scratchpad_query_keys = tool_input_property_names(&snapshot, "scratchpad_query");
+    let scratchpad_query_keys = tool_input_property_names(&scratchpad_snapshot, "scratchpad_query");
     for required in [
         "max_rows",
         "cursor",

@@ -104,6 +104,7 @@ struct CachedAccessToken {
 
 #[derive(Debug, Clone)]
 enum UpstreamAuthMode {
+    RequestHeaderOnly,
     Adc,
     AuthorizedUserAdcFile(PathBuf),
     OAuthRefresh(Arc<OAuthRefreshConfig>),
@@ -111,6 +112,7 @@ enum UpstreamAuthMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSource {
+    RequestHeader,
     GoogleDefaultProviderChain,
     GoogleAuthorizedUserAdcFile,
     OAuthRefreshToken,
@@ -119,6 +121,7 @@ pub enum AuthSource {
 impl AuthSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::RequestHeader => "request_header",
             Self::GoogleDefaultProviderChain => "google_default_provider_chain",
             Self::GoogleAuthorizedUserAdcFile => "google_authorized_user_adc_file",
             Self::OAuthRefreshToken => "oauth_refresh_token",
@@ -276,6 +279,7 @@ impl AnalyticsApiClient {
 
     pub fn auth_source(&self) -> AuthSource {
         match &self.auth_mode {
+            UpstreamAuthMode::RequestHeaderOnly => AuthSource::RequestHeader,
             UpstreamAuthMode::Adc => AuthSource::GoogleDefaultProviderChain,
             UpstreamAuthMode::AuthorizedUserAdcFile(_) => AuthSource::GoogleAuthorizedUserAdcFile,
             UpstreamAuthMode::OAuthRefresh(_) => AuthSource::OAuthRefreshToken,
@@ -810,6 +814,10 @@ impl AnalyticsApiClient {
             .token_provider
             .get_or_try_init(|| async {
                 match &self.auth_mode {
+                    UpstreamAuthMode::RequestHeaderOnly => Err(AnalyticsError::AuthBootstrap(
+                        "request_header mode does not use a configured Google credential source"
+                            .to_string(),
+                    )),
                     UpstreamAuthMode::Adc => gcp_auth::provider()
                         .await
                         .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string())),
@@ -890,6 +898,10 @@ impl AnalyticsApiClient {
 
     async fn configured_access_token(&self) -> Result<String, AnalyticsError> {
         match &self.auth_mode {
+            UpstreamAuthMode::RequestHeaderOnly => Err(AnalyticsError::AuthBootstrap(
+                "request_header mode requires the caller to supply a Google access token on each request"
+                    .to_string(),
+            )),
             UpstreamAuthMode::Adc => {
                 let provider = self.token_provider().await?;
                 let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
@@ -1002,6 +1014,10 @@ fn parse_https_upstream_url(raw: &str) -> Result<Url, AnalyticsError> {
 }
 
 fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsError> {
+    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return Ok(UpstreamAuthMode::RequestHeaderOnly);
+    }
+
     match (
         settings.oauth_client_secret_json.as_deref(),
         settings.oauth_refresh_token.as_deref(),
@@ -1416,6 +1432,7 @@ fn adc_quota_project_id_for_auth_mode(
     shared_adc: bool,
 ) -> Option<String> {
     let path = match auth_mode {
+        UpstreamAuthMode::RequestHeaderOnly => None,
         UpstreamAuthMode::AuthorizedUserAdcFile(path) => Some(path.clone()),
         UpstreamAuthMode::Adc if shared_adc => conventional_adc_credentials_path(),
         UpstreamAuthMode::Adc | UpstreamAuthMode::OAuthRefresh(_) => None,
@@ -1453,9 +1470,11 @@ fn read_adc_file(path: &std::path::Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::config::{CapabilityProfile, CliCommand, DEFAULT_ANALYTICS_SCOPE};
 
     #[test]
     fn property_id_accepts_numeric_and_prefixed_values() {
@@ -1588,10 +1607,61 @@ mod tests {
         assert!(err.to_string().contains("must be one of"));
     }
 
+    #[test]
+    fn select_auth_mode_request_header_does_not_require_local_adc_bootstrap() {
+        let mut settings = test_settings();
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+
+        let auth_mode = select_auth_mode(&settings).expect("request_header mode should bootstrap");
+
+        assert!(matches!(auth_mode, UpstreamAuthMode::RequestHeaderOnly));
+    }
+
+    #[test]
+    fn select_auth_mode_request_header_ignores_partial_oauth_refresh_config() {
+        let mut settings = test_settings();
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+        settings.oauth_client_secret_json = Some("client-secret.json".to_string());
+
+        let auth_mode = select_auth_mode(&settings)
+            .expect("request_header mode should ignore server-side OAuth refresh bootstrap");
+
+        assert!(matches!(auth_mode, UpstreamAuthMode::RequestHeaderOnly));
+    }
+
     fn test_fixture_path(name: &str) -> PathBuf {
         let root = PathBuf::from("target").join("ga4-mcp-test-fixtures");
         std::fs::create_dir_all(&root).expect("fixture root should be writable");
         root.join(name)
+    }
+
+    fn test_settings() -> Settings {
+        Settings {
+            analytics_scope: DEFAULT_ANALYTICS_SCOPE.to_string(),
+            admin_base_url: "https://analyticsadmin.googleapis.com".to_string(),
+            data_base_url: "https://analyticsdata.googleapis.com".to_string(),
+            http_timeout: Duration::from_secs(1),
+            max_page_size: 200,
+            max_pages: 20,
+            user_agent: "test".to_string(),
+            oauth_client_secret_json: None,
+            oauth_refresh_token: None,
+            upstream_token_source: UpstreamTokenSource::Config,
+            upstream_token_header: "x-google-access-token".to_string(),
+            quota_project: None,
+            shared_adc: false,
+            scratchpad_session_ttl: Duration::from_secs(900),
+            scratchpad_max_sessions: 64,
+            scratchpad_max_tables_per_session: 32,
+            scratchpad_max_rows_per_session: 1_000_000,
+            scratchpad_max_memory_mb: 256,
+            scratchpad_query_timeout: Duration::from_secs(15),
+            scratchpad_max_sql_bytes: 65_536,
+            capability_profile: CapabilityProfile::ReadOnly,
+            print_tools: false,
+            print_tool_schema: false,
+            command: Some(CliCommand::Serve),
+        }
     }
 
     #[test]
