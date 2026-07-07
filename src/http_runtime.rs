@@ -658,10 +658,10 @@ mod tests {
 
     #[test]
     fn validate_request_origin_accepts_missing_origin() {
-        let allowed_hosts = vec!["localhost".to_string()];
+        let allowed_hosts = vec!["ga4-mcp.example".to_string()];
         let req = axum::http::Request::builder()
-            .uri("http://localhost:9420/mcp")
-            .header(HOST, "localhost")
+            .uri("https://ga4-mcp.example/mcp")
+            .header(HOST, "ga4-mcp.example")
             .body(Body::empty())
             .expect("request");
 
@@ -670,11 +670,11 @@ mod tests {
 
     #[test]
     fn validate_request_origin_accepts_allowed_origin() {
-        let allowed_hosts = vec!["localhost".to_string()];
+        let allowed_hosts = vec!["ga4-mcp.example".to_string()];
         let req = axum::http::Request::builder()
-            .uri("http://localhost:9420/mcp")
-            .header(HOST, "localhost")
-            .header("origin", "http://localhost:3000")
+            .uri("https://ga4-mcp.example/mcp")
+            .header(HOST, "ga4-mcp.example")
+            .header("origin", "https://ga4-mcp.example")
             .body(Body::empty())
             .expect("request");
 
@@ -683,10 +683,10 @@ mod tests {
 
     #[test]
     fn validate_request_origin_rejects_unexpected_origin() {
-        let allowed_hosts = vec!["localhost".to_string()];
+        let allowed_hosts = vec!["ga4-mcp.example".to_string()];
         let req = axum::http::Request::builder()
-            .uri("http://localhost:9420/mcp")
-            .header(HOST, "localhost")
+            .uri("https://ga4-mcp.example/mcp")
+            .header(HOST, "ga4-mcp.example")
             .header("origin", "https://evil.example")
             .body(Body::empty())
             .expect("request");

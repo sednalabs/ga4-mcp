@@ -296,7 +296,7 @@
         "properties": {
           "verify_token": {
             "default": false,
-            "description": "When true, acquire a Google access token and call GA account summaries. The token is never returned.",
+            "description": "When true, verify the active GA4 credential path by calling account summaries. In request_header mode, the caller must send the configured upstream token header. The token is never returned.",
             "type": "boolean"
           }
         },

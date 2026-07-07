@@ -407,7 +407,7 @@ scratchpad surface.
 - Input validation fails closed on malformed ids/arguments.
 - Capability profile gates scratchpad access.
 - Non-loopback HTTP requires explicit allow + TLS.
-- Browser `Origin` headers are checked against the same allowlisted host set as `Host`, so browser-based callers cannot drift onto a different origin.
+- Browser `Origin` headers are checked against the same allowlisted host set as `Host`, so browser-based callers cannot present an unrelated host origin.
 - When `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config`, auth headers on `/mcp` are rejected if inbound auth is off.
 - `request_header` is the only supported non-loopback/public upstream-token mode.
 - `request_header_or_config` is the loopback/local convenience mode: request token first, ADC/OAuth-refresh fallback second.

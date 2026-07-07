@@ -72,7 +72,9 @@ fn default_true() -> bool {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AuthStatusArgs {
-    /// When true, acquire a Google access token and call GA account summaries. The token is never returned.
+    /// When true, verify the active GA4 credential path by calling account
+    /// summaries. In request_header mode, the caller must send the configured
+    /// upstream token header. The token is never returned.
     #[serde(default)]
     pub verify_token: bool,
 }
@@ -722,6 +724,11 @@ impl AnalyticsMcp {
         } else {
             "ga4-mcp auth status --verify-token".to_string()
         };
+        let doctor_command = if upstream_token_source == UpstreamTokenSource::RequestHeader {
+            "ga4-mcp auth doctor".to_string()
+        } else {
+            "ga4-mcp auth doctor --verify-token".to_string()
+        };
         let first_status_step = if upstream_token_source == UpstreamTokenSource::RequestHeader {
             format!(
                 "Call ga4_auth_status with verify_token=true while sending {upstream_token_header} to prove Google Analytics access without returning a token. For local fallback, switch GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE to request_header_or_config and then run ga4-mcp auth status --verify-token."
@@ -744,7 +751,7 @@ impl AnalyticsMcp {
                     "login_with_client_id_file": format!("ga4-mcp auth login --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
                     "login_headless_with_client_id_file": format!("ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
                     "status": status_command,
-                    "doctor": "ga4-mcp auth doctor --verify-token"
+                    "doctor": doctor_command
                 },
                 "first_steps": [
                     format!("Run ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json for the easiest unblocked SSH/browser login."),
@@ -823,6 +830,11 @@ impl AnalyticsMcp {
                 Ok(()) => (json!({ "checked": true, "ok": true }), Some(true), None),
                 Err(err) => {
                     let issue = auth_verification_issue(&err);
+                    let hint = auth_status_hint(
+                        self.client.upstream_token_source(),
+                        self.client.upstream_token_header(),
+                        &err,
+                    );
                     (
                         json!({
                             "checked": true,
@@ -830,7 +842,7 @@ impl AnalyticsMcp {
                             "error": redact_tool_error_message(&err),
                             "reason": err.reason(),
                             "detail": err.detail(),
-                            "hint": err.hint(),
+                            "hint": hint,
                             "issue": issue
                         }),
                         Some(false),
@@ -5901,6 +5913,25 @@ fn auth_verification_issue(err: &AnalyticsError) -> &'static str {
     }
 }
 
+fn auth_status_hint(
+    upstream_token_source: UpstreamTokenSource,
+    upstream_token_header: &str,
+    err: &AnalyticsError,
+) -> Option<String> {
+    if upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return match err {
+            AnalyticsError::MissingRequestAccessToken { .. } => Some(format!(
+                "Configure the MCP client OAuth flow so each request sends a Google access token in {upstream_token_header}."
+            )),
+            AnalyticsError::MalformedRequestAccessToken { .. } => Some(format!(
+                "Send a valid OAuth access token in {upstream_token_header}."
+            )),
+            _ => err.hint().map(str::to_string),
+        };
+    }
+    err.hint().map(str::to_string)
+}
+
 fn auth_next_steps(
     upstream_token_source: UpstreamTokenSource,
     upstream_token_header: &str,
@@ -7051,5 +7082,20 @@ mod tests {
                 .iter()
                 .all(|step| !step.contains("Run ga4-mcp auth login for local browser login."))
         );
+    }
+
+    #[test]
+    fn request_header_auth_status_hint_uses_configured_header() {
+        let hint = auth_status_hint(
+            UpstreamTokenSource::RequestHeader,
+            "x-forwarded-google-token",
+            &AnalyticsError::MissingRequestAccessToken {
+                header: "x-forwarded-google-token".to_string(),
+            },
+        )
+        .expect("hint");
+
+        assert!(hint.contains("x-forwarded-google-token"));
+        assert!(!hint.contains("Authorization"));
     }
 }
