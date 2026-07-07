@@ -1014,6 +1014,10 @@ fn parse_https_upstream_url(raw: &str) -> Result<Url, AnalyticsError> {
 }
 
 fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsError> {
+    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return Ok(UpstreamAuthMode::RequestHeaderOnly);
+    }
+
     match (
         settings.oauth_client_secret_json.as_deref(),
         settings.oauth_refresh_token.as_deref(),
@@ -1029,10 +1033,6 @@ fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsEr
                 "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON and GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN must both be set or both be unset; refusing to fall back to ADC with partial OAuth configuration".to_string(),
             ));
         }
-    }
-
-    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-        return Ok(UpstreamAuthMode::RequestHeaderOnly);
     }
 
     if env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some() || settings.shared_adc {
@@ -1610,8 +1610,19 @@ mod tests {
         let mut settings = Settings::default();
         settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
 
-        let auth_mode =
-            select_auth_mode(&settings).expect("request_header mode should bootstrap");
+        let auth_mode = select_auth_mode(&settings).expect("request_header mode should bootstrap");
+
+        assert!(matches!(auth_mode, UpstreamAuthMode::RequestHeaderOnly));
+    }
+
+    #[test]
+    fn select_auth_mode_request_header_ignores_partial_oauth_refresh_config() {
+        let mut settings = Settings::default();
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+        settings.oauth_client_secret_json = Some("client-secret.json".to_string());
+
+        let auth_mode = select_auth_mode(&settings)
+            .expect("request_header mode should ignore server-side OAuth refresh bootstrap");
 
         assert!(matches!(auth_mode, UpstreamAuthMode::RequestHeaderOnly));
     }
