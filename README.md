@@ -28,6 +28,12 @@ As of 2026-02-24, the upstream README describes a smaller core tool set (`get_ac
 
 ## Current Tool Surface
 
+### Auth and setup helpers
+
+- `ga4_get_started`
+- `ga4_auth_status`
+- `ga4_auth_login_command`
+
 ### Core GA read/report tools
 
 - `get_account_summaries`
@@ -73,8 +79,8 @@ As of 2026-02-24, the upstream README describes a smaller core tool set (`get_ac
 
 Straight answer:
 
-- Local user-level service on your own machine: use `request_header_or_config`
-  and log in once with Google ADC. This is the least painful path.
+- Local user-level service on your own machine: log in once with Google ADC
+  and set a quota project. This is the benchmark happy path.
 - Hosted/public/multi-user service: use `request_header`; every client request
   must carry that user's Google bearer token.
 - Non-interactive automation: use `config` with ADC, a service account, or an
@@ -89,44 +95,70 @@ Required Google scope for all modes:
 Use this for a loopback user service on your own machine.
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --quota-project YOUR_PROJECT
+ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
 ```
 
+By default `ga4-mcp auth login` writes Application Default Credentials to a
+GA4-specific gcloud config directory:
+`<user-config>/ga4-mcp/gcloud/application_default_credentials.json`. Use
+`--shared-adc` only when you intentionally want the conventional shared gcloud
+ADC file.
+
+`YOUR_PROJECT` should be a Google Cloud project where both
+`analyticsadmin.googleapis.com` and `analyticsdata.googleapis.com` are enabled
+and where your Google account is allowed to use the project for quota.
+
 Result: if a client sends `Authorization: Bearer <google_access_token>`, the
 server uses that token. If the client sends no token, the server uses the local
-ADC identity from the one-time login.
+GA4-specific ADC identity from the one-time login. Conventional shared ADC is
+used only when `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or the server starts with
+`--shared-adc`.
 
 If Google blocks the default `gcloud` OAuth client for Analytics scopes, create
 a Google OAuth desktop client, download the JSON locally, and run:
 
 ```bash
-gcloud auth application-default login \
-  --client-id-file /path/to/oauth-client.json \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json
 ```
 
 Headless or SSH login:
 
 ```bash
-gcloud auth application-default login \
-  --no-launch-browser \
-  --client-id-file /path/to/oauth-client.json \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --headless --quota-project YOUR_PROJECT
 ```
 
 The headless flow asks `gcloud` not to launch a browser. Complete the printed
 Google consent flow from a trusted machine and keep the resulting ADC file
 private.
 
+Useful auth commands:
+
+```bash
+ga4-mcp auth command --headless --quota-project YOUR_PROJECT
+ga4-mcp auth doctor --verify-token
+ga4-mcp auth status --json --verify-token
+```
+
+If verification says local ADC needs a quota project, enable the Analytics
+Admin and Data APIs on a Google Cloud project, then rerun login with
+`--quota-project` or run `ga4-mcp auth command --quota-project YOUR_PROJECT`
+and execute the printed quota-project command:
+
+```bash
+gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+ga4-mcp auth login --quota-project YOUR_PROJECT
+ga4-mcp auth status --verify-token
+```
+
 #### Server-side credential mode
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --quota-project YOUR_PROJECT
+ga4-mcp auth status --verify-token
 ```
 
 Or point directly at a credentials file:
@@ -186,6 +218,14 @@ Notes:
 ```bash
 cargo run --release --bin ga4-mcp
 ```
+
+Inside MCP, call `ga4_get_started` first after install. Use
+`ga4_auth_status` to inspect credentials, and `ga4_auth_login_command` when an
+MCP client needs a copyable `gcloud` command without running the CLI wrapper.
+That tool also targets the GA4-specific ADC file by default; pass
+`shared_adc=true` only for the conventional shared ADC file. To make the running server use that
+shared ADC file, also set `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the binary with
+`--shared-adc`.
 
 ### 3) Optional: run streamable HTTP server
 

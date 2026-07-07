@@ -4,11 +4,13 @@ set -euo pipefail
 SCOPES="https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform"
 ACCOUNT=""
 CLIENT_ID_FILE=""
+QUOTA_PROJECT=""
 ENV_FILE=""
 SERVICE="ga4-mcp-http.service"
 RUN_LOGIN=1
 RESTART_SERVICE=1
 LOGIN_BROWSER_MODE="auto"
+SHARED_ADC=0
 
 usage() {
   cat <<'EOF'
@@ -24,6 +26,7 @@ The script:
 Options:
   --account EMAIL          Google account to log in, e.g. user@example.com.
   --client-id-file PATH    Optional Google OAuth desktop client JSON.
+  --quota-project ID       Optional Google Cloud project used for ADC quota.
   --env-file PATH          Service env file to update.
                            Default: discovered from systemd, then
                            ~/.config/ga4-mcp/ga4-mcp-http.env.
@@ -38,6 +41,8 @@ Options:
   --no-launch-browser      Pass gcloud's --no-launch-browser flag.
   --no-browser             Pass gcloud's --no-browser remote-bootstrap flag.
                            This requires another machine with gcloud.
+  --shared-adc             Use the conventional shared gcloud ADC file instead
+                           of the GA4-specific credential file.
   --no-restart             Do not restart the user systemd service.
   -h, --help               Show this help.
 
@@ -101,6 +106,11 @@ while [[ $# -gt 0 ]]; do
       CLIENT_ID_FILE="$2"
       shift 2
       ;;
+    --quota-project)
+      [[ $# -ge 2 ]] || die "--quota-project requires a value"
+      QUOTA_PROJECT="$2"
+      shift 2
+      ;;
     --env-file)
       [[ $# -ge 2 ]] || die "--env-file requires a value"
       ENV_FILE="$2"
@@ -127,6 +137,10 @@ while [[ $# -gt 0 ]]; do
       LOGIN_BROWSER_MODE="no-browser"
       shift
       ;;
+    --shared-adc)
+      SHARED_ADC=1
+      shift
+      ;;
     --no-restart)
       RESTART_SERVICE=0
       shift
@@ -144,6 +158,26 @@ done
 if [[ -z "$ENV_FILE" ]]; then
   ENV_FILE="$(discover_env_file "$SERVICE")"
 fi
+
+default_cloudsdk_config_dir() {
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    printf '%s\n' "${XDG_CONFIG_HOME}/ga4-mcp/gcloud"
+  elif [[ -n "${APPDATA:-}" ]]; then
+    printf '%s\n' "${APPDATA}/ga4-mcp/gcloud"
+  else
+    printf '%s\n' "${HOME}/.config/ga4-mcp/gcloud"
+  fi
+}
+
+GCLOUD_CONFIG_DIR="$(default_cloudsdk_config_dir)"
+
+run_gcloud() {
+  if [[ "$SHARED_ADC" -eq 1 ]]; then
+    "$@"
+  else
+    CLOUDSDK_CONFIG="$GCLOUD_CONFIG_DIR" "$@"
+  fi
+}
 
 env_value() {
   local key="$1"
@@ -201,6 +235,12 @@ set_env_value() {
 
 if [[ "$RUN_LOGIN" -eq 1 ]]; then
   command -v gcloud >/dev/null 2>&1 || die "gcloud is required for ADC login"
+  if [[ "$SHARED_ADC" -eq 0 ]]; then
+    mkdir -p "$GCLOUD_CONFIG_DIR"
+    printf 'Using GA4-specific gcloud config: %s\n' "$GCLOUD_CONFIG_DIR"
+  else
+    printf 'Using conventional shared gcloud ADC.\n'
+  fi
   login_cmd=(gcloud auth application-default login)
   if [[ -n "$ACCOUNT" ]]; then
     login_cmd+=("$ACCOUNT")
@@ -229,8 +269,12 @@ if [[ "$RUN_LOGIN" -eq 1 ]]; then
     printf ' for %s' "$ACCOUNT"
   fi
   printf '...\n'
-  "${login_cmd[@]}"
-  gcloud auth application-default print-access-token >/dev/null
+  run_gcloud "${login_cmd[@]}"
+  if [[ -n "$QUOTA_PROJECT" ]]; then
+    printf 'Setting ADC quota project to %s...\n' "$QUOTA_PROJECT"
+    run_gcloud gcloud auth application-default set-quota-project "$QUOTA_PROJECT"
+  fi
+  run_gcloud gcloud auth application-default print-access-token >/dev/null
 fi
 
 mkdir -p "$(dirname "$ENV_FILE")"
@@ -255,6 +299,11 @@ chmod 600 "$backup"
 set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SCOPE" "https://www.googleapis.com/auth/analytics.readonly"
 set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE" "request_header_or_config"
 set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER" "authorization"
+if [[ "$SHARED_ADC" -eq 1 ]]; then
+  set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SHARED_ADC" "true"
+else
+  set_env_value "$ENV_FILE" "GOOGLE_ANALYTICS_MCP_SHARED_ADC" "false"
+fi
 
 printf 'Updated %s\n' "$ENV_FILE"
 printf 'Backup written to %s\n' "$backup"
@@ -268,10 +317,25 @@ if [[ "$RESTART_SERVICE" -eq 1 ]]; then
   fi
 fi
 
+if [[ "$SHARED_ADC" -eq 1 ]]; then
+  ADC_IDENTITY_LABEL="logged-in shared ADC identity"
+  QUOTA_PROJECT_COMMAND="gcloud auth application-default set-quota-project YOUR_PROJECT"
+else
+  ADC_IDENTITY_LABEL="logged-in GA4-specific ADC identity"
+  QUOTA_PROJECT_COMMAND="CLOUDSDK_CONFIG=\"${GCLOUD_CONFIG_DIR}\" gcloud auth application-default set-quota-project YOUR_PROJECT"
+fi
+
 cat <<EOF
 
 Local user auth is configured.
 
 The service now accepts per-request Google bearer tokens when clients send them,
-and otherwise falls back to the logged-in ADC identity.
+and otherwise falls back to the ${ADC_IDENTITY_LABEL}.
+
+Verify with:
+  ga4-mcp auth status --verify-token
+
+If Google reports that local ADC needs a quota project, run:
+  gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+  ${QUOTA_PROJECT_COMMAND}
 EOF

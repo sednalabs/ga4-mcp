@@ -10,7 +10,8 @@ use rmcp::serve_server;
 use rmcp::transport::stdio;
 use tracing_subscriber::EnvFilter;
 
-use ga4_mcp::config::{Cli, Settings};
+use ga4_mcp::auth_ux::run_auth_command;
+use ga4_mcp::config::{Cli, CliCommand, Settings};
 use ga4_mcp::ga_client::AnalyticsApiClient;
 use ga4_mcp::scratchpad::{
     DuckDbEngine, ScratchpadSessionConfig, ScratchpadSessionManager, SharedScratchpadEngine,
@@ -29,8 +30,17 @@ async fn run() -> Result<()> {
     init_tracing();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let cli = Cli::parse();
-    let settings = Settings::from_cli(cli)?;
+    let settings = Settings::from_cli(Cli::parse())?;
+    if let Some(command) = settings.command.clone() {
+        match command {
+            CliCommand::Serve => {}
+            CliCommand::Auth(auth) => {
+                run_auth_command(&settings, &auth.command).await?;
+                return Ok(());
+            }
+        }
+    }
+
     let client = Arc::new(AnalyticsApiClient::from_settings(&settings).await?);
     let scratchpad_engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new()?);
     let scratchpad_config = ScratchpadSessionConfig::new(

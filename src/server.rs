@@ -73,6 +73,10 @@ impl AnalyticsMcp {
     pub fn accepts_upstream_request_tokens(&self) -> bool {
         self.upstream_token_source.uses_request_header()
     }
+
+    pub fn capability_profile(&self) -> CapabilityProfile {
+        self.capability_profile
+    }
 }
 
 impl ServerHandler for AnalyticsMcp {

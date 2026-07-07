@@ -9,14 +9,18 @@
             "properties": {
               "currency_code": {
                 "default": null,
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "cursor": {
                 "default": null,
                 "description": "Opaque pagination cursor from `meta.next_cursor`.",
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "date_ranges": {
                 "items": {
@@ -38,24 +42,30 @@
                 "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "nullable": true,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "max_cell_chars": {
                 "default": null,
                 "description": "Optional string clipping limit applied to response cell values.",
                 "format": "uint",
                 "minimum": 0,
-                "nullable": true,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "max_rows": {
                 "default": null,
                 "description": "Optional response row cap for Contract V1 tabular payloads.",
                 "format": "uint",
                 "minimum": 0,
-                "nullable": true,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "metric_filter": {
                 "default": null,
@@ -71,14 +81,18 @@
                 "default": null,
                 "format": "uint64",
                 "minimum": 0,
-                "nullable": true,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "order_bys": {
                 "default": null,
                 "items": true,
-                "nullable": true,
-                "type": "array"
+                "type": [
+                  "array",
+                  "null"
+                ]
               },
               "output_mode": {
                 "anyOf": [
@@ -86,8 +100,7 @@
                     "$ref": "#/$defs/TabularOutputMode"
                   },
                   {
-                    "const": null,
-                    "nullable": true
+                    "type": "null"
                   }
                 ],
                 "description": "Tabular output shape for the response payload."
@@ -218,6 +231,62 @@
       "name": "check_report_compatibility"
     },
     {
+      "description": "Return a copyable gcloud Application Default Credentials login command for GA4.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "client_id_file": {
+            "default": null,
+            "description": "Optional Google OAuth client id file for gcloud ADC login.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "headless": {
+            "default": false,
+            "description": "Include the headless browser flag for SSH or remote environments.",
+            "type": "boolean"
+          },
+          "shared_adc": {
+            "default": null,
+            "description": "Use the conventional shared gcloud ADC file instead of the server-specific file.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "title": "AuthLoginCommandArgs",
+        "type": "object"
+      },
+      "name": "ga4_auth_login_command"
+    },
+    {
+      "description": "Explain configured Google Analytics auth source and optionally verify Google API access without returning secrets.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "verify_token": {
+            "default": false,
+            "description": "When true, acquire a Google access token and call GA account summaries. The token is never returned.",
+            "type": "boolean"
+          }
+        },
+        "title": "AuthStatusArgs",
+        "type": "object"
+      },
+      "name": "ga4_auth_status"
+    },
+    {
+      "description": "Return the recommended GA4 first-run auth flow, credential modes, and safe starter tools.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "ga4_get_started"
+    },
+    {
       "description": "Returns account-level data sharing settings for a Google Analytics account.",
       "inputSchema": {
         "$defs": {
@@ -259,16 +328,20 @@
             "description": "Optional max pages to fetch before stopping.",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "page_size": {
             "default": null,
             "description": "Optional page size used during pagination. Defaults to server max.",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "title": "GetAccountSummariesArgs",
@@ -396,16 +469,20 @@
             "description": "Optional max pages to fetch before stopping.",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "page_size": {
             "default": null,
             "description": "Optional page size used during pagination. Defaults to server max.",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "property_id": {
             "$ref": "#/$defs/PropertyId",
@@ -444,16 +521,20 @@
             "description": "Optional max pages to fetch before stopping.",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "page_size": {
             "default": null,
             "description": "Optional page size used during pagination. Defaults to server max.",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "property_id": {
             "$ref": "#/$defs/PropertyId",
@@ -515,14 +596,18 @@
         "properties": {
           "currency_code": {
             "default": null,
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_ranges": {
             "items": {
@@ -544,24 +629,30 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -577,14 +668,18 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -592,8 +687,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -673,8 +767,10 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_ranges": {
             "items": {
@@ -696,24 +792,30 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -729,14 +831,18 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -744,8 +850,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -757,8 +862,10 @@
           },
           "time_zone": {
             "default": null,
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -819,14 +926,18 @@
         "properties": {
           "currency_code": {
             "default": null,
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_ranges": {
             "items": {
@@ -853,16 +964,20 @@
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -877,8 +992,10 @@
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -886,8 +1003,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -969,8 +1085,10 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_ranges": {
             "items": {
@@ -992,24 +1110,30 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -1025,14 +1149,18 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -1040,8 +1168,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -1056,8 +1183,10 @@
           },
           "time_zone": {
             "default": null,
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1102,8 +1231,10 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "dimension_filter": {
             "default": null,
@@ -1119,24 +1250,30 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -1152,14 +1289,18 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -1167,8 +1308,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -1243,14 +1383,18 @@
         "properties": {
           "currency_code": {
             "default": null,
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_ranges": {
             "items": {
@@ -1272,24 +1416,30 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -1305,14 +1455,18 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -1320,8 +1474,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -1387,24 +1540,30 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -1412,8 +1571,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -1479,8 +1637,10 @@
             "description": "Optional number of sample rows to include per table (default: 20).",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "session_id": {
             "description": "Logical scratchpad session identifier.",
@@ -1492,8 +1652,10 @@
             "items": {
               "type": "string"
             },
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1549,8 +1711,10 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "dimension_filter": {
             "default": null,
@@ -1566,24 +1730,30 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -1599,14 +1769,18 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -1614,8 +1788,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -1705,14 +1878,18 @@
           },
           "currency_code": {
             "default": null,
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_ranges": {
             "items": {
@@ -1734,24 +1911,30 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_filter": {
             "default": null,
@@ -1767,14 +1950,18 @@
             "default": null,
             "format": "uint64",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "order_bys": {
             "default": null,
             "items": true,
-            "nullable": true,
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -1782,8 +1969,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -1841,42 +2027,54 @@
           "channel_column": {
             "default": null,
             "description": "Optional channel column; when unset, all rows are grouped under `all`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_column": {
             "default": null,
             "description": "Optional date column name (defaults to `date_parsed`).",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "landing_url_column": {
             "default": null,
             "description": "Optional landing URL column (defaults to `landingpageplusquerystring`).",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -1884,8 +2082,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -1895,16 +2092,20 @@
             "description": "Number of post-release days after transition window (default: 7).",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "pre_days": {
             "default": null,
             "description": "Number of baseline days before `release_date` (default: 7).",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "release_date": {
             "description": "Release date in `YYYY-MM-DD`.",
@@ -1917,8 +2118,10 @@
           "source_medium_column": {
             "default": null,
             "description": "Optional source/medium column; when unset, all rows are grouped under `all`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "summary_only": {
             "default": false,
@@ -1934,16 +2137,20 @@
             "description": "Maximum number of ranked parameter shifts to return (default: 100).",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "transition_days": {
             "default": null,
             "description": "Number of transition days from `release_date` (default: 1).",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1966,8 +2173,10 @@
             "description": "Optional row cap for inventory listing.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "title": "ScratchpadInventoryArgs",
@@ -1985,8 +2194,10 @@
             "description": "Optional row cap for table inventory listing.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "session_id": {
             "description": "Logical scratchpad session identifier.",
@@ -2038,24 +2249,30 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -2063,8 +2280,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -2119,42 +2335,54 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "date_column": {
             "default": null,
             "description": "Optional date column name (defaults to `date`).",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "event_column": {
             "default": null,
             "description": "Optional event-name column (defaults to `event_name`).",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "metric_column": {
             "default": null,
             "description": "Optional numeric metric column (defaults to row-count weighting).",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -2162,8 +2390,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -2173,16 +2400,20 @@
             "description": "Number of post-release days after transition window (default: 7).",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "pre_days": {
             "default": null,
             "description": "Number of baseline days before `release_date` (default: 7).",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "release_date": {
             "description": "Release date in `YYYY-MM-DD`.",
@@ -2206,8 +2437,10 @@
             "description": "Number of transition days from `release_date` (default: 1).",
             "format": "uint32",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2232,16 +2465,20 @@
             "description": "Maximum number of active scratchpad sessions allowed at runtime.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_tables_per_session": {
             "default": null,
             "description": "Maximum number of tables allowed per scratchpad session at runtime.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "title": "ScratchpadSetRuntimeLimitsArgs",
@@ -2268,24 +2505,30 @@
           "cursor": {
             "default": null,
             "description": "Opaque pagination cursor from `meta.next_cursor`.",
-            "nullable": true,
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "max_cell_chars": {
             "default": null,
             "description": "Optional string clipping limit applied to response cell values.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_rows": {
             "default": null,
             "description": "Optional response row cap for Contract V1 tabular payloads.",
             "format": "uint",
             "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "output_mode": {
             "anyOf": [
@@ -2293,8 +2536,7 @@
                 "$ref": "#/$defs/TabularOutputMode"
               },
               {
-                "const": null,
-                "nullable": true
+                "type": "null"
               }
             ],
             "description": "Tabular output shape for the response payload."
@@ -2322,5 +2564,6 @@
       },
       "name": "scratchpad_summarize_table"
     }
-  ]
+  ],
+  "version": 1
 }

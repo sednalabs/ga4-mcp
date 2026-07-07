@@ -3,12 +3,18 @@
 //! Thin adapter around Google Analytics Admin/Data REST endpoints.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::future::Future;
+use std::io::ErrorKind;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gcp_auth::TokenProvider;
+use mcp_toolkit_auth::upstream_oauth::{
+    RefreshTokenProvider, UpstreamOAuthError, google_authorized_user_adc_from_file,
+};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Client, Method, RequestBuilder, Url};
 use schemars::JsonSchema;
@@ -16,7 +22,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::config::{Settings, UpstreamTokenSource};
+use crate::config::{
+    Settings, UpstreamTokenSource, conventional_adc_credentials_path,
+    conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
+};
 use crate::error::AnalyticsError;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -96,7 +105,25 @@ struct CachedAccessToken {
 #[derive(Debug, Clone)]
 enum UpstreamAuthMode {
     Adc,
+    AuthorizedUserAdcFile(PathBuf),
     OAuthRefresh(Arc<OAuthRefreshConfig>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSource {
+    GoogleDefaultProviderChain,
+    GoogleAuthorizedUserAdcFile,
+    OAuthRefreshToken,
+}
+
+impl AuthSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GoogleDefaultProviderChain => "google_default_provider_chain",
+            Self::GoogleAuthorizedUserAdcFile => "google_authorized_user_adc_file",
+            Self::OAuthRefreshToken => "oauth_refresh_token",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -188,6 +215,7 @@ pub struct AnalyticsApiClient {
     token_source: UpstreamTokenSource,
     token_header: Arc<str>,
     token_provider: Arc<OnceCell<Arc<dyn TokenProvider>>>,
+    oauth_token_provider: Arc<OnceCell<Arc<RefreshTokenProvider>>>,
     cached_oauth_token: Arc<RwLock<Option<CachedAccessToken>>>,
     analytics_scope: Arc<str>,
     admin_base_url: Arc<str>,
@@ -222,18 +250,12 @@ impl AnalyticsApiClient {
             .build()
             .map_err(AnalyticsError::Transport)?;
 
-        let auth_mode = match (
-            settings.oauth_client_secret_json.as_deref(),
-            settings.oauth_refresh_token.as_deref(),
-        ) {
-            (Some(client_secret_path), Some(refresh_token)) => {
-                UpstreamAuthMode::OAuthRefresh(Arc::new(parse_oauth_refresh_config(
-                    client_secret_path,
-                    refresh_token,
-                )?))
-            }
-            _ => UpstreamAuthMode::Adc,
-        };
+        let auth_mode = select_auth_mode(settings)?;
+
+        let quota_project = settings
+            .quota_project
+            .clone()
+            .or_else(|| adc_quota_project_id_for_auth_mode(&auth_mode, settings.shared_adc));
 
         Ok(Self {
             http,
@@ -241,17 +263,67 @@ impl AnalyticsApiClient {
             token_source: settings.upstream_token_source,
             token_header: settings.upstream_token_header.clone().into(),
             token_provider: Arc::new(OnceCell::new()),
+            oauth_token_provider: Arc::new(OnceCell::new()),
             cached_oauth_token: Arc::new(RwLock::new(None)),
             analytics_scope: settings.analytics_scope.clone().into(),
             admin_base_url: settings.admin_base_url.clone().into(),
             data_base_url: settings.data_base_url.clone().into(),
-            quota_project: settings
-                .quota_project
-                .as_ref()
-                .map(|value| Arc::<str>::from(value.as_str())),
+            quota_project: quota_project.as_deref().map(Arc::<str>::from),
             max_page_size: settings.max_page_size,
             default_max_pages: settings.max_pages,
         })
+    }
+
+    pub fn auth_source(&self) -> AuthSource {
+        match &self.auth_mode {
+            UpstreamAuthMode::Adc => AuthSource::GoogleDefaultProviderChain,
+            UpstreamAuthMode::AuthorizedUserAdcFile(_) => AuthSource::GoogleAuthorizedUserAdcFile,
+            UpstreamAuthMode::OAuthRefresh(_) => AuthSource::OAuthRefreshToken,
+        }
+    }
+
+    pub fn analytics_scope(&self) -> &str {
+        self.analytics_scope.as_ref()
+    }
+
+    pub fn upstream_token_source(&self) -> UpstreamTokenSource {
+        self.token_source
+    }
+
+    pub fn upstream_token_header(&self) -> &str {
+        self.token_header.as_ref()
+    }
+
+    pub fn quota_project_configured(&self) -> bool {
+        self.quota_project.is_some()
+    }
+
+    pub fn quota_project(&self) -> Option<&str> {
+        self.quota_project.as_deref()
+    }
+
+    pub async fn verify_token(&self) -> Result<(), AnalyticsError> {
+        self.get_account_summaries(PaginationOptions {
+            page_size: Some(1),
+            max_pages: Some(1),
+        })
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn verify_config_token(&self) -> Result<(), AnalyticsError> {
+        let token = self.configured_access_token().await?;
+        let url =
+            parse_https_upstream_url(&format!("{}/v1beta/accountSummaries", self.admin_base_url))?;
+        let mut request = self
+            .http
+            .request(Method::GET, url)
+            .bearer_auth(token)
+            .query(&[("pageSize", "1")]);
+        if let Some(quota_project) = &self.quota_project {
+            request = request.header("x-goog-user-project", quota_project.as_ref());
+        }
+        self.send_json(request).await.map(|_| ())
     }
 
     pub async fn get_account_summaries(
@@ -737,12 +809,58 @@ impl AnalyticsApiClient {
         let provider = self
             .token_provider
             .get_or_try_init(|| async {
-                gcp_auth::provider()
-                    .await
-                    .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))
+                match &self.auth_mode {
+                    UpstreamAuthMode::Adc => gcp_auth::provider()
+                        .await
+                        .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string())),
+                    UpstreamAuthMode::AuthorizedUserAdcFile(_) => Err(
+                        AnalyticsError::AuthBootstrap(
+                            "server-specific authorized-user ADC is handled by the toolkit refresh-token provider".to_string(),
+                        ),
+                    ),
+                    UpstreamAuthMode::OAuthRefresh(_) => Err(AnalyticsError::AuthBootstrap(
+                        "OAuth refresh-token auth is handled by the refresh-token path".to_string(),
+                    )),
+                }
             })
             .await?;
         Ok(provider.clone())
+    }
+
+    async fn authorized_user_adc_provider(
+        &self,
+    ) -> Result<Option<Arc<RefreshTokenProvider>>, AnalyticsError> {
+        if let Some(provider) = self.oauth_token_provider.get() {
+            return Ok(Some(provider.clone()));
+        }
+
+        let UpstreamAuthMode::AuthorizedUserAdcFile(path) = &self.auth_mode else {
+            return Err(AnalyticsError::AuthBootstrap(
+                "authorized-user ADC provider requested for a non-ADC auth mode".to_string(),
+            ));
+        };
+
+        let scopes = vec![self.analytics_scope.as_ref().to_string()];
+        let adc = match google_authorized_user_adc_from_file(path, scopes) {
+            Ok(adc) => adc,
+            Err(err) if google_adc_file_missing(&err) => return Ok(None),
+            Err(err) => {
+                return Err(AnalyticsError::AuthBootstrap(format!(
+                    "failed to load authorized-user ADC at '{}': {err}",
+                    path.display()
+                )));
+            }
+        };
+        let provider = Arc::new(
+            RefreshTokenProvider::new(adc.into_refresh_config()).map_err(|err| {
+                AnalyticsError::AuthBootstrap(format!("invalid authorized-user ADC: {err}"))
+            })?,
+        );
+        let provider = self
+            .oauth_token_provider
+            .get_or_init(|| async { provider })
+            .await;
+        Ok(Some(provider.clone()))
     }
 
     async fn access_token(&self) -> Result<String, AnalyticsError> {
@@ -776,6 +894,19 @@ impl AnalyticsApiClient {
                 let provider = self.token_provider().await?;
                 let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
                 Ok(token.as_str().to_string())
+            }
+            UpstreamAuthMode::AuthorizedUserAdcFile(path) => {
+                let provider = self.authorized_user_adc_provider().await?.ok_or_else(|| {
+                    AnalyticsError::AuthBootstrap(format!(
+                        "server-specific GA4 ADC file was not found at '{}'; run `ga4-mcp auth login` or set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true to intentionally use conventional shared ADC",
+                        path.display()
+                    ))
+                })?;
+                let token = provider
+                    .access_token()
+                    .await
+                    .map_err(|err| AnalyticsError::AuthBootstrap(err.to_string()))?;
+                Ok(token.expose_secret().to_string())
             }
             UpstreamAuthMode::OAuthRefresh(config) => {
                 if let Some(cached) = self.cached_oauth_token.read().await.as_ref() {
@@ -870,6 +1001,44 @@ fn parse_https_upstream_url(raw: &str) -> Result<Url, AnalyticsError> {
     Ok(url)
 }
 
+fn select_auth_mode(settings: &Settings) -> Result<UpstreamAuthMode, AnalyticsError> {
+    match (
+        settings.oauth_client_secret_json.as_deref(),
+        settings.oauth_refresh_token.as_deref(),
+    ) {
+        (Some(client_secret_path), Some(refresh_token)) => {
+            return Ok(UpstreamAuthMode::OAuthRefresh(Arc::new(
+                parse_oauth_refresh_config(client_secret_path, refresh_token)?,
+            )));
+        }
+        (None, None) => {}
+        _ => {
+            return Err(AnalyticsError::AuthBootstrap(
+                "GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON and GOOGLE_ANALYTICS_MCP_OAUTH_REFRESH_TOKEN must both be set or both be unset; refusing to fall back to ADC with partial OAuth configuration".to_string(),
+            ));
+        }
+    }
+
+    if env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some() || settings.shared_adc {
+        return Ok(UpstreamAuthMode::Adc);
+    }
+
+    if let Some(path) = server_adc_credentials_path() {
+        return Ok(UpstreamAuthMode::AuthorizedUserAdcFile(path));
+    }
+
+    Err(AnalyticsError::AuthBootstrap(
+        "failed to determine the GA4-specific ADC path; set HOME/XDG_CONFIG_HOME on Unix or APPDATA on Windows, or set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true to intentionally use conventional shared ADC".to_string(),
+    ))
+}
+
+fn google_adc_file_missing(err: &UpstreamOAuthError) -> bool {
+    matches!(
+        err,
+        UpstreamOAuthError::Io { source, .. } if source.kind() == ErrorKind::NotFound
+    )
+}
+
 fn parse_oauth_refresh_config(
     client_secret_json_path: &str,
     refresh_token: &str,
@@ -908,6 +1077,7 @@ fn parse_oauth_refresh_config(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("https://oauth2.googleapis.com/token");
+    validate_oauth_token_uri(token_uri)?;
 
     Ok(OAuthRefreshConfig {
         token_uri: token_uri.to_string(),
@@ -922,7 +1092,35 @@ fn clip_message(message: String) -> String {
     if message.len() <= MAX_LEN {
         return message;
     }
-    format!("{}...", &message[..MAX_LEN])
+    let mut end = MAX_LEN;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &message[..end])
+}
+
+fn validate_oauth_token_uri(token_uri: &str) -> Result<(), AnalyticsError> {
+    let parsed = Url::parse(token_uri).map_err(|err| {
+        AnalyticsError::AuthBootstrap(format!(
+            "invalid OAuth token_uri '{token_uri}' in GOOGLE_ANALYTICS_MCP_OAUTH_CLIENT_SECRET_JSON: {err}"
+        ))
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(AnalyticsError::AuthBootstrap(format!(
+            "OAuth token_uri '{token_uri}' must use https"
+        )));
+    }
+
+    let host = parsed.host_str().unwrap_or("");
+    let path = parsed.path().trim_end_matches('/');
+    let allowed = (host == "oauth2.googleapis.com" && path == "/token")
+        || (host == "accounts.google.com" && path == "/o/oauth2/token");
+    if !allowed {
+        return Err(AnalyticsError::AuthBootstrap(format!(
+            "OAuth token_uri '{token_uri}' must be one of https://oauth2.googleapis.com/token or https://accounts.google.com/o/oauth2/token"
+        )));
+    }
+    Ok(())
 }
 
 fn parse_request_token_header_value(
@@ -1213,6 +1411,46 @@ pub(crate) fn sort_object(value: Value) -> Value {
     }
 }
 
+fn adc_quota_project_id_for_auth_mode(
+    auth_mode: &UpstreamAuthMode,
+    shared_adc: bool,
+) -> Option<String> {
+    let path = match auth_mode {
+        UpstreamAuthMode::AuthorizedUserAdcFile(path) => Some(path.clone()),
+        UpstreamAuthMode::Adc if shared_adc => conventional_adc_credentials_path(),
+        UpstreamAuthMode::Adc | UpstreamAuthMode::OAuthRefresh(_) => None,
+    }?;
+    let raw = read_adc_file(&path)?;
+    parse_adc_quota_project_id(&raw)
+}
+
+fn parse_adc_quota_project_id(raw: &str) -> Option<String> {
+    serde_json::from_str::<Value>(raw)
+        .ok()?
+        .get("quota_project_id")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn read_adc_file(path: &std::path::Path) -> Option<String> {
+    let root = server_adc_credentials_path()
+        .filter(|candidate| candidate == path)
+        .and_then(|_| server_cloudsdk_config_dir())
+        .or_else(|| {
+            conventional_adc_credentials_path()
+                .filter(|candidate| candidate == path)
+                .and_then(|_| conventional_cloudsdk_config_dir())
+        })?;
+    let root = root.canonicalize().ok()?;
+    let path = path.canonicalize().ok()?;
+    if !path.starts_with(root) || !path.is_file() {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1294,7 +1532,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("ga4-oauth-client-{nonce}.json"));
+        let path = test_fixture_path(&format!("ga4-oauth-client-{nonce}.json"));
         let json = r#"{
             "installed": {
                 "client_id": "client-id.apps.googleusercontent.com",
@@ -1320,7 +1558,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("ga4-oauth-client-invalid-{nonce}.json"));
+        let path = test_fixture_path(&format!("ga4-oauth-client-invalid-{nonce}.json"));
         std::fs::write(&path, r#"{"client_id":"abc"}"#).expect("fixture should write");
         let err = parse_oauth_refresh_config(
             path.to_str().expect("temp path should be utf8"),
@@ -1328,6 +1566,48 @@ mod tests {
         )
         .expect_err("missing installed/web should fail");
         assert!(err.to_string().contains("installed"));
+    }
+
+    #[test]
+    fn parse_oauth_refresh_config_rejects_non_google_token_uri() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        let path = test_fixture_path(&format!("ga4-oauth-client-bad-uri-{nonce}.json"));
+        std::fs::write(
+            &path,
+            r#"{"installed":{"client_id":"client","client_secret":"secret","token_uri":"https://evil.test/token"}}"#,
+        )
+        .expect("fixture should write");
+        let err = parse_oauth_refresh_config(
+            path.to_str().expect("temp path should be utf8"),
+            "refresh-token-value",
+        )
+        .expect_err("non-google token uri should fail");
+        assert!(err.to_string().contains("must be one of"));
+    }
+
+    fn test_fixture_path(name: &str) -> PathBuf {
+        let root = PathBuf::from("target").join("ga4-mcp-test-fixtures");
+        std::fs::create_dir_all(&root).expect("fixture root should be writable");
+        root.join(name)
+    }
+
+    #[test]
+    fn parses_adc_quota_project_id_without_exposing_credentials() {
+        assert_eq!(
+            parse_adc_quota_project_id(
+                r#"{"client_id":"client","client_secret":"secret","refresh_token":"refresh","quota_project_id":" ga4-quota "}"#
+            )
+            .as_deref(),
+            Some("ga4-quota")
+        );
+        assert_eq!(
+            parse_adc_quota_project_id(r#"{"quota_project_id":"   "}"#),
+            None
+        );
+        assert_eq!(parse_adc_quota_project_id("not-json"), None);
     }
 
     #[test]
@@ -1357,5 +1637,14 @@ mod tests {
         let token = normalize_request_token_value("ya29.compact.token", "x-google-access-token")
             .expect("compact token should parse");
         assert_eq!(token, "ya29.compact.token");
+    }
+
+    #[test]
+    fn clips_multibyte_messages_without_panicking() {
+        let message = format!("{}a", "é".repeat(512));
+        let clipped = clip_message(message);
+        assert!(clipped.ends_with("..."));
+        assert!(clipped.len() <= 1_027);
+        assert!(clipped.chars().all(|ch| ch == 'é' || ch == '.'));
     }
 }

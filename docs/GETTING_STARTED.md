@@ -32,11 +32,30 @@ request token wins when present; otherwise the server falls back to ADC or the
 configured refresh-token source:
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform
+ga4-mcp auth login --quota-project YOUR_PROJECT
+ga4-mcp auth status --verify-token
 
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config
 export GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization
+```
+
+The login command writes to a GA4-specific ADC file by default:
+`<user-config>/ga4-mcp/gcloud/application_default_credentials.json`. Add
+`--shared-adc` only when you intentionally want the conventional shared gcloud
+ADC file, and set `GOOGLE_ANALYTICS_MCP_SHARED_ADC=true` or start the server
+with `--shared-adc` when the runtime should use that shared file.
+
+On SSH or a headless host, use `ga4-mcp auth login --headless --quota-project
+YOUR_PROJECT`. If Google rejects the Analytics scope or blocks the default
+OAuth app, create a Desktop OAuth client and rerun with
+`ga4-mcp auth login --quota-project YOUR_PROJECT --client-id-file /path/to/oauth-client.json`.
+
+If verification says local ADC needs a quota project, run:
+
+```bash
+gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+ga4-mcp auth login --quota-project YOUR_PROJECT
+ga4-mcp auth status --verify-token
 ```
 
 Use `config` for deliberate service-owned automation:
@@ -85,13 +104,16 @@ trusted loopback or private boundary. See [SECURITY_MODEL.md](SECURITY_MODEL.md)
 
 Start with low-cost discovery and validation:
 
-1. `get_account_summaries` to confirm the Google identity can see GA accounts.
-2. `get_property_details` for the property you plan to query.
-3. `check_report_compatibility` before running a report with new
+1. `ga4_get_started` if the client exposes setup helper tools.
+2. `ga4_auth_status` with `verify_token=true` if you need to inspect auth from
+   inside MCP.
+3. `get_account_summaries` to confirm the Google identity can see GA accounts.
+4. `get_property_details` for the property you plan to query.
+5. `check_report_compatibility` before running a report with new
    dimension/metric combinations.
-4. `preview_report_request` to validate and normalize a report payload without
+6. `preview_report_request` to validate and normalize a report payload without
    calling GA.
-5. `run_report` or `run_realtime_report` after the request shape is confirmed.
+7. `run_report` or `run_realtime_report` after the request shape is confirmed.
 
 ## Optional Scratchpad Profile
 

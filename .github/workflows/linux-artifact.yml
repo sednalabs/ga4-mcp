@@ -1,0 +1,79 @@
+name: linux-artifact
+
+on:
+  push:
+    branches:
+      - "tmp/ga4-linux-artifact-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-x86_64:
+    name: Build Linux x86_64 binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        # actions/checkout v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        # dtolnay/rust-toolchain stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - name: Cache cargo artifacts
+        # swatinem/rust-cache v2
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Format check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+
+      - name: Unit and integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked
+
+      - name: Print tool inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin ga4-mcp -- --print-tools > /tmp/tools.json
+          test -s /tmp/tools.json
+          grep -F '"ga4_auth_status"' /tmp/tools.json
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bins
+
+      - name: Prepare artifact bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          install -m 0755 target/release/ga4-mcp dist/ga4-mcp
+          install -m 0755 target/release/ga4-mcp-http dist/ga4-mcp-http
+          install -m 0755 scripts/ga4-local-user-setup.sh dist/ga4-local-user-setup.sh
+          (
+            cd dist
+            sha256sum ga4-mcp ga4-mcp-http ga4-local-user-setup.sh > SHA256SUMS
+          )
+
+      - name: Upload Linux artifact
+        # actions/upload-artifact v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ga4-mcp-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
