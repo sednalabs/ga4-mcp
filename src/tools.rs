@@ -719,10 +719,8 @@ impl AnalyticsMcp {
         let quota_project = self.client.quota_project().unwrap_or("<PROJECT_ID>");
         let upstream_token_source = self.client.upstream_token_source();
         let upstream_token_header = self.client.upstream_token_header();
-        let auth_source_candidate = get_started_auth_source_candidate(
-            upstream_token_source,
-            self.client.auth_source(),
-        );
+        let auth_source_candidate =
+            get_started_auth_source_candidate(upstream_token_source, self.client.auth_source());
         let first_login_step = if upstream_token_source == UpstreamTokenSource::RequestHeader {
             format!(
                 "Keep GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header and configure the MCP client OAuth flow so each request sends a Google access token in {upstream_token_header}."
@@ -5890,8 +5888,10 @@ fn auth_status_surface(
 
     let credential_material_detected =
         credential_material_detected_for_auth_source(auth_source_candidate, local_detected);
-    let auth_source = if matches!(auth_source_candidate, AuthSource::GoogleDefaultProviderChain)
-        && !credential_material_detected
+    let auth_source = if matches!(
+        auth_source_candidate,
+        AuthSource::GoogleDefaultProviderChain
+    ) && !credential_material_detected
         && token_ok != Some(true)
     {
         Value::Null
@@ -7167,10 +7167,7 @@ mod tests {
 
     #[test]
     fn request_header_credential_material_detected_tracks_request_token_presence() {
-        assert!(!request_header_credential_material_detected(
-            None,
-            None
-        ));
+        assert!(!request_header_credential_material_detected(None, None));
         assert!(!request_header_credential_material_detected(
             Some(false),
             Some("missing_request_access_token")

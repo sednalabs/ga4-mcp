@@ -197,10 +197,7 @@ async fn inbound_auth_guard(
     if request_targets_mcp(req.uri().path())
         && request_has_inbound_auth(req.headers())
         && (!state.accepts_upstream_request_tokens
-            || request_has_disallowed_inbound_auth(
-                req.headers(),
-                &state.upstream_token_header,
-            ))
+            || request_has_disallowed_inbound_auth(req.headers(), &state.upstream_token_header))
     {
         mcp_toolkit_observability::emit_event(
             mcp_toolkit_observability::Level::WARN,
@@ -585,8 +582,8 @@ mod tests {
 
     use super::{
         header_text, public_base_url_from_resource_url, request_has_disallowed_inbound_auth,
-        request_has_inbound_auth, request_host_for_log, request_targets_mcp,
-        validate_request_host, validate_request_origin,
+        request_has_inbound_auth, request_host_for_log, request_targets_mcp, validate_request_host,
+        validate_request_origin,
     };
 
     #[test]
