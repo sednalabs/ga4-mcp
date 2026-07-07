@@ -293,7 +293,7 @@
         "properties": {
           "verify_token": {
             "default": false,
-            "description": "When true, verify the active GA4 credential path by calling account summaries. In request_header mode, the caller must send the configured upstream token header. The token is never returned.",
+            "description": "When true, verify the active GA4 credential path by calling account\nsummaries. In request_header mode, the caller must send the configured\nupstream token header. The token is never returned.",
             "type": "boolean"
           }
         },
@@ -1526,7 +1526,6 @@
         "required": [
           "session_id"
         ],
-        "title": "ScratchpadSessionArgs",
         "type": "object"
       },
       "name": "scratchpad_close_session"
@@ -1604,7 +1603,6 @@
           "session_id",
           "table_name"
         ],
-        "title": "ScratchpadTableHelperArgs",
         "type": "object"
       },
       "name": "scratchpad_describe_table"
@@ -1632,7 +1630,6 @@
           "session_id",
           "table_name"
         ],
-        "title": "ScratchpadDropTableArgs",
         "type": "object"
       },
       "name": "scratchpad_drop_table"
@@ -1671,7 +1668,6 @@
         "required": [
           "session_id"
         ],
-        "title": "ScratchpadEvidenceBundleArgs",
         "type": "object"
       },
       "name": "scratchpad_export_evidence_bundle"
@@ -1680,7 +1676,6 @@
       "description": "Returns active runtime scratchpad limits (including max_sessions and max_tables_per_session) without restarting the server.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "ScratchpadRuntimeLimitsArgs",
         "type": "object"
       },
       "name": "scratchpad_get_runtime_limits"
@@ -1831,7 +1826,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "ScratchpadIngestRealtimeArgs",
         "type": "object"
       },
       "name": "scratchpad_ingest_realtime_report"
@@ -2013,7 +2007,6 @@
           "dimensions",
           "metrics"
         ],
-        "title": "ScratchpadIngestReportArgs",
         "type": "object"
       },
       "name": "scratchpad_ingest_report"
@@ -2168,7 +2161,6 @@
           "table_name",
           "release_date"
         ],
-        "title": "ScratchpadLandingParamShiftArgs",
         "type": "object"
       },
       "name": "scratchpad_landing_param_shift_report"
@@ -2189,7 +2181,6 @@
             ]
           }
         },
-        "title": "ScratchpadInventoryArgs",
         "type": "object"
       },
       "name": "scratchpad_list_sessions"
@@ -2217,7 +2208,6 @@
         "required": [
           "session_id"
         ],
-        "title": "ScratchpadTableInventoryArgs",
         "type": "object"
       },
       "name": "scratchpad_list_tables"
@@ -2235,7 +2225,6 @@
         "required": [
           "session_id"
         ],
-        "title": "ScratchpadSessionArgs",
         "type": "object"
       },
       "name": "scratchpad_open_session"
@@ -2313,7 +2302,6 @@
           "session_id",
           "sql"
         ],
-        "title": "ScratchpadQueryArgs",
         "type": "object"
       },
       "name": "scratchpad_query"
@@ -2460,7 +2448,6 @@
           "anchor_event",
           "comparison_event"
         ],
-        "title": "ScratchpadReleaseRegressionArgs",
         "type": "object"
       },
       "name": "scratchpad_release_regression_report"
@@ -2491,7 +2478,6 @@
             ]
           }
         },
-        "title": "ScratchpadSetRuntimeLimitsArgs",
         "type": "object"
       },
       "name": "scratchpad_set_runtime_limits"
@@ -2569,7 +2555,6 @@
           "session_id",
           "table_name"
         ],
-        "title": "ScratchpadTableHelperArgs",
         "type": "object"
       },
       "name": "scratchpad_summarize_table"
