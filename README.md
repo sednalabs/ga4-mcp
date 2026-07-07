@@ -411,7 +411,7 @@ scratchpad surface.
 - When `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config`, auth headers on `/mcp` are rejected if inbound auth is off.
 - `request_header` is the only supported non-loopback/public upstream-token mode.
 - `request_header_or_config` is the loopback/local convenience mode: request token first, ADC/OAuth-refresh fallback second.
-- When inbound MCP auth is enabled, upstream Google tokens must stay on `x-google-access-token`; the runtime rejects `authorization` for both roles.
+- When inbound MCP auth is enabled, upstream Google tokens must stay on a dedicated non-`authorization` header such as `x-google-access-token`; the runtime rejects `authorization` for both roles.
 - `/health` is not auto-whitelisted by the auth surface; when inbound auth is enabled, unauthenticated health checks are denied unless you front the route separately.
 - Inbound OAuth verification (when enabled) is for MCP access control. Upstream GA token source is independently controlled by `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE`.
 - For non-loopback exposure with auth enabled, strict OAuth parsing is required and configured auth URLs must use `https://`.

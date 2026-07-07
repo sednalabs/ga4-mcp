@@ -450,15 +450,18 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
         credential_material_detected(&detection) || settings_credential_material_detected(settings);
     let explicit_credential_needs_repair =
         explicit_credential_config_needs_repair(settings, &detection);
-    let auth_source = visible_auth_source(
+    let (auth_source, auth_source_candidate) = reported_auth_sources(
+        settings,
         detected_auth_source,
         credential_material_detected,
         &verification,
     );
-    let auth_source_candidate = detected_auth_source.map(|source| source.as_str().to_string());
-    let config_valid = auth_source.is_some()
-        && !explicit_credential_needs_repair
-        && !matches!(verification, VerificationReport::ConfigError { .. });
+    let config_valid = reported_config_valid(
+        settings,
+        auth_source.as_deref(),
+        &verification,
+        explicit_credential_needs_repair,
+    );
     let quota_project = effective_quota_project(settings, detected_quota_project.as_deref());
     let ready = report_ready(settings, &verification, config_valid);
     let next_steps = next_steps(settings, &detection, &verification, verify_token);
@@ -696,6 +699,43 @@ fn visible_auth_source(
         Some(source) => Some(source.as_str().to_string()),
         None => None,
     }
+}
+
+fn reported_auth_sources(
+    settings: &Settings,
+    detected_auth_source: Option<AuthSource>,
+    credential_material_detected: bool,
+    verification: &VerificationReport,
+) -> (Option<String>, Option<String>) {
+    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return (Some("request_header".to_string()), None);
+    }
+
+    (
+        visible_auth_source(
+            detected_auth_source,
+            credential_material_detected,
+            verification,
+        ),
+        detected_auth_source.map(|source| source.as_str().to_string()),
+    )
+}
+
+fn reported_config_valid(
+    settings: &Settings,
+    auth_source: Option<&str>,
+    verification: &VerificationReport,
+    explicit_credential_needs_repair: bool,
+) -> bool {
+    if matches!(verification, VerificationReport::ConfigError { .. }) {
+        return false;
+    }
+
+    if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
+        return true;
+    }
+
+    auth_source.is_some() && !explicit_credential_needs_repair
 }
 
 fn report_ready(
@@ -966,7 +1006,7 @@ fn next_steps(
                 steps.push(read_scope_step);
             }
             if settings.upstream_token_source == UpstreamTokenSource::RequestHeader {
-                steps.push(local_fallback_step());
+                steps.push(local_fallback_step(&settings.upstream_token_header));
             }
             steps.push(
                 "Restart MCP clients that keep long-lived stdio or HTTP server processes."
@@ -1589,6 +1629,39 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn request_header_mode_reports_the_runtime_token_path_as_the_auth_source() {
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+
+        let (auth_source, auth_source_candidate) = reported_auth_sources(
+            &settings,
+            Some(AuthSource::GoogleDefaultProviderChain),
+            false,
+            &VerificationReport::RequestHeaderRequired {
+                header: "x-google-access-token".to_string(),
+            },
+        );
+
+        assert_eq!(auth_source.as_deref(), Some("request_header"));
+        assert_eq!(auth_source_candidate, None);
+    }
+
+    #[test]
+    fn request_header_mode_is_config_valid_without_server_side_credentials() {
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeader;
+
+        assert!(reported_config_valid(
+            &settings,
+            Some("request_header"),
+            &VerificationReport::RequestHeaderRequired {
+                header: "x-google-access-token".to_string(),
+            },
+            true,
+        ));
     }
 
     fn test_settings(scope: &str) -> Settings {
