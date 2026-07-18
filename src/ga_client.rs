@@ -1330,7 +1330,9 @@ fn build_run_conversions_report_payload(
     payload
 }
 
-fn build_run_funnel_report_payload(request: RunFunnelReportRequest) -> Map<String, Value> {
+pub(crate) fn build_run_funnel_report_payload(
+    request: RunFunnelReportRequest,
+) -> Map<String, Value> {
     let mut payload = Map::new();
     payload.insert(
         "funnel".to_string(),

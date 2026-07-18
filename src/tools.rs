@@ -33,8 +33,8 @@ use crate::error::AnalyticsError;
 use crate::ga_client::{
     AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
     PropertyId, RunAccessReportRequest, RunConversionsReportRequest, RunFunnelReportRequest,
-    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest, normalize_funnel_step,
-    snake_to_camel_json, sort_object,
+    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
+    build_run_funnel_report_payload, normalize_funnel_step, snake_to_camel_json, sort_object,
 };
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
@@ -3611,16 +3611,13 @@ fn normalized_funnel_provider_boundary_payload(
     let funnel_steps = args
         .funnel_steps
         .iter()
-        .enumerate()
-        .map(|(index, step)| {
-            serde_json::to_value(step)
-                .map(|value| normalize_funnel_step(value, index))
-                .map_err(|err| {
-                    AnalyticsError::invalid(
-                        "provider_payload",
-                        format!("funnel steps could not be serialized as JSON: {err}"),
-                    )
-                })
+        .map(|step| {
+            serde_json::to_value(step).map_err(|err| {
+                AnalyticsError::invalid(
+                    "provider_payload",
+                    format!("funnel steps could not be serialized as JSON: {err}"),
+                )
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let funnel_breakdown = args.funnel_breakdown.as_ref().map(|breakdown| {
@@ -3641,32 +3638,24 @@ fn normalized_funnel_provider_boundary_payload(
         }
         snake_to_camel_json(value)
     });
-    let segments = args
-        .segments
-        .as_ref()
-        .map(|segments| Value::Array(segments.iter().cloned().map(snake_to_camel_json).collect()));
-    let dimension_filter = args
-        .dimension_filter
-        .as_ref()
-        .cloned()
-        .map(snake_to_camel_json);
-
-    Ok(json!({
-        "funnel_steps": funnel_steps,
-        "date_ranges": args
-            .date_ranges
-            .iter()
-            .cloned()
-            .map(snake_to_camel_json)
-            .collect::<Vec<_>>(),
-        "is_open_funnel": args.is_open_funnel,
-        "segments": segments,
-        "dimension_filter": dimension_filter,
-        "funnel_breakdown": funnel_breakdown,
-        "funnel_next_action": funnel_next_action,
-        "funnel_visualization_type": args.funnel_visualization_type,
-        "return_property_quota": args.return_property_quota,
-    }))
+    Ok(Value::Object(build_run_funnel_report_payload(
+        RunFunnelReportRequest {
+            property_id: args.property_id.clone(),
+            funnel_steps,
+            is_open_funnel: args.is_open_funnel,
+            date_ranges: args.date_ranges.clone(),
+            funnel_breakdown,
+            funnel_next_action,
+            funnel_visualization_type: args
+                .funnel_visualization_type
+                .map(FunnelVisualizationType::as_str)
+                .map(str::to_string),
+            segments: args.segments.clone(),
+            dimension_filter: args.dimension_filter.clone(),
+            limit: Some(resolve_funnel_report_limit(args.max_rows, args.limit)),
+            return_property_quota: args.return_property_quota,
+        },
+    )))
 }
 
 fn validate_provider_boundary_json_size(
@@ -7839,6 +7828,51 @@ mod tests {
             .expect_err("provider-boundary funnel date-range JSON must be bounded");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn normalized_funnel_provider_payload_matches_outbound_shape_and_limit() {
+        let payload = normalized_funnel_provider_boundary_payload(&valid_funnel_report_args())
+            .expect("normalized payload");
+
+        assert_eq!(payload["funnel"]["isOpenFunnel"], json!(false));
+        assert_eq!(
+            payload["funnel"]["steps"][0]["filterExpression"]["funnelEventFilter"]["eventName"],
+            json!("page_view")
+        );
+        assert_eq!(payload["dateRanges"][0]["startDate"], json!("7daysAgo"));
+        assert_eq!(
+            payload["funnelBreakdown"]["breakdownDimension"]["name"],
+            json!("deviceCategory")
+        );
+        assert_eq!(
+            payload["funnelNextAction"]["nextActionDimension"]["name"],
+            json!("eventName")
+        );
+        assert_eq!(payload["limit"], json!("50"));
+        assert_eq!(payload["returnPropertyQuota"], json!(false));
+        assert!(payload.get("segments").is_none());
+        assert!(payload.get("dimensionFilter").is_none());
+    }
+
+    #[test]
+    fn normalized_funnel_provider_payload_omits_optional_nulls() {
+        let mut args = valid_funnel_report_args();
+        args.date_ranges.clear();
+        args.funnel_breakdown = None;
+        args.funnel_next_action = None;
+        args.funnel_visualization_type = None;
+        args.limit = None;
+        args.max_rows = None;
+
+        let payload = normalized_funnel_provider_boundary_payload(&args).expect("payload");
+        assert_eq!(payload["limit"], json!("200"));
+        assert!(payload.get("dateRanges").is_none());
+        assert!(payload.get("funnelBreakdown").is_none());
+        assert!(payload.get("funnelNextAction").is_none());
+        assert!(payload.get("funnelVisualizationType").is_none());
+        assert!(payload.get("segments").is_none());
+        assert!(payload.get("dimensionFilter").is_none());
     }
 
     #[test]
