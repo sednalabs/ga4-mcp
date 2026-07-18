@@ -1308,7 +1308,7 @@ fn build_run_report_payload(
     payload
 }
 
-fn build_run_conversions_report_payload(
+pub(crate) fn build_run_conversions_report_payload(
     request: RunConversionsReportRequest,
 ) -> Map<String, Value> {
     let mut payload = build_run_report_payload(
