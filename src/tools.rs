@@ -40,7 +40,10 @@ use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, Scratchpad
 use crate::server::AnalyticsMcp;
 
 const MAX_REPORT_LIMIT: u64 = 250_000;
+const MAX_FUNNEL_STEPS: usize = 10;
 const MAX_FUNNEL_SEGMENTS: usize = 4;
+const MAX_CONVERSION_ACTIONS: usize = 50;
+const MAX_PROVIDER_BOUNDARY_JSON_BYTES: usize = 64 * 1024;
 const MAX_FUNNEL_BREAKDOWN_LIMIT: u64 = 15;
 const MAX_FUNNEL_NEXT_ACTION_LIMIT: u64 = 5;
 const MAX_BATCH_REPORT_REQUESTS: usize = 5;
@@ -3390,6 +3393,12 @@ fn validate_conversions_report_inputs(
             ));
         }
     }
+    if args.conversion_spec.conversion_actions.len() > MAX_CONVERSION_ACTIONS {
+        return Err(AnalyticsError::invalid(
+            "conversion_spec",
+            format!("conversion_actions must include at most {MAX_CONVERSION_ACTIONS} entries"),
+        ));
+    }
     for (idx, action) in args.conversion_spec.conversion_actions.iter().enumerate() {
         let valid = action
             .strip_prefix("conversionActions/")
@@ -3401,6 +3410,13 @@ fn validate_conversions_report_inputs(
             ));
         }
     }
+    let provider_payload = json!({
+        "conversion_spec": &args.conversion_spec,
+        "dimension_filter": &args.dimension_filter,
+        "metric_filter": &args.metric_filter,
+        "order_bys": &args.order_bys,
+    });
+    validate_provider_boundary_json_size("provider_payload", &provider_payload)?;
     Ok(())
 }
 
@@ -3409,6 +3425,12 @@ fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), Analy
         return Err(AnalyticsError::invalid(
             "funnel_steps",
             "must include at least one funnel step",
+        ));
+    }
+    if args.funnel_steps.len() > MAX_FUNNEL_STEPS {
+        return Err(AnalyticsError::invalid(
+            "funnel_steps",
+            format!("must include at most {MAX_FUNNEL_STEPS} funnel steps"),
         ));
     }
     for (idx, step) in args.funnel_steps.iter().enumerate() {
@@ -3551,7 +3573,39 @@ fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), Analy
             MAX_FUNNEL_NEXT_ACTION_LIMIT,
         )?;
     }
+    let funnel_steps = serde_json::to_value(&args.funnel_steps).map_err(|err| {
+        AnalyticsError::invalid(
+            "provider_payload",
+            format!("funnel steps could not be serialized as JSON: {err}"),
+        )
+    })?;
+    let provider_payload = json!({
+        "funnel_steps": funnel_steps,
+        "segments": &args.segments,
+        "dimension_filter": &args.dimension_filter,
+        "funnel_breakdown": &args.funnel_breakdown,
+        "funnel_next_action": &args.funnel_next_action,
+    });
+    validate_provider_boundary_json_size("provider_payload", &provider_payload)?;
     validate_limit_offset(args.limit, None)
+}
+
+fn validate_provider_boundary_json_size(
+    field: &'static str,
+    payload: &Value,
+) -> Result<(), AnalyticsError> {
+    let size = serde_json::to_vec(payload)
+        .map_err(|err| AnalyticsError::invalid(field, format!("must be valid JSON: {err}")))?
+        .len();
+    if size > MAX_PROVIDER_BOUNDARY_JSON_BYTES {
+        return Err(AnalyticsError::invalid(
+            field,
+            format!(
+                "combined provider-boundary JSON must be <= {MAX_PROVIDER_BOUNDARY_JSON_BYTES} bytes (received {size})"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn is_valid_funnel_duration(value: &str) -> bool {
@@ -7413,6 +7467,33 @@ mod tests {
     }
 
     #[test]
+    fn validate_conversions_report_rejects_too_many_conversion_actions() {
+        let mut args = valid_conversions_report_args();
+        args.conversion_spec.conversion_actions = (0..=MAX_CONVERSION_ACTIONS)
+            .map(|id| format!("conversionActions/{id}"))
+            .collect();
+        let err = validate_conversions_report_inputs(&args)
+            .expect_err("conversion action count must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("at most 50 entries"));
+    }
+
+    #[test]
+    fn validate_conversions_report_rejects_oversized_provider_payload() {
+        let mut args = valid_conversions_report_args();
+        args.dimension_filter = Some(json!({
+            "filter": {
+                "field_name": "campaignName",
+                "string_filter": { "value": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES) }
+            }
+        }));
+        let err = validate_conversions_report_inputs(&args)
+            .expect_err("provider-boundary conversion JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
     fn conversions_query_hash_matches_outbound_json_normalization_and_trimmed_currency() {
         let mut snake_case = valid_conversions_report_args();
         snake_case.dimensions = vec![" campaignName ".to_string()];
@@ -7619,6 +7700,40 @@ mod tests {
             validate_funnel_report_inputs(&args).expect_err("too many funnel segments must fail");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("at most 4"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_too_many_steps() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_steps = (0..=MAX_FUNNEL_STEPS)
+            .map(|index| FunnelStepArgs {
+                name: Some(format!("Step {index}")),
+                event: Some("page_view".to_string()),
+                filter_expression: None,
+                is_directly_followed_by: None,
+                within_duration_from_prior_step: None,
+            })
+            .collect();
+        let err =
+            validate_funnel_report_inputs(&args).expect_err("funnel step count must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("at most 10 funnel steps"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_oversized_provider_payload() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_steps[0].filter_expression = Some(json!({
+            "funnel_field_filter": {
+                "field_name": "eventName",
+                "string_filter": { "value": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES) }
+            }
+        }));
+        args.funnel_steps[0].event = None;
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("provider-boundary funnel JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
     }
 
     #[test]

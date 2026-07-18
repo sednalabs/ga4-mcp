@@ -46,6 +46,9 @@ Report-like tools support tabular response controls where applicable:
 `run_conversions_report` uses the same tabular controls and cursor behavior as
 `run_report`. Its `conversion_spec.conversion_actions` accepts zero or more
 `conversionActions/<id>` resource names; an empty list means all conversions.
+The MCP accepts at most 50 conversion actions and caps the combined JSON size
+of the conversion spec, filters, and ordering expressions at 64 KiB before
+calling Google.
 The optional attribution model is `DATA_DRIVEN` or `LAST_CLICK`. Google limits
 this alpha report to its documented conversion dimensions and metrics, which
 the MCP validates before making an upstream request.
@@ -60,6 +63,9 @@ separately projected subreports. `max_rows`,
 not return an exact total row count for these subreports, so metadata reports
 `row_count_total_known=false` and conservatively marks a subreport truncated
 when it fills the effective request limit; no cursor is advertised.
+Requests are limited to 10 funnel steps, and the combined JSON size of funnel
+steps, segments, filters, breakdown, and next-action structures is capped at
+64 KiB before calling Google.
 
 The generated JSON schema describes request structure; runtime validation also
 enforces semantic constraints. Each funnel step must be non-empty and provide
