@@ -33,7 +33,8 @@ use crate::error::AnalyticsError;
 use crate::ga_client::{
     AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
     PropertyId, RunAccessReportRequest, RunConversionsReportRequest, RunFunnelReportRequest,
-    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest, sort_object,
+    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest, snake_to_camel_json,
+    sort_object,
 };
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
@@ -5582,7 +5583,8 @@ fn run_conversions_report_query_hash(
     args: &RunConversionsReportArgs,
 ) -> Result<String, AnalyticsError> {
     let property = args.property_id.to_resource_name()?;
-    let signature = json!({
+    let currency_code = args.currency_code.as_deref().map(str::trim);
+    let signature = snake_to_camel_json(json!({
         "tool": "run_conversions_report",
         "property": property,
         "date_ranges": &args.date_ranges,
@@ -5592,15 +5594,15 @@ fn run_conversions_report_query_hash(
         "dimension_filter": &args.dimension_filter,
         "metric_filter": &args.metric_filter,
         "order_bys": &args.order_bys,
-        "currency_code": &args.currency_code,
+        "currency_code": currency_code,
         "return_property_quota": args.return_property_quota,
-    });
+    }));
     stable_query_hash(&signature)
 }
 
 fn run_funnel_report_query_hash(args: &RunFunnelReportArgs) -> Result<String, AnalyticsError> {
     let property = args.property_id.to_resource_name()?;
-    let signature = json!({
+    let signature = snake_to_camel_json(json!({
         "tool": "run_funnel_report",
         "property": property,
         "funnel_steps": &args.funnel_steps,
@@ -5612,7 +5614,7 @@ fn run_funnel_report_query_hash(args: &RunFunnelReportArgs) -> Result<String, An
         "segments": &args.segments,
         "dimension_filter": &args.dimension_filter,
         "return_property_quota": args.return_property_quota,
-    });
+    }));
     stable_query_hash(&signature)
 }
 
@@ -5858,6 +5860,9 @@ fn contract_success_ga_funnel(
             started,
         );
     };
+    if let Err(err) = validate_funnel_subreport_shape(funnel_table, "funnelTable") {
+        return contract_error(err, started);
+    }
     let Some(funnel_visualization) = data
         .get("funnelVisualization")
         .filter(|value| value.is_object())
@@ -5870,6 +5875,9 @@ fn contract_success_ga_funnel(
             started,
         );
     };
+    if let Err(err) = validate_funnel_subreport_shape(funnel_visualization, "funnelVisualization") {
+        return contract_error(err, started);
+    }
 
     let (table_payload, table_meta, table_truncated) = project_funnel_subreport(
         funnel_table,
@@ -5916,6 +5924,60 @@ fn contract_success_ga_funnel(
         },
     });
     contract::success_with_meta(payload, meta, contract::elapsed_ms(started))
+}
+
+fn validate_funnel_subreport_shape(
+    subreport: &Value,
+    subreport_name: &str,
+) -> Result<(), AnalyticsError> {
+    let Some(subreport) = subreport.as_object() else {
+        return Err(AnalyticsError::Internal(format!(
+            "Google funnel response included a non-object {subreport_name} subreport"
+        )));
+    };
+
+    for field_name in ["dimensionHeaders", "metricHeaders", "rows"] {
+        let Some(values) = subreport.get(field_name).and_then(Value::as_array) else {
+            return Err(AnalyticsError::Internal(format!(
+                "Google funnel response {subreport_name} must include an array-valued {field_name}"
+            )));
+        };
+        for (index, value) in values.iter().enumerate() {
+            if !value.is_object() {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google funnel response {subreport_name}.{field_name}[{index}] must be an object"
+                )));
+            }
+        }
+    }
+
+    for (row_index, row) in subreport
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for field_name in ["dimensionValues", "metricValues"] {
+            let Some(values) = row.get(field_name) else {
+                continue;
+            };
+            let Some(values) = values.as_array() else {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google funnel response {subreport_name}.rows[{row_index}].{field_name} must be an array"
+                )));
+            };
+            for (value_index, value) in values.iter().enumerate() {
+                if !value.is_object() {
+                    return Err(AnalyticsError::Internal(format!(
+                        "Google funnel response {subreport_name}.rows[{row_index}].{field_name}[{value_index}] must be an object"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn project_funnel_subreport(
@@ -7229,6 +7291,46 @@ mod tests {
         assert!(err.to_string().contains("conversionActions/<numeric-id>"));
     }
 
+    #[test]
+    fn conversions_query_hash_matches_outbound_json_normalization_and_trimmed_currency() {
+        let mut snake_case = valid_conversions_report_args();
+        snake_case.dimension_filter = Some(json!({
+            "and_group": {
+                "expressions": [{
+                    "filter": { "field_name": "campaignName" }
+                }]
+            }
+        }));
+        snake_case.order_bys = Some(vec![json!({
+            "dimension": { "dimension_name": "campaignName" },
+            "desc": true
+        })]);
+        snake_case.currency_code = Some(" USD ".to_string());
+
+        let mut camel_case = valid_conversions_report_args();
+        camel_case.date_ranges = vec![json!({
+            "startDate": "2026-04-01",
+            "endDate": "2026-04-30",
+        })];
+        camel_case.dimension_filter = Some(json!({
+            "andGroup": {
+                "expressions": [{
+                    "filter": { "fieldName": "campaignName" }
+                }]
+            }
+        }));
+        camel_case.order_bys = Some(vec![json!({
+            "dimension": { "dimensionName": "campaignName" },
+            "desc": true
+        })]);
+        camel_case.currency_code = Some("USD".to_string());
+
+        assert_eq!(
+            run_conversions_report_query_hash(&snake_case).expect("snake hash"),
+            run_conversions_report_query_hash(&camel_case).expect("camel hash")
+        );
+    }
+
     fn valid_funnel_report_args() -> RunFunnelReportArgs {
         RunFunnelReportArgs {
             property_id: PropertyId::Number(1234),
@@ -7276,6 +7378,46 @@ mod tests {
     #[test]
     fn validate_funnel_report_accepts_event_shorthand() {
         assert!(validate_funnel_report_inputs(&valid_funnel_report_args()).is_ok());
+    }
+
+    #[test]
+    fn funnel_query_hash_matches_outbound_json_normalization() {
+        let mut snake_case = valid_funnel_report_args();
+        snake_case.segments = Some(vec![json!({
+            "segment_filter": {
+                "and_group": {
+                    "expressions": [{
+                        "filter": { "field_name": "country" }
+                    }]
+                }
+            }
+        })]);
+        snake_case.dimension_filter = Some(json!({
+            "filter": { "field_name": "deviceCategory" }
+        }));
+
+        let mut camel_case = valid_funnel_report_args();
+        camel_case.date_ranges = vec![json!({
+            "startDate": "7daysAgo",
+            "endDate": "yesterday",
+        })];
+        camel_case.segments = Some(vec![json!({
+            "segmentFilter": {
+                "andGroup": {
+                    "expressions": [{
+                        "filter": { "fieldName": "country" }
+                    }]
+                }
+            }
+        })]);
+        camel_case.dimension_filter = Some(json!({
+            "filter": { "fieldName": "deviceCategory" }
+        }));
+
+        assert_eq!(
+            run_funnel_report_query_hash(&snake_case).expect("snake hash"),
+            run_funnel_report_query_hash(&camel_case).expect("camel hash")
+        );
     }
 
     #[test]
@@ -7466,7 +7608,13 @@ mod tests {
     #[test]
     fn funnel_contract_rejects_missing_subreports() {
         let result = contract_success_ga_funnel(
-            json!({ "funnelTable": {} }),
+            json!({
+                "funnelTable": {
+                    "dimensionHeaders": [],
+                    "metricHeaders": [],
+                    "rows": []
+                }
+            }),
             Instant::now(),
             FunnelResponseOptions {
                 query_hash: "abcd".to_string(),
@@ -7486,6 +7634,57 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains("funnelVisualization"))
         );
+    }
+
+    #[test]
+    fn funnel_contract_rejects_malformed_subreport_tabular_shapes() {
+        let valid_subreport = || {
+            json!({
+                "dimensionHeaders": [],
+                "metricHeaders": [],
+                "rows": []
+            })
+        };
+        let malformed_subreports = vec![
+            json!({
+                "dimensionHeaders": {},
+                "metricHeaders": [],
+                "rows": []
+            }),
+            json!({
+                "dimensionHeaders": [],
+                "metricHeaders": [],
+                "rows": [null]
+            }),
+            json!({
+                "dimensionHeaders": [],
+                "metricHeaders": [],
+                "rows": [{"metricValues": {}}]
+            }),
+        ];
+
+        for malformed in malformed_subreports {
+            let result = contract_success_ga_funnel(
+                json!({
+                    "funnelTable": malformed,
+                    "funnelVisualization": valid_subreport()
+                }),
+                Instant::now(),
+                FunnelResponseOptions {
+                    query_hash: "abcd".to_string(),
+                    output_mode: contract::OutputMode::Rows,
+                    summary_only: false,
+                    max_cell_chars: None,
+                    effective_limit: 10,
+                    requested_limit: None,
+                },
+            );
+            let payload = result
+                .structured_content
+                .expect("malformed funnel response must be structured");
+            assert_eq!(payload["ok"], json!(false));
+            assert!(payload["error"]["message"].is_string());
+        }
     }
 
     #[test]
