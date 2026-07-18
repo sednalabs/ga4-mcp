@@ -5633,14 +5633,32 @@ fn run_funnel_report_query_hash(args: &RunFunnelReportArgs) -> Result<String, An
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let funnel_breakdown = args.funnel_breakdown.as_ref().map(|breakdown| {
+        let mut value = json!({
+            "breakdown_dimension": { "name": breakdown.breakdown_dimension },
+        });
+        if let Some(limit) = breakdown.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        value
+    });
+    let funnel_next_action = args.funnel_next_action.as_ref().map(|next_action| {
+        let mut value = json!({
+            "next_action_dimension": { "name": next_action.next_action_dimension },
+        });
+        if let Some(limit) = next_action.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        value
+    });
     let signature = snake_to_camel_json(json!({
         "tool": "run_funnel_report",
         "property": property,
         "funnel_steps": funnel_steps,
         "is_open_funnel": args.is_open_funnel,
         "date_ranges": &args.date_ranges,
-        "funnel_breakdown": &args.funnel_breakdown,
-        "funnel_next_action": &args.funnel_next_action,
+        "funnel_breakdown": funnel_breakdown,
+        "funnel_next_action": funnel_next_action,
         "funnel_visualization_type": &args.funnel_visualization_type,
         "segments": &args.segments,
         "dimension_filter": &args.dimension_filter,
@@ -7490,6 +7508,14 @@ mod tests {
     #[test]
     fn funnel_query_hash_matches_outbound_json_normalization() {
         let mut snake_case = valid_funnel_report_args();
+        snake_case.funnel_breakdown = Some(FunnelBreakdownArgs {
+            breakdown_dimension: "deviceCategory".to_string(),
+            limit: Some(12),
+        });
+        snake_case.funnel_next_action = Some(FunnelNextActionArgs {
+            next_action_dimension: "eventName".to_string(),
+            limit: Some(4),
+        });
         snake_case.segments = Some(vec![json!({
             "segment_filter": {
                 "and_group": {
@@ -7504,6 +7530,14 @@ mod tests {
         }));
 
         let mut camel_case = valid_funnel_report_args();
+        camel_case.funnel_breakdown = Some(FunnelBreakdownArgs {
+            breakdown_dimension: "deviceCategory".to_string(),
+            limit: Some(12),
+        });
+        camel_case.funnel_next_action = Some(FunnelNextActionArgs {
+            next_action_dimension: "eventName".to_string(),
+            limit: Some(4),
+        });
         camel_case.date_ranges = vec![json!({
             "startDate": "7daysAgo",
             "endDate": "yesterday",
@@ -8055,10 +8089,7 @@ mod tests {
                 cursor_offset: 2,
             },
         );
-        assert!(!matches!(
-            empty_meta.get("next_cursor"),
-            Some(Value::String(_))
-        ));
+        assert_eq!(empty_meta.get("next_cursor"), Some(&Value::Null));
 
         let out_of_range_projection = GaTabularProjection {
             rows: vec![Map::from_iter([("country".to_string(), json!("US"))])],
@@ -8076,10 +8107,7 @@ mod tests {
                 cursor_offset: 1,
             },
         );
-        assert!(!matches!(
-            out_of_range_meta.get("next_cursor"),
-            Some(Value::String(_))
-        ));
+        assert_eq!(out_of_range_meta.get("next_cursor"), Some(&Value::Null));
     }
 
     #[test]
