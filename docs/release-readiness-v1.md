@@ -20,7 +20,7 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 
 The [PR checks page](https://github.com/sednalabs/ga4-mcp/pull/30/checks) is the
 authoritative source for final verification. The following hosted runs all
-passed for the exact current PR head
+passed for the executable implementation at code head
 `2d42fc04ed6bc3ae5c2799e0b20411e77eb8558f`:
 
 - [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226544)
@@ -28,6 +28,10 @@ passed for the exact current PR head
 - [CodeQL Advanced](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226575)
 - [DevSkim](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226540)
 - [OSV-Scanner](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226757)
+
+Later commits on this branch only update this evidence document; they do not
+change the executable implementation validated above. Use the PR checks page
+for the exact status of the current branch head.
 
 The tool schema snapshot was regenerated with the explicit binary target:
 
