@@ -18,9 +18,11 @@ scratchpad analysis tools. All responses use Contract V1 envelopes:
 
 ## Report Tools
 
-The table below describes the local `ga4-mcp` surface. Tool names listed here
-do not imply that the current upstream Google Analytics MCP exposes the same
-set; in particular, the conversion and funnel tools are Sedna additions.
+The table below describes the local `ga4-mcp` surface. `run_funnel_report`
+follows Google's official funnel-report surface and is an upstream-aligned core
+tool; `run_conversions_report` is a Sedna addition. Contract V1 envelopes,
+validation, projections, and related response metadata described below are
+local `ga4-mcp` semantics and extensions.
 
 | Tool | Purpose |
 |---|---|
