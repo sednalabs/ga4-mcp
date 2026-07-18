@@ -2,9 +2,7 @@
 //!
 //! MCP protocol handler that exposes Google Analytics read/report tools.
 
-use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use axum::http::request::Parts;
@@ -21,12 +19,12 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::config::{CapabilityProfile, UpstreamTokenSource};
 use crate::contract;
 use crate::error::AnalyticsError;
-use crate::ga_client::{AnalyticsApiClient, sort_object, with_request_access_token_override};
+use crate::ga_client::{AnalyticsApiClient, with_request_access_token_override};
 use crate::scratchpad::SharedScratchpadSessionManager;
 
 #[derive(Clone)]
@@ -122,11 +120,6 @@ impl ServerHandler for AnalyticsMcp {
             self.upstream_token_source,
             &self.upstream_token_header,
         );
-        let funnel_window = if tool_name == "run_funnel_report" {
-            funnel_pagination_window(request.arguments.as_ref())
-        } else {
-            None
-        };
         let tool_context = ToolCallContext::new(self, request, context);
         async move {
             if !self.is_tool_allowed(&tool_name) {
@@ -169,21 +162,6 @@ impl ServerHandler for AnalyticsMcp {
                     ),
                 ],
             );
-
-            if let Some((query_hash, effective_limit)) = funnel_window.as_ref() {
-                emit_event(
-                    Level::INFO,
-                    "ga4_mcp.pagination.window",
-                    &EventContext::new().with_tool_name("run_funnel_report"),
-                    &[
-                        safe_text("tool", "run_funnel_report"),
-                        safe_text("query_hash", summarize_query_hash(query_hash)),
-                        safe_text("cursor_supplied", "false"),
-                        safe_text("offset", "0"),
-                        safe_text("page_size", effective_limit.to_string()),
-                    ],
-                );
-            }
 
             let result = with_request_access_token_override(
                 request_token,
@@ -485,7 +463,12 @@ fn summarize_contract_payload(result: &CallToolResult) -> Option<ContractSummary
             .and_then(Value::as_bool),
         next_cursor_present: meta
             .and_then(|value| value.get("next_cursor"))
-            .map(|value| !value.is_null()),
+            .map(|value| !value.is_null())
+            .or_else(|| {
+                meta.and_then(|value| value.get("subreports"))
+                    .and_then(Value::as_object)
+                    .map(|_| false)
+            }),
         query_hash: meta
             .and_then(|value| value.get("query_hash"))
             .and_then(Value::as_str)
@@ -597,74 +580,6 @@ fn summarize_query_hash(query_hash: &str) -> String {
     }
 }
 
-fn funnel_pagination_window(arguments: Option<&Map<String, Value>>) -> Option<(String, u64)> {
-    const DEFAULT_FUNNEL_LIMIT: u64 = 200;
-    const MAX_FUNNEL_LIMIT: u64 = 25_000;
-
-    let arguments = arguments?;
-    let property_id = arguments.get("property_id")?;
-    let property = funnel_property_resource_name(property_id)?;
-    let signature = json!({
-        "tool": "run_funnel_report",
-        "property": property,
-        "funnel_steps": arguments
-            .get("funnel_steps")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-        "is_open_funnel": arguments
-            .get("is_open_funnel")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        "date_ranges": arguments
-            .get("date_ranges")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-        "funnel_breakdown": arguments.get("funnel_breakdown").cloned(),
-        "funnel_next_action": arguments.get("funnel_next_action").cloned(),
-        "funnel_visualization_type": arguments
-            .get("funnel_visualization_type")
-            .cloned(),
-        "segments": arguments.get("segments").cloned(),
-        "dimension_filter": arguments.get("dimension_filter").cloned(),
-        "return_property_quota": arguments
-            .get("return_property_quota")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    });
-    let canonical = serde_json::to_string(&sort_object(signature)).ok()?;
-    let mut hasher = DefaultHasher::new();
-    canonical.hash(&mut hasher);
-    let query_hash = format!("{:016x}", hasher.finish());
-
-    let response_limit = arguments
-        .get("max_rows")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_FUNNEL_LIMIT)
-        .clamp(1, MAX_FUNNEL_LIMIT);
-    let effective_limit = arguments
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(response_limit)
-        .min(response_limit)
-        .max(1);
-    Some((query_hash, effective_limit))
-}
-
-fn funnel_property_resource_name(value: &Value) -> Option<String> {
-    match value {
-        Value::Number(number) => number.as_u64().map(|value| format!("properties/{value}")),
-        Value::String(raw) => {
-            let raw = raw.trim();
-            if let Ok(value) = raw.parse::<u64>() {
-                return Some(format!("properties/{value}"));
-            }
-            let value = raw.strip_prefix("properties/")?.parse::<u64>().ok()?;
-            Some(format!("properties/{value}"))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,6 +683,7 @@ mod tests {
 
         let summary = summarize_contract_payload(&result).expect("summary should parse");
         assert_eq!(summary.query_hash.as_deref(), Some("abcdef1234567890"));
+        assert_eq!(summary.next_cursor_present, Some(false));
         assert_eq!(summary.requested_limit, Some(10));
         assert_eq!(summary.effective_limit, Some(8));
         assert_eq!(summary.row_count_total_known, Some(false));
@@ -813,26 +729,6 @@ mod tests {
         assert_eq!(safe_subreport_label("funnel/table\n"), "funnel_table_");
         assert_eq!(safe_subreport_label(""), "unknown");
         assert_eq!(safe_subreport_label(&"x".repeat(80)).len(), 64);
-    }
-
-    #[test]
-    fn funnel_pagination_window_hashes_only_safe_query_shape_and_bounds_limit() {
-        let arguments = json!({
-            "property_id": "properties/1234",
-            "funnel_steps": [{"event": "page_view"}],
-            "limit": 500,
-            "max_rows": 300
-        });
-        let (query_hash, effective_limit) = funnel_pagination_window(arguments.as_object())
-            .expect("valid property should produce funnel pagination metadata");
-        assert_eq!(query_hash.len(), 16);
-        assert_eq!(effective_limit, 300);
-
-        let default_arguments = json!({"property_id": 1234, "funnel_steps": []});
-        let default_limit = funnel_pagination_window(default_arguments.as_object())
-            .expect("numeric property should produce funnel pagination metadata")
-            .1;
-        assert_eq!(default_limit, 200);
     }
 
     #[test]

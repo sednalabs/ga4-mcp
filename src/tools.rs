@@ -1718,6 +1718,7 @@ impl AnalyticsMcp {
             Err(err) => return Ok(contract_error(err, started)),
         };
         let effective_limit = resolve_funnel_report_limit(args.max_rows, args.limit);
+        emit_pagination_window("run_funnel_report", &query_hash, false, 0, effective_limit);
         let funnel_steps = match args
             .funnel_steps
             .into_iter()
