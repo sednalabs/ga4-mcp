@@ -61,6 +61,10 @@ not return an exact total row count for these subreports, so metadata reports
 `row_count_total_known=false` and conservatively marks a subreport truncated
 when it fills the effective request limit; no cursor is advertised.
 
+The generated JSON schema describes request structure; runtime validation also
+enforces semantic constraints. Each funnel step must be non-empty and provide
+exactly one of `event` or `filter_expression`.
+
 Funnel `segments` are provider-boundary JSON objects. The MCP enforces at most
 four non-empty objects, but does not fully validate Google's segment union
 shape; malformed or unsupported segment objects may therefore be rejected by

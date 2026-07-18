@@ -10,7 +10,7 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 
 - [x] Contract policy is V1-only (no legacy mode).
 - [x] Tool schema snapshot regenerated from current build.
-- [x] Core Rust validation and tool-contract checks are green in hosted CI.
+- [ ] Core Rust validation and tool-contract checks are green in hosted CI (pending current-head verification).
 - [x] Scratchpad tools included in schema snapshot.
 - [x] Policy gating (`read_only` vs `scratchpad`) documented.
 - [x] Operator runbook with request/response examples published.
@@ -19,13 +19,13 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 ## Verification Evidence
 
 The [PR checks page](https://github.com/sednalabs/ga4-mcp/pull/30/checks) is the
-authoritative source for final verification. The exact final head SHA and
-hosted run IDs are recorded in the release handoff; individual run links below
-are historical code-slice evidence and must not be read as the current PR head
-after later commits.
+authoritative source for final verification. Current-head Rust validation and
+coverage verification are pending; no release handoff has been recorded yet.
+The individual run links below are historical code-slice evidence and are not
+proof for the current PR head after later commits.
 
-- [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29652538484): pass for an earlier code slice.
-- [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140): pass for an earlier code slice.
+- [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29652538484): historical pass for an earlier code slice; current-head result pending.
+- [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140): historical pass for an earlier code slice; current-head result pending.
 
 The tool schema snapshot was regenerated with the explicit binary target:
 
