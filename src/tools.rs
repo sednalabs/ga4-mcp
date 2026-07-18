@@ -34,7 +34,8 @@ use crate::ga_client::{
     AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
     PropertyId, RunAccessReportRequest, RunConversionsReportRequest, RunFunnelReportRequest,
     RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
-    build_run_funnel_report_payload, normalize_funnel_step, snake_to_camel_json, sort_object,
+    build_run_conversions_report_payload, build_run_funnel_report_payload, normalize_funnel_step,
+    snake_to_camel_json, sort_object,
 };
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
