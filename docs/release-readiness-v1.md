@@ -10,7 +10,7 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 
 - [x] Contract policy is V1-only (no legacy mode).
 - [x] Tool schema snapshot regenerated from current build.
-- [ ] Core Rust validation and tool-contract checks are green in hosted CI (pending current-head verification).
+- [x] Core Rust validation and tool-contract checks are green in hosted CI.
 - [x] Scratchpad tools included in schema snapshot.
 - [x] Policy gating (`read_only` vs `scratchpad`) documented.
 - [x] Operator runbook with request/response examples published.
@@ -19,13 +19,15 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 ## Verification Evidence
 
 The [PR checks page](https://github.com/sednalabs/ga4-mcp/pull/30/checks) is the
-authoritative source for final verification. Current-head Rust validation and
-coverage verification are pending; no release handoff has been recorded yet.
-The individual run links below are historical code-slice evidence and are not
-proof for the current PR head after later commits.
+authoritative source for final verification. The following hosted runs all
+passed for the exact current PR head
+`2d42fc04ed6bc3ae5c2799e0b20411e77eb8558f`:
 
-- [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29652538484): historical pass for an earlier code slice; current-head result pending.
-- [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140): historical pass for an earlier code slice; current-head result pending.
+- [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226544)
+- [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226578)
+- [CodeQL Advanced](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226575)
+- [DevSkim](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226540)
+- [OSV-Scanner](https://github.com/sednalabs/ga4-mcp/actions/runs/29661226757)
 
 The tool schema snapshot was regenerated with the explicit binary target:
 
