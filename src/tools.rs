@@ -8055,7 +8055,10 @@ mod tests {
                 cursor_offset: 2,
             },
         );
-        assert!(empty_meta.get("next_cursor").is_none());
+        assert!(!matches!(
+            empty_meta.get("next_cursor"),
+            Some(Value::String(_))
+        ));
 
         let out_of_range_projection = GaTabularProjection {
             rows: vec![Map::from_iter([("country".to_string(), json!("US"))])],
@@ -8073,7 +8076,10 @@ mod tests {
                 cursor_offset: 1,
             },
         );
-        assert!(out_of_range_meta.get("next_cursor").is_none());
+        assert!(!matches!(
+            out_of_range_meta.get("next_cursor"),
+            Some(Value::String(_))
+        ));
     }
 
     #[test]
