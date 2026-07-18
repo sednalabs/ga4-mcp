@@ -20,9 +20,9 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 
 The [PR checks page](https://github.com/sednalabs/ga4-mcp/pull/30/checks) is the
 authoritative source for final verification. The exact final head SHA and
-hosted run IDs are recorded in the release handoff and its Ops checkpoint;
-individual run links below are historical code-slice evidence and must not be
-read as the current PR head after later commits.
+hosted run IDs are recorded in the release handoff; individual run links below
+are historical code-slice evidence and must not be read as the current PR head
+after later commits.
 
 - [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29652538484): pass for an earlier code slice.
 - [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140): pass for an earlier code slice.
@@ -33,10 +33,10 @@ The tool schema snapshot was regenerated with the explicit binary target:
 cargo run --bin ga4-mcp -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
 ```
 
-The local `sql_policy_toolkit_conformance` command was not rerun for this PR:
-the sibling `mcp-policy-kernel` checkout required by that script is not
-available in this workspace. Any earlier pass recorded for that command is
-historical baseline evidence only, not current PR verification.
+The `sql_policy_toolkit_conformance` command was not rerun for this PR because
+an external companion conformance dependency was unavailable. Any earlier pass
+recorded for that command is historical baseline evidence only, not current PR
+verification.
 
 ## Tool Inventory (from `spec/tool_schema_snapshot.v1.json`)
 

@@ -1396,7 +1396,7 @@ fn build_run_funnel_report_payload(request: RunFunnelReportRequest) -> Map<Strin
     payload
 }
 
-fn normalize_funnel_step(step: Value, index: usize) -> Value {
+pub(crate) fn normalize_funnel_step(step: Value, index: usize) -> Value {
     let Value::Object(mut step) = step else {
         return snake_to_camel_json(step);
     };

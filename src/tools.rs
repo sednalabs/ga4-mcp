@@ -33,8 +33,8 @@ use crate::error::AnalyticsError;
 use crate::ga_client::{
     AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
     PropertyId, RunAccessReportRequest, RunConversionsReportRequest, RunFunnelReportRequest,
-    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest, snake_to_camel_json,
-    sort_object,
+    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest, normalize_funnel_step,
+    snake_to_camel_json, sort_object,
 };
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
@@ -1687,12 +1687,19 @@ impl AnalyticsMcp {
         };
 
         match self.client.run_conversions_report(request).await {
-            Ok(data) => Ok(contract_success_ga_tabular(
-                data,
-                started,
-                "run_conversions_report",
-                response_options,
-            )),
+            Ok(data) => {
+                if let Err(err) =
+                    validate_ga_tabular_response_shape(&data, "run_conversions_report")
+                {
+                    return Ok(contract_error(err, started));
+                }
+                Ok(contract_success_ga_tabular(
+                    data,
+                    started,
+                    "run_conversions_report",
+                    response_options,
+                ))
+            }
             Err(err) => Ok(contract_error(err, started)),
         }
     }
@@ -5602,10 +5609,24 @@ fn run_conversions_report_query_hash(
 
 fn run_funnel_report_query_hash(args: &RunFunnelReportArgs) -> Result<String, AnalyticsError> {
     let property = args.property_id.to_resource_name()?;
+    let funnel_steps = args
+        .funnel_steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            serde_json::to_value(step)
+                .map(|value| normalize_funnel_step(value, index))
+                .map_err(|err| {
+                    AnalyticsError::Internal(format!(
+                        "failed to serialize funnel step for query hash: {err}"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let signature = snake_to_camel_json(json!({
         "tool": "run_funnel_report",
         "property": property,
-        "funnel_steps": &args.funnel_steps,
+        "funnel_steps": funnel_steps,
         "is_open_funnel": args.is_open_funnel,
         "date_ranges": &args.date_ranges,
         "funnel_breakdown": &args.funnel_breakdown,
@@ -5743,6 +5764,12 @@ fn resolve_cursor_window(
         if token.query_hash != query_hash {
             return Err(AnalyticsError::CursorQueryMismatch);
         }
+        if token.offset > MAX_REPORT_LIMIT * 10 {
+            return Err(AnalyticsError::invalid(
+                "offset",
+                "is unreasonably high for a single request",
+            ));
+        }
         token.offset
     } else {
         requested_offset.unwrap_or(0)
@@ -5846,6 +5873,67 @@ fn contract_success_ga_tabular(
     contract_success_ga_projection(projection, started, options)
 }
 
+fn validate_ga_tabular_response_shape(
+    response: &Value,
+    report_kind: &'static str,
+) -> Result<(), AnalyticsError> {
+    let Some(response) = response.as_object() else {
+        return Err(AnalyticsError::Internal(format!(
+            "Google {report_kind} response must be an object"
+        )));
+    };
+
+    if let Some(row_count) = response.get("rowCount") {
+        if row_count.as_u64().is_none() {
+            return Err(AnalyticsError::Internal(format!(
+                "Google {report_kind} response field rowCount must be a non-negative integer"
+            )));
+        }
+    }
+
+    for field_name in ["dimensionHeaders", "metricHeaders", "rows"] {
+        let Some(raw_values) = response.get(field_name) else {
+            continue;
+        };
+        let Some(values) = raw_values.as_array() else {
+            return Err(AnalyticsError::Internal(format!(
+                "Google {report_kind} response field {field_name} must be an array"
+            )));
+        };
+        for (index, value) in values.iter().enumerate() {
+            if !value.is_object() {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google {report_kind} response {field_name}[{index}] must be an object"
+                )));
+            }
+        }
+    }
+
+    if let Some(rows) = response.get("rows").and_then(Value::as_array) {
+        for (row_index, row) in rows.iter().enumerate() {
+            for field_name in ["dimensionValues", "metricValues"] {
+                let Some(raw_values) = row.get(field_name) else {
+                    continue;
+                };
+                let Some(values) = raw_values.as_array() else {
+                    return Err(AnalyticsError::Internal(format!(
+                        "Google {report_kind} response rows[{row_index}].{field_name} must be an array"
+                    )));
+                };
+                for (value_index, value) in values.iter().enumerate() {
+                    if !value.is_object() {
+                        return Err(AnalyticsError::Internal(format!(
+                            "Google {report_kind} response rows[{row_index}].{field_name}[{value_index}] must be an object"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn contract_success_ga_funnel(
     data: Value,
     started: Instant,
@@ -5937,9 +6025,12 @@ fn validate_funnel_subreport_shape(
     };
 
     for field_name in ["dimensionHeaders", "metricHeaders", "rows"] {
-        let Some(values) = subreport.get(field_name).and_then(Value::as_array) else {
+        let Some(raw_values) = subreport.get(field_name) else {
+            continue;
+        };
+        let Some(values) = raw_values.as_array() else {
             return Err(AnalyticsError::Internal(format!(
-                "Google funnel response {subreport_name} must include an array-valued {field_name}"
+                "Google funnel response {subreport_name}.{field_name} must be an array"
             )));
         };
         for (index, value) in values.iter().enumerate() {
@@ -6038,16 +6129,18 @@ fn ga_projection_payload_and_meta(
         options.max_cell_chars,
     );
     tabular_meta.query_hash = Some(options.query_hash);
-    tabular_meta.next_cursor = if projection.row_count_total > tabular_meta.row_count_returned {
-        Some(encode_cursor(
-            tabular_meta.query_hash.as_deref().unwrap_or_default(),
-            options
-                .cursor_offset
-                .saturating_add(tabular_meta.row_count_returned as u64),
-        ))
-    } else {
-        None
-    };
+    let next_offset = options
+        .cursor_offset
+        .saturating_add(tabular_meta.row_count_returned as u64);
+    tabular_meta.next_cursor =
+        if tabular_meta.row_count_returned > 0 && next_offset < projection.row_count_total as u64 {
+            Some(encode_cursor(
+                tabular_meta.query_hash.as_deref().unwrap_or_default(),
+                next_offset,
+            ))
+        } else {
+            None
+        };
 
     let mut meta = serde_json::to_value(&tabular_meta).unwrap_or_else(|_| json!({}));
     if let Value::Object(ref mut map) = meta {
@@ -7421,6 +7514,24 @@ mod tests {
     }
 
     #[test]
+    fn funnel_query_hash_matches_outbound_step_expansion_and_default_name() {
+        let mut shorthand = valid_funnel_report_args();
+        shorthand.funnel_steps[0].name = None;
+
+        let mut expanded = valid_funnel_report_args();
+        expanded.funnel_steps[0].name = Some("Step 1".to_string());
+        expanded.funnel_steps[0].event = None;
+        expanded.funnel_steps[0].filter_expression = Some(json!({
+            "funnelEventFilter": { "eventName": "page_view" }
+        }));
+
+        assert_eq!(
+            run_funnel_report_query_hash(&shorthand).expect("shorthand hash"),
+            run_funnel_report_query_hash(&expanded).expect("expanded hash")
+        );
+    }
+
+    #[test]
     fn validate_funnel_report_rejects_conflicting_step_selectors() {
         let mut args = valid_funnel_report_args();
         args.funnel_steps[0].filter_expression = Some(json!({
@@ -7688,6 +7799,53 @@ mod tests {
     }
 
     #[test]
+    fn funnel_contract_accepts_omitted_repeated_fields_as_empty() {
+        let result = contract_success_ga_funnel(
+            json!({
+                "funnelTable": {},
+                "funnelVisualization": {}
+            }),
+            Instant::now(),
+            FunnelResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                effective_limit: 10,
+                requested_limit: None,
+            },
+        );
+        let payload = result
+            .structured_content
+            .expect("omitted repeated fields should still be structured");
+        assert_eq!(payload["ok"], json!(true));
+        assert_eq!(payload["data"]["funnel_table"], json!([]));
+        assert_eq!(payload["data"]["funnel_visualization"], json!([]));
+    }
+
+    #[test]
+    fn conversions_contract_validates_tabular_response_shapes_fail_closed() {
+        assert!(validate_ga_tabular_response_shape(&json!({}), "run_conversions_report").is_ok());
+
+        let malformed_responses = vec![
+            json!({"dimensionHeaders": null}),
+            json!({"metricHeaders": {}}),
+            json!({"rows": "not-an-array"}),
+            json!({"dimensionHeaders": [null]}),
+            json!({"metricHeaders": ["not-an-object"]}),
+            json!({"rows": [null]}),
+            json!({"rows": [{"dimensionValues": {}}]}),
+            json!({"rows": [{"metricValues": [null]}]}),
+        ];
+
+        for response in malformed_responses {
+            let err = validate_ga_tabular_response_shape(&response, "run_conversions_report")
+                .expect_err("malformed conversion response shape must fail closed");
+            assert!(err.to_string().contains("Google run_conversions_report"));
+        }
+    }
+
+    #[test]
     fn validate_pivot_requires_pivots() {
         let err = validate_pivot_inputs(
             &["country".to_string()],
@@ -7851,6 +8009,57 @@ mod tests {
         let err = decode_cursor("bad-token").expect_err("invalid cursor should fail");
         assert_eq!(err.code(), "INVALID_CURSOR");
         assert_eq!(err.reason(), "invalid_cursor");
+    }
+
+    #[test]
+    fn resolve_cursor_window_rejects_unreasonably_high_decoded_offset() {
+        let raw_cursor = format!(
+            "v1:deadbeef:{}",
+            MAX_REPORT_LIMIT.saturating_mul(10).saturating_add(1)
+        );
+        let err = resolve_cursor_window("deadbeef", Some(&raw_cursor), None, Some(100), None)
+            .expect_err("decoded cursor offset above the direct offset cap must fail");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("unreasonably high"));
+    }
+
+    #[test]
+    fn ga_projection_does_not_repeat_cursor_for_empty_or_out_of_range_pages() {
+        let empty_projection = GaTabularProjection {
+            rows: Vec::new(),
+            row_count_total: 5,
+            columns: vec![contract::ColumnMeta::new("country")],
+            ga_meta: json!({}),
+        };
+        let (_, empty_meta) = ga_projection_payload_and_meta(
+            empty_projection,
+            TabularResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                cursor_offset: 2,
+            },
+        );
+        assert!(empty_meta.get("next_cursor").is_none());
+
+        let out_of_range_projection = GaTabularProjection {
+            rows: vec![Map::from_iter([("country".to_string(), json!("US"))])],
+            row_count_total: 1,
+            columns: vec![contract::ColumnMeta::new("country")],
+            ga_meta: json!({}),
+        };
+        let (_, out_of_range_meta) = ga_projection_payload_and_meta(
+            out_of_range_projection,
+            TabularResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                cursor_offset: 1,
+            },
+        );
+        assert!(out_of_range_meta.get("next_cursor").is_none());
     }
 
     #[test]
