@@ -115,6 +115,24 @@ When `summary_only=true`, `data` is `null` regardless of output mode.
 - Cursor/query mismatches return `ok=false` with `reason=invalid_cursor`.
 - Invalid cursor format returns `ok=false` with `reason=invalid_cursor`.
 
+## Multi-subreport Metadata
+
+`run_funnel_report` returns two independently projected tabular subreports:
+`data.funnel_table` and `data.funnel_visualization`. Its top-level metadata
+includes:
+
+- `output_mode`, `summary_only`, and `query_hash`
+- `requested_limit` and the bounded `effective_limit`
+- `truncated`, true when either subreport fills the effective limit
+- `row_count_total_known=false`
+- `subreports.funnel_table` and `subreports.funnel_visualization`
+
+Each subreport metadata object includes `row_count_returned`,
+`row_count_total_known=false`, `truncated`, `truncation_basis`, ordered
+`columns`, optional `cell_clipping`, and GA response metadata. The Data API
+funnel response does not expose an exact total row count or an offset, so this
+tool does not invent a total and does not advertise a continuation cursor.
+
 ## Error Contract
 
 Minimum error fields:
@@ -158,9 +176,14 @@ Postgres-specific fields are not required by this contract.
 - `scratchpad_set_runtime_limits`
 - `scratchpad_export_evidence_bundle`
 
+### Multi-subreport tools
+
+- `run_funnel_report`
+
 ### Tabular-metadata tools
 
 - `run_report`
+- `run_conversions_report`
 - `run_realtime_report`
 - `run_pivot_report`
 - `batch_run_reports`

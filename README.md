@@ -16,7 +16,10 @@ This project keeps parity with the core read/report intent of the official Googl
 
 Upstream reference: <https://github.com/googleanalytics/google-analytics-mcp>
 
-As of 2026-02-24, the upstream README describes a smaller core tool set (`get_account_summaries`, `get_property_details`, `list_google_ads_links`, `run_report`, `run_realtime_report`, `get_custom_dimensions_and_metrics`).
+As of 2026-07-18, the upstream server registers nine tools, including the
+v1alpha `run_funnel_report` and `run_conversions_report` surfaces. `ga4-mcp`
+keeps those official core tool names while preserving its stricter Contract V1
+response and validation semantics.
 
 `ga4-mcp` keeps those core capabilities and adds:
 
@@ -44,11 +47,18 @@ As of 2026-02-24, the upstream README describes a smaller core tool set (`get_ac
 - `list_property_annotations`
 - `get_custom_dimensions_and_metrics`
 - `run_report`
+- `run_conversions_report`
+- `run_funnel_report`
 - `run_realtime_report`
 - `run_pivot_report`
 - `batch_run_reports`
 - `run_property_access_report`
 - `run_account_access_report`
+
+`run_conversions_report` and `run_funnel_report` use Google Analytics Data API
+v1alpha endpoints. Alpha features can change and conversion reporting may not
+be enabled for every property. Both tools remain read-only and use the same
+`analytics.readonly` OAuth scope as the other report tools.
 
 ### Request preflight and compatibility tools
 

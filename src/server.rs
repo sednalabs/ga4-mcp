@@ -394,6 +394,14 @@ mod tests {
             CapabilityProfile::ReadOnly,
             "run_report"
         ));
+        assert!(tool_allowed_for_profile(
+            CapabilityProfile::ReadOnly,
+            "run_funnel_report"
+        ));
+        assert!(tool_allowed_for_profile(
+            CapabilityProfile::ReadOnly,
+            "run_conversions_report"
+        ));
         assert!(!tool_allowed_for_profile(
             CapabilityProfile::ReadOnly,
             "scratchpad_query"

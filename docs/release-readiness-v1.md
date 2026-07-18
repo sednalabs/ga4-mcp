@@ -1,6 +1,6 @@
 # Release Readiness Checklist — Contract V1
 
-Date: 2026-02-24
+Date: 2026-07-18
 
 ## Scope
 
@@ -52,6 +52,8 @@ Observed result:
 - `run_property_access_report`
 - `run_realtime_report`
 - `run_report`
+- `run_conversions_report`
+- `run_funnel_report`
 - `scratchpad_close_session`
 - `scratchpad_describe_table`
 - `scratchpad_drop_table`
@@ -73,3 +75,5 @@ Observed result:
 - Contract envelope: `ok/data/meta` and `ok/error/meta` only.
 - Policy denials return deterministic taxonomy (`POLICY_DENIED`, `policy_denied`).
 - Cursor, output mode, summary-only, and clipping controls are active for tabular tools.
+- Funnel output is bounded per subreport and explicitly avoids claiming an exact total or cursor that Google does not provide.
+- Funnel and conversion reports remain read-only and use Data API v1alpha; conversion eligibility is property-dependent.

@@ -21,6 +21,8 @@ scratchpad analysis tools. All responses use Contract V1 envelopes:
 | Tool | Purpose |
 |---|---|
 | `run_report` | Run a GA Data API report. |
+| `run_conversions_report` | Run a v1alpha conversion, ad-performance, ROAS, or attribution report. |
+| `run_funnel_report` | Run a v1alpha funnel report with optional breakdown, next-action, segment, and trended views. |
 | `run_realtime_report` | Run a realtime report. |
 | `run_pivot_report` | Run a pivot report. |
 | `batch_run_reports` | Run up to five report requests in one batch. |
@@ -34,6 +36,31 @@ Report-like tools support tabular response controls where applicable:
 - `output_mode` as `rows`, `tuples`, `scalar`, or `compact`.
 - `summary_only=true` to return metadata without row payload.
 - `max_cell_chars` to clip large cell values.
+
+`run_conversions_report` uses the same tabular controls and cursor behavior as
+`run_report`. Its `conversion_spec.conversion_actions` accepts zero or more
+`conversionActions/<id>` resource names; an empty list means all conversions.
+The optional attribution model is `DATA_DRIVEN` or `LAST_CLICK`. Google limits
+this alpha report to its documented conversion dimensions and metrics, which
+the MCP validates before making an upstream request.
+
+`run_funnel_report` accepts simple event steps such as
+`{"name":"Read","event":"page_view"}` or complete GA
+`filter_expression` objects. When `name` is omitted, steps are named `Step 1`,
+`Step 2`, and so on to match Google's official implementation. It returns `funnel_table` and
+`funnel_visualization` as separately projected subreports. `max_rows`,
+`output_mode`, `summary_only`, and `max_cell_chars` apply to both. Google does
+not return an exact total row count for these subreports, so metadata reports
+`row_count_total_known=false` and conservatively marks a subreport truncated
+when it fills the effective request limit; no cursor is advertised.
+
+Both tools use Google Analytics Data API v1alpha. Conversion reporting may not
+be enabled for every property, and alpha contracts can change. Provider
+eligibility and alpha errors are returned through the normal Contract V1 error
+envelope.
+
+Provider references: [funnel reports](https://developers.google.com/analytics/devguides/reporting/data/v1/funnels)
+and [conversion reports](https://developers.google.com/analytics/devguides/reporting/data/v1/conversions-api-basics).
 
 ## Preflight Tools
 

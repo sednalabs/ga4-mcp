@@ -680,6 +680,8 @@ mod tests {
     #[test]
     fn capability_profile_read_only_blocks_scratchpad_tools() {
         assert!(CapabilityProfile::ReadOnly.allows_tool("run_report"));
+        assert!(CapabilityProfile::ReadOnly.allows_tool("run_funnel_report"));
+        assert!(CapabilityProfile::ReadOnly.allows_tool("run_conversions_report"));
         assert!(!CapabilityProfile::ReadOnly.allows_tool("scratchpad_query"));
         assert!(CapabilityProfile::Scratchpad.allows_tool("scratchpad_query"));
     }
