@@ -3410,13 +3410,40 @@ fn validate_conversions_report_inputs(
             ));
         }
     }
-    let provider_payload = json!({
+    let mut provider_payload = json!({
+        "date_ranges": args
+            .date_ranges
+            .iter()
+            .cloned()
+            .map(snake_to_camel_json)
+            .collect::<Vec<_>>(),
+        "dimensions": args
+            .dimensions
+            .iter()
+            .map(|name| json!({ "name": name.trim() }))
+            .collect::<Vec<_>>(),
+        "metrics": args
+            .metrics
+            .iter()
+            .map(|name| json!({ "name": name.trim() }))
+            .collect::<Vec<_>>(),
         "conversion_spec": &args.conversion_spec,
         "dimension_filter": &args.dimension_filter,
         "metric_filter": &args.metric_filter,
         "order_bys": &args.order_bys,
+        "currency_code": args.currency_code.as_deref().map(str::trim),
+        "return_property_quota": args.return_property_quota,
     });
-    validate_provider_boundary_json_size("provider_payload", &provider_payload)?;
+    if let Some(limit) = args.limit {
+        provider_payload["limit"] = json!(limit.to_string());
+    }
+    if let Some(offset) = args.offset {
+        provider_payload["offset"] = json!(offset.to_string());
+    }
+    validate_provider_boundary_json_size(
+        "provider_payload",
+        &snake_to_camel_json(provider_payload),
+    )?;
     Ok(())
 }
 
@@ -3626,10 +3653,19 @@ fn normalized_funnel_provider_boundary_payload(
 
     Ok(json!({
         "funnel_steps": funnel_steps,
+        "date_ranges": args
+            .date_ranges
+            .iter()
+            .cloned()
+            .map(snake_to_camel_json)
+            .collect::<Vec<_>>(),
+        "is_open_funnel": args.is_open_funnel,
         "segments": segments,
         "dimension_filter": dimension_filter,
         "funnel_breakdown": funnel_breakdown,
         "funnel_next_action": funnel_next_action,
+        "funnel_visualization_type": args.funnel_visualization_type,
+        "return_property_quota": args.return_property_quota,
     }))
 }
 
@@ -7537,6 +7573,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_conversions_report_rejects_oversized_date_range_payload() {
+        let mut args = valid_conversions_report_args();
+        args.date_ranges = vec![json!({
+            "start_date": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES),
+            "end_date": "2026-04-30",
+        })];
+        let err = validate_conversions_report_inputs(&args)
+            .expect_err("provider-boundary conversion date-range JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
     fn conversions_query_hash_matches_outbound_json_normalization_and_trimmed_currency() {
         let mut snake_case = valid_conversions_report_args();
         snake_case.dimensions = vec![" campaignName ".to_string()];
@@ -7775,6 +7824,19 @@ mod tests {
         args.funnel_steps[0].event = None;
         let err = validate_funnel_report_inputs(&args)
             .expect_err("provider-boundary funnel JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_oversized_date_range_payload() {
+        let mut args = valid_funnel_report_args();
+        args.date_ranges = vec![json!({
+            "start_date": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES),
+            "end_date": "yesterday",
+        })];
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("provider-boundary funnel date-range JSON must be bounded");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("combined provider-boundary JSON"));
     }
