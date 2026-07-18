@@ -6051,13 +6051,16 @@ fn validate_ga_tabular_response_shape(
         )));
     };
 
-    if let Some(row_count) = response.get("rowCount") {
-        if row_count.as_u64().is_none() {
+    let row_count = if let Some(row_count) = response.get("rowCount") {
+        let Some(row_count) = row_count.as_u64() else {
             return Err(AnalyticsError::Internal(format!(
                 "Google {report_kind} response field rowCount must be a non-negative integer"
             )));
-        }
-    }
+        };
+        Some(row_count)
+    } else {
+        None
+    };
 
     for field_name in ["dimensionHeaders", "metricHeaders", "rows"] {
         let Some(raw_values) = response.get(field_name) else {
@@ -6078,6 +6081,15 @@ fn validate_ga_tabular_response_shape(
     }
 
     if let Some(rows) = response.get("rows").and_then(Value::as_array) {
+        if let Some(row_count) = row_count {
+            let returned_row_count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+            if row_count < returned_row_count {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google {report_kind} response field rowCount must be at least the number of returned rows"
+                )));
+            }
+        }
+
         for (row_index, row) in rows.iter().enumerate() {
             for field_name in ["dimensionValues", "metricValues"] {
                 let Some(raw_values) = row.get(field_name) else {
@@ -8273,6 +8285,21 @@ mod tests {
                 .expect_err("malformed conversion response shape must fail closed");
             assert!(err.to_string().contains("Google run_conversions_report"));
         }
+    }
+
+    #[test]
+    fn conversions_contract_rejects_row_count_below_returned_rows() {
+        let response = json!({
+            "rowCount": 1,
+            "rows": [{}, {}]
+        });
+
+        let err = validate_ga_tabular_response_shape(&response, "run_conversions_report")
+            .expect_err("rowCount must not under-report returned rows");
+        assert!(
+            err.to_string()
+                .contains("rowCount must be at least the number of returned rows")
+        );
     }
 
     #[test]
