@@ -17,7 +17,7 @@ use rmcp::model::CallToolResult;
 use rmcp::tool;
 use rmcp::tool_router;
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::auth_ux::{
@@ -32,13 +32,22 @@ use crate::contract;
 use crate::error::AnalyticsError;
 use crate::ga_client::{
     AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
-    PropertyId, RunAccessReportRequest, RunPivotReportRequest, RunRealtimeReportRequest,
-    RunReportRequest, sort_object,
+    PropertyId, RunAccessReportRequest, RunConversionsReportRequest, RunFunnelReportRequest,
+    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
+    build_run_conversions_report_payload, build_run_funnel_report_payload, normalize_funnel_step,
+    snake_to_camel_json, sort_object,
 };
 use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
 use crate::server::AnalyticsMcp;
 
 const MAX_REPORT_LIMIT: u64 = 250_000;
+const MAX_FUNNEL_DURATION_SECONDS: u64 = 315_576_000_000;
+const MAX_FUNNEL_STEPS: usize = 10;
+const MAX_FUNNEL_SEGMENTS: usize = 4;
+const MAX_CONVERSION_ACTIONS: usize = 50;
+const MAX_PROVIDER_BOUNDARY_JSON_BYTES: usize = 64 * 1024;
+const MAX_FUNNEL_BREAKDOWN_LIMIT: u64 = 15;
+const MAX_FUNNEL_NEXT_ACTION_LIMIT: u64 = 5;
 const MAX_BATCH_REPORT_REQUESTS: usize = 5;
 const MAX_DIMENSIONS: usize = 50;
 const MAX_METRICS: usize = 50;
@@ -65,6 +74,36 @@ const MEMORY_PRESSURE_MODERATE_PCT: f64 = 60.0;
 const MEMORY_PRESSURE_HIGH_PCT: f64 = 80.0;
 const MEMORY_PRESSURE_CRITICAL_PCT: f64 = 95.0;
 const SCRATCHPAD_QUERY_ALIAS: &str = "ga4_scratchpad_query";
+
+const CONVERSION_DIMENSIONS: &[&str] = &[
+    "campaignName",
+    "continent",
+    "country",
+    "defaultChannelGroup",
+    "deviceCategory",
+    "medium",
+    "platform",
+    "primaryChannelGroup",
+    "source",
+    "sourceMedium",
+    "sourcePlatform",
+    "subcontinent",
+];
+
+const CONVERSION_METRICS: &[&str] = &[
+    "advertiserAdClicks",
+    "advertiserAdCost",
+    "advertiserAdCostPerAllConversionsByConversionDate",
+    "advertiserAdCostPerAllConversionsByInteractionDate",
+    "advertiserAdCostPerClick",
+    "advertiserAdImpressions",
+    "allConversionsByConversionDate",
+    "allConversionsByInteractionDate",
+    "returnOnAdSpendByConversionDate",
+    "returnOnAdSpendByInteractionDate",
+    "totalRevenueByConversionDate",
+    "totalRevenueByInteractionDate",
+];
 
 fn default_true() -> bool {
     true
@@ -229,6 +268,175 @@ pub struct RunReportArgs {
     #[serde(default)]
     pub summary_only: bool,
     /// Optional string clipping limit applied to response cell values.
+    #[serde(default)]
+    pub max_cell_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AttributionModel {
+    DataDriven,
+    LastClick,
+}
+
+impl AttributionModel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DataDriven => "DATA_DRIVEN",
+            Self::LastClick => "LAST_CLICK",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConversionSpecArgs {
+    /// Conversion action resource names such as `conversionActions/1234`. An empty list means all conversions.
+    #[serde(default)]
+    pub conversion_actions: Vec<String>,
+    /// Attribution model. Google defaults to DATA_DRIVEN when omitted.
+    #[serde(default)]
+    pub attribution_model: Option<AttributionModel>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunConversionsReportArgs {
+    pub property_id: PropertyId,
+    #[schemars(with = "Vec<ReportDateRangeSchema>")]
+    pub date_ranges: Vec<Value>,
+    /// Conversion-report dimensions. See the tool description for the supported names.
+    pub dimensions: Vec<String>,
+    /// Conversion-report metrics. See the tool description for the supported names.
+    pub metrics: Vec<String>,
+    pub conversion_spec: ConversionSpecArgs,
+    /// GA FilterExpression. Accepts an object, JSON-object string, or `field==value` shorthand.
+    #[serde(default, deserialize_with = "deserialize_optional_dimension_filter")]
+    pub dimension_filter: Option<Value>,
+    /// GA FilterExpression. Accepts an object or JSON-object string.
+    #[serde(default, deserialize_with = "deserialize_optional_metric_filter")]
+    pub metric_filter: Option<Value>,
+    #[serde(default)]
+    pub order_bys: Option<Vec<Value>>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub currency_code: Option<String>,
+    #[serde(default)]
+    pub return_property_quota: bool,
+    /// Optional response row cap for Contract V1 tabular payloads.
+    #[serde(default)]
+    pub max_rows: Option<usize>,
+    /// Opaque pagination cursor from `meta.next_cursor`.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Tabular output shape for the response payload.
+    #[serde(default, deserialize_with = "deserialize_optional_output_mode")]
+    pub output_mode: Option<TabularOutputMode>,
+    /// If true, omit row payload and return metadata only.
+    #[serde(default)]
+    pub summary_only: bool,
+    /// Optional string clipping limit applied to response cell values.
+    #[serde(default)]
+    pub max_cell_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FunnelStepArgs {
+    /// Display name for the funnel step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Simple event-name shorthand. Mutually exclusive with `filter_expression`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// Complete GA FunnelFilterExpression. Mutually exclusive with `event`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_expression: Option<Value>,
+    /// Require this step to directly follow the prior step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_directly_followed_by: Option<bool>,
+    /// Protobuf duration such as `3600s` relative to the prior step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within_duration_from_prior_step: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FunnelBreakdownArgs {
+    /// Dimension used to break down each funnel step, such as `deviceCategory`.
+    pub breakdown_dimension: String,
+    /// Maximum distinct breakdown values. Must be 1 through 15.
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FunnelNextActionArgs {
+    /// Dimension used to analyze the next action, such as `eventName` or `pagePath`.
+    pub next_action_dimension: String,
+    /// Maximum distinct next-action values. Must be 1 through 5.
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FunnelVisualizationType {
+    StandardFunnel,
+    TrendedFunnel,
+}
+
+impl FunnelVisualizationType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::StandardFunnel => "STANDARD_FUNNEL",
+            Self::TrendedFunnel => "TRENDED_FUNNEL",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunFunnelReportArgs {
+    pub property_id: PropertyId,
+    /// Ordered funnel steps. Each step must set exactly one of `event` or `filter_expression`.
+    pub funnel_steps: Vec<FunnelStepArgs>,
+    /// Allow users to enter at any funnel step. Defaults to a closed funnel.
+    #[serde(default)]
+    pub is_open_funnel: bool,
+    /// Optional report date ranges.
+    #[serde(default)]
+    #[schemars(with = "Vec<ReportDateRangeSchema>")]
+    pub date_ranges: Vec<Value>,
+    #[serde(default)]
+    pub funnel_breakdown: Option<FunnelBreakdownArgs>,
+    #[serde(default)]
+    pub funnel_next_action: Option<FunnelNextActionArgs>,
+    #[serde(default)]
+    pub funnel_visualization_type: Option<FunnelVisualizationType>,
+    /// Optional GA segment objects. Google permits at most four.
+    #[serde(default)]
+    pub segments: Option<Vec<Value>>,
+    /// GA FilterExpression applied to dimensions. Accepts an object, JSON-object string, or `field==value` shorthand.
+    #[serde(default, deserialize_with = "deserialize_optional_dimension_filter")]
+    pub dimension_filter: Option<Value>,
+    /// Maximum rows requested from Google. Must be 1 through 250,000.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    #[serde(default)]
+    pub return_property_quota: bool,
+    /// Per-subreport response row cap. Defaults to 200 and is also used to bound the upstream request.
+    #[serde(default)]
+    pub max_rows: Option<usize>,
+    /// Tabular output shape applied independently to the table and visualization subreports.
+    #[serde(default, deserialize_with = "deserialize_optional_output_mode")]
+    pub output_mode: Option<TabularOutputMode>,
+    /// If true, omit both subreport row payloads and return metadata only.
+    #[serde(default)]
+    pub summary_only: bool,
+    /// Optional string clipping limit applied to subreport cell values.
     #[serde(default)]
     pub max_cell_chars: Option<usize>,
 }
@@ -677,6 +885,16 @@ struct TabularResponseOptions {
     summary_only: bool,
     max_cell_chars: Option<usize>,
     cursor_offset: u64,
+}
+
+#[derive(Debug, Clone)]
+struct FunnelResponseOptions {
+    query_hash: String,
+    output_mode: contract::OutputMode,
+    summary_only: bool,
+    max_cell_chars: Option<usize>,
+    effective_limit: u64,
+    requested_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1395,6 +1613,190 @@ impl AnalyticsMcp {
                 "run_report",
                 response_options,
             )),
+            Err(err) => Ok(contract_error(err, started)),
+        }
+    }
+
+    /// Run a GA4 conversion and attribution report using the Data API v1alpha surface.
+    #[tool(
+        name = "run_conversions_report",
+        description = "Runs a Google Analytics conversion report using the Data API v1alpha surface. Use this for conversions, ad performance, ROAS, or attribution. Supported dimensions: campaignName, continent, country, defaultChannelGroup, deviceCategory, medium, platform, primaryChannelGroup, source, sourceMedium, sourcePlatform, subcontinent. Supported metrics: advertiserAdClicks, advertiserAdCost, advertiserAdCostPerAllConversionsByConversionDate, advertiserAdCostPerAllConversionsByInteractionDate, advertiserAdCostPerClick, advertiserAdImpressions, allConversionsByConversionDate, allConversionsByInteractionDate, returnOnAdSpendByConversionDate, returnOnAdSpendByInteractionDate, totalRevenueByConversionDate, totalRevenueByInteractionDate. This alpha feature may not be available to every property."
+    )]
+    async fn run_conversions_report(
+        &self,
+        Parameters(args): Parameters<RunConversionsReportArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        if let Err(err) = validate_conversions_report_inputs(&args) {
+            return Ok(contract_error(err, started));
+        }
+        if let Err(err) =
+            validate_tabular_controls(args.max_rows, args.max_cell_chars, args.cursor.as_deref())
+        {
+            return Ok(contract_error(err, started));
+        }
+
+        let (fallback_offset, fallback_limit) = conversions_report_fallback_window(&args);
+        if let Err(err) = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(
+                &args,
+                fallback_limit,
+                fallback_offset,
+            ),
+        ) {
+            return Ok(contract_error(err, started));
+        }
+
+        let query_hash = match run_conversions_report_query_hash(&args) {
+            Ok(value) => value,
+            Err(err) => return Ok(contract_error(err, started)),
+        };
+        let (effective_offset, effective_limit) = match resolve_cursor_window(
+            &query_hash,
+            args.cursor.as_deref(),
+            args.offset,
+            args.max_rows,
+            args.limit,
+        ) {
+            Ok(values) => {
+                emit_pagination_window(
+                    "run_conversions_report",
+                    &query_hash,
+                    args.cursor.is_some(),
+                    values.0,
+                    values.1,
+                );
+                values
+            }
+            Err(err) => {
+                emit_cursor_error("run_conversions_report", &err);
+                return Ok(contract_error(err, started));
+            }
+        };
+
+        let request = build_conversions_report_request(&args, effective_limit, effective_offset);
+        if let Err(err) = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(
+                &args,
+                effective_limit,
+                effective_offset,
+            ),
+        ) {
+            return Ok(contract_error(err, started));
+        }
+        let response_options = TabularResponseOptions {
+            query_hash,
+            output_mode: args.output_mode.unwrap_or(TabularOutputMode::Rows).into(),
+            summary_only: args.summary_only,
+            max_cell_chars: args.max_cell_chars,
+            cursor_offset: effective_offset,
+        };
+
+        match self.client.run_conversions_report(request).await {
+            Ok(data) => {
+                if let Err(err) =
+                    validate_ga_tabular_response_shape(&data, "run_conversions_report")
+                {
+                    return Ok(contract_error(err, started));
+                }
+                Ok(contract_success_ga_tabular_with_local_cap(
+                    data,
+                    started,
+                    "run_conversions_report",
+                    response_options,
+                    Some(effective_limit),
+                ))
+            }
+            Err(err) => Ok(contract_error(err, started)),
+        }
+    }
+
+    /// Run a GA4 funnel report using the Data API v1alpha surface.
+    #[tool(
+        name = "run_funnel_report",
+        description = "Runs a Google Analytics funnel report using the Data API v1alpha surface. Each funnel step must provide either an event shorthand or a complete FunnelFilterExpression. Supports open or closed funnels, standard or trended visualization, breakdowns, next-action analysis, up to four segments, dimension filters, and bounded per-subreport Contract V1 output."
+    )]
+    async fn run_funnel_report(
+        &self,
+        Parameters(args): Parameters<RunFunnelReportArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        if let Err(err) = validate_funnel_report_inputs(&args) {
+            return Ok(contract_error(err, started));
+        }
+        if let Err(err) = validate_tabular_controls(args.max_rows, args.max_cell_chars, None) {
+            return Ok(contract_error(err, started));
+        }
+
+        let query_hash = match run_funnel_report_query_hash(&args) {
+            Ok(value) => value,
+            Err(err) => return Ok(contract_error(err, started)),
+        };
+        let effective_limit = resolve_funnel_report_limit(args.max_rows, args.limit);
+        emit_pagination_window("run_funnel_report", &query_hash, false, 0, effective_limit);
+        let funnel_steps = match args
+            .funnel_steps
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(steps) => steps,
+            Err(err) => {
+                return Ok(contract_error(
+                    AnalyticsError::Internal(format!(
+                        "failed to serialize validated funnel steps: {err}"
+                    )),
+                    started,
+                ));
+            }
+        };
+        let funnel_breakdown = args.funnel_breakdown.map(|breakdown| {
+            let mut value = json!({
+                "breakdown_dimension": { "name": breakdown.breakdown_dimension },
+            });
+            if let Some(limit) = breakdown.limit {
+                value["limit"] = json!(limit.to_string());
+            }
+            value
+        });
+        let funnel_next_action = args.funnel_next_action.map(|next_action| {
+            let mut value = json!({
+                "next_action_dimension": { "name": next_action.next_action_dimension },
+            });
+            if let Some(limit) = next_action.limit {
+                value["limit"] = json!(limit.to_string());
+            }
+            value
+        });
+        let request = RunFunnelReportRequest {
+            property_id: args.property_id,
+            funnel_steps,
+            is_open_funnel: args.is_open_funnel,
+            date_ranges: args.date_ranges,
+            funnel_breakdown,
+            funnel_next_action,
+            funnel_visualization_type: args
+                .funnel_visualization_type
+                .map(FunnelVisualizationType::as_str)
+                .map(str::to_string),
+            segments: args.segments,
+            dimension_filter: args.dimension_filter,
+            limit: Some(effective_limit),
+            return_property_quota: args.return_property_quota,
+        };
+        let response_options = FunnelResponseOptions {
+            query_hash,
+            output_mode: args.output_mode.unwrap_or(TabularOutputMode::Rows).into(),
+            summary_only: args.summary_only,
+            max_cell_chars: args.max_cell_chars,
+            effective_limit,
+            requested_limit: args.limit,
+        };
+
+        match self.client.run_funnel_report(request).await {
+            Ok(data) => Ok(contract_success_ga_funnel(data, started, response_options)),
             Err(err) => Ok(contract_error(err, started)),
         }
     }
@@ -2960,6 +3362,391 @@ fn validate_report_inputs(
     }
     validate_date_ranges_shape(date_ranges)?;
     validate_limit_offset(limit, offset)
+}
+
+fn validate_conversions_report_inputs(
+    args: &RunConversionsReportArgs,
+) -> Result<(), AnalyticsError> {
+    validate_report_inputs(
+        &args.dimensions,
+        &args.metrics,
+        &args.date_ranges,
+        args.limit,
+        args.offset,
+    )?;
+
+    for dimension in &args.dimensions {
+        if !CONVERSION_DIMENSIONS.contains(&dimension.as_str()) {
+            return Err(AnalyticsError::invalid(
+                "dimensions",
+                format!(
+                    "unsupported conversion-report dimension {:?}; allowed values: {}",
+                    dimension,
+                    CONVERSION_DIMENSIONS.join(", ")
+                ),
+            ));
+        }
+    }
+    for metric in &args.metrics {
+        if !CONVERSION_METRICS.contains(&metric.as_str()) {
+            return Err(AnalyticsError::invalid(
+                "metrics",
+                format!(
+                    "unsupported conversion-report metric {:?}; allowed values: {}",
+                    metric,
+                    CONVERSION_METRICS.join(", ")
+                ),
+            ));
+        }
+    }
+    if args.conversion_spec.conversion_actions.len() > MAX_CONVERSION_ACTIONS {
+        return Err(AnalyticsError::invalid(
+            "conversion_spec",
+            format!("conversion_actions must include at most {MAX_CONVERSION_ACTIONS} entries"),
+        ));
+    }
+    for (idx, action) in args.conversion_spec.conversion_actions.iter().enumerate() {
+        let valid = action
+            .strip_prefix("conversionActions/")
+            .is_some_and(|id| !id.is_empty() && id.chars().all(|ch| ch.is_ascii_digit()));
+        if !valid {
+            return Err(AnalyticsError::invalid(
+                "conversion_spec",
+                format!("conversion_actions[{idx}] must use conversionActions/<numeric-id>"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_conversions_report_request(
+    args: &RunConversionsReportArgs,
+    effective_limit: u64,
+    effective_offset: u64,
+) -> RunConversionsReportRequest {
+    let mut conversion_spec = json!({
+        "conversion_actions": args.conversion_spec.conversion_actions,
+    });
+    if let Some(attribution_model) = args.conversion_spec.attribution_model {
+        conversion_spec["attribution_model"] = json!(attribution_model.as_str());
+    }
+    RunConversionsReportRequest {
+        property_id: args.property_id.clone(),
+        date_ranges: args.date_ranges.clone(),
+        dimensions: args.dimensions.clone(),
+        metrics: args.metrics.clone(),
+        conversion_spec,
+        dimension_filter: args.dimension_filter.clone(),
+        metric_filter: args.metric_filter.clone(),
+        order_bys: args.order_bys.clone(),
+        limit: Some(effective_limit),
+        offset: Some(effective_offset),
+        currency_code: args.currency_code.clone(),
+        return_property_quota: args.return_property_quota,
+    }
+}
+
+fn normalized_conversions_provider_boundary_payload(
+    args: &RunConversionsReportArgs,
+    effective_limit: u64,
+    effective_offset: u64,
+) -> Value {
+    Value::Object(build_run_conversions_report_payload(
+        build_conversions_report_request(args, effective_limit, effective_offset),
+    ))
+}
+
+fn conversions_report_fallback_window(args: &RunConversionsReportArgs) -> (u64, u64) {
+    let response_limit = args
+        .max_rows
+        .unwrap_or(DEFAULT_TABULAR_MAX_ROWS)
+        .clamp(1, MAX_TABULAR_MAX_ROWS) as u64;
+    let effective_limit = args
+        .limit
+        .unwrap_or(response_limit)
+        .min(response_limit)
+        .max(1);
+    let effective_offset = if args.cursor.is_some() {
+        0
+    } else {
+        args.offset.unwrap_or(0).min(MAX_REPORT_LIMIT * 10)
+    };
+    (effective_offset, effective_limit)
+}
+
+fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), AnalyticsError> {
+    if args.funnel_steps.is_empty() {
+        return Err(AnalyticsError::invalid(
+            "funnel_steps",
+            "must include at least one funnel step",
+        ));
+    }
+    if args.funnel_steps.len() > MAX_FUNNEL_STEPS {
+        return Err(AnalyticsError::invalid(
+            "funnel_steps",
+            format!("must include at most {MAX_FUNNEL_STEPS} funnel steps"),
+        ));
+    }
+    for (idx, step) in args.funnel_steps.iter().enumerate() {
+        if step
+            .name
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(AnalyticsError::invalid(
+                "funnel_steps",
+                format!("funnel_steps[{idx}].name must not be empty"),
+            ));
+        }
+        match (&step.event, &step.filter_expression) {
+            (Some(event), None) if !event.trim().is_empty() => {
+                if event != event.trim() {
+                    return Err(AnalyticsError::invalid(
+                        "funnel_steps",
+                        format!(
+                            "funnel_steps[{idx}].event must not have leading or trailing whitespace"
+                        ),
+                    ));
+                }
+            }
+            (None, Some(filter)) if filter.as_object().is_some_and(|object| !object.is_empty()) => {
+            }
+            (Some(_), Some(_)) => {
+                return Err(AnalyticsError::invalid(
+                    "funnel_steps",
+                    format!(
+                        "funnel_steps[{idx}] must set exactly one of event or filter_expression"
+                    ),
+                ));
+            }
+            (Some(_), None) => {
+                return Err(AnalyticsError::invalid(
+                    "funnel_steps",
+                    format!("funnel_steps[{idx}].event must not be empty"),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(AnalyticsError::invalid(
+                    "funnel_steps",
+                    format!("funnel_steps[{idx}].filter_expression must be an object"),
+                ));
+            }
+            (None, None) => {
+                return Err(AnalyticsError::invalid(
+                    "funnel_steps",
+                    format!("funnel_steps[{idx}] must set either event or filter_expression"),
+                ));
+            }
+        }
+        if idx == 0 && step.is_directly_followed_by == Some(true) {
+            return Err(AnalyticsError::invalid(
+                "funnel_steps",
+                "funnel_steps[0].is_directly_followed_by must be false because there is no prior step",
+            ));
+        }
+        if let Some(duration) = step.within_duration_from_prior_step.as_deref() {
+            if idx == 0 {
+                return Err(AnalyticsError::invalid(
+                    "funnel_steps",
+                    "funnel_steps[0].within_duration_from_prior_step is invalid because there is no prior step",
+                ));
+            }
+            if duration.trim().is_empty() {
+                return Err(AnalyticsError::invalid(
+                    "funnel_steps",
+                    format!(
+                        "funnel_steps[{idx}].within_duration_from_prior_step must not be empty"
+                    ),
+                ));
+            }
+            if !is_valid_funnel_duration(duration) {
+                return Err(AnalyticsError::invalid(
+                    "funnel_steps",
+                    format!(
+                        "funnel_steps[{idx}].within_duration_from_prior_step must be a non-negative protobuf duration such as 3600s or 3.5s"
+                    ),
+                ));
+            }
+        }
+    }
+
+    if !args.date_ranges.is_empty() {
+        validate_date_ranges_shape(&args.date_ranges)?;
+    }
+    if let Some(segments) = &args.segments {
+        if segments.len() > MAX_FUNNEL_SEGMENTS {
+            return Err(AnalyticsError::invalid(
+                "segments",
+                format!("must include at most {MAX_FUNNEL_SEGMENTS} segments"),
+            ));
+        }
+        for (idx, segment) in segments.iter().enumerate() {
+            if !segment.as_object().is_some_and(|object| !object.is_empty()) {
+                return Err(AnalyticsError::invalid(
+                    "segments",
+                    format!("segments[{idx}] must be a non-empty object"),
+                ));
+            }
+        }
+    }
+    if let Some(breakdown) = &args.funnel_breakdown {
+        if breakdown.breakdown_dimension.trim().is_empty() {
+            return Err(AnalyticsError::invalid(
+                "funnel_breakdown",
+                "breakdown_dimension must not be empty",
+            ));
+        }
+        if breakdown.breakdown_dimension != breakdown.breakdown_dimension.trim() {
+            return Err(AnalyticsError::invalid(
+                "funnel_breakdown",
+                "breakdown_dimension must not have leading or trailing whitespace",
+            ));
+        }
+        validate_optional_sublimit(
+            "funnel_breakdown.limit",
+            breakdown.limit,
+            MAX_FUNNEL_BREAKDOWN_LIMIT,
+        )?;
+    }
+    if let Some(next_action) = &args.funnel_next_action {
+        if next_action.next_action_dimension.trim().is_empty() {
+            return Err(AnalyticsError::invalid(
+                "funnel_next_action",
+                "next_action_dimension must not be empty",
+            ));
+        }
+        if next_action.next_action_dimension != next_action.next_action_dimension.trim() {
+            return Err(AnalyticsError::invalid(
+                "funnel_next_action",
+                "next_action_dimension must not have leading or trailing whitespace",
+            ));
+        }
+        validate_optional_sublimit(
+            "funnel_next_action.limit",
+            next_action.limit,
+            MAX_FUNNEL_NEXT_ACTION_LIMIT,
+        )?;
+    }
+    let provider_payload = normalized_funnel_provider_boundary_payload(args)?;
+    validate_provider_boundary_json_size("provider_payload", &provider_payload)?;
+    validate_limit_offset(args.limit, None)
+}
+
+fn normalized_funnel_provider_boundary_payload(
+    args: &RunFunnelReportArgs,
+) -> Result<Value, AnalyticsError> {
+    let funnel_steps = args
+        .funnel_steps
+        .iter()
+        .map(|step| {
+            serde_json::to_value(step).map_err(|err| {
+                AnalyticsError::invalid(
+                    "provider_payload",
+                    format!("funnel steps could not be serialized as JSON: {err}"),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let funnel_breakdown = args.funnel_breakdown.as_ref().map(|breakdown| {
+        let mut value = json!({
+            "breakdown_dimension": { "name": breakdown.breakdown_dimension },
+        });
+        if let Some(limit) = breakdown.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        snake_to_camel_json(value)
+    });
+    let funnel_next_action = args.funnel_next_action.as_ref().map(|next_action| {
+        let mut value = json!({
+            "next_action_dimension": { "name": next_action.next_action_dimension },
+        });
+        if let Some(limit) = next_action.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        snake_to_camel_json(value)
+    });
+    Ok(Value::Object(build_run_funnel_report_payload(
+        RunFunnelReportRequest {
+            property_id: args.property_id.clone(),
+            funnel_steps,
+            is_open_funnel: args.is_open_funnel,
+            date_ranges: args.date_ranges.clone(),
+            funnel_breakdown,
+            funnel_next_action,
+            funnel_visualization_type: args
+                .funnel_visualization_type
+                .map(FunnelVisualizationType::as_str)
+                .map(str::to_string),
+            segments: args.segments.clone(),
+            dimension_filter: args.dimension_filter.clone(),
+            limit: Some(resolve_funnel_report_limit(args.max_rows, args.limit)),
+            return_property_quota: args.return_property_quota,
+        },
+    )))
+}
+
+fn validate_provider_boundary_json_size(
+    field: &'static str,
+    payload: &Value,
+) -> Result<(), AnalyticsError> {
+    let size = serde_json::to_vec(payload)
+        .map_err(|err| AnalyticsError::invalid(field, format!("must be valid JSON: {err}")))?
+        .len();
+    if size > MAX_PROVIDER_BOUNDARY_JSON_BYTES {
+        return Err(AnalyticsError::invalid(
+            field,
+            format!(
+                "combined provider-boundary JSON must be <= {MAX_PROVIDER_BOUNDARY_JSON_BYTES} bytes (received {size})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn is_valid_funnel_duration(value: &str) -> bool {
+    let Some(number) = value.strip_suffix('s') else {
+        return false;
+    };
+    let mut parts = number.split('.');
+    let Some(seconds) = parts.next() else {
+        return false;
+    };
+    if seconds.is_empty() || !seconds.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(seconds_value) = seconds.parse::<u64>() else {
+        return false;
+    };
+    if seconds_value > MAX_FUNNEL_DURATION_SECONDS {
+        return false;
+    }
+    match (parts.next(), parts.next()) {
+        (None, None) => true,
+        (Some(fraction), None) => {
+            !fraction.is_empty()
+                && fraction.len() <= 9
+                && fraction.chars().all(|ch| ch.is_ascii_digit())
+                && (seconds_value < MAX_FUNNEL_DURATION_SECONDS
+                    || fraction.chars().all(|ch| ch == '0'))
+        }
+        _ => false,
+    }
+}
+
+fn validate_optional_sublimit(
+    field: &'static str,
+    value: Option<u64>,
+    maximum: u64,
+) -> Result<(), AnalyticsError> {
+    if let Some(value) = value {
+        if value == 0 || value > maximum {
+            return Err(AnalyticsError::invalid(
+                field,
+                format!("must be between 1 and {maximum}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_date_ranges_shape(date_ranges: &[Value]) -> Result<(), AnalyticsError> {
@@ -4956,6 +5743,87 @@ fn run_report_query_hash(args: &RunReportArgs) -> Result<String, AnalyticsError>
     stable_query_hash(&signature)
 }
 
+fn run_conversions_report_query_hash(
+    args: &RunConversionsReportArgs,
+) -> Result<String, AnalyticsError> {
+    let property = args.property_id.to_resource_name()?;
+    let dimensions = args
+        .dimensions
+        .iter()
+        .map(|name| name.trim())
+        .collect::<Vec<_>>();
+    let metrics = args
+        .metrics
+        .iter()
+        .map(|name| name.trim())
+        .collect::<Vec<_>>();
+    let currency_code = args.currency_code.as_deref().map(str::trim);
+    let signature = snake_to_camel_json(json!({
+        "tool": "run_conversions_report",
+        "property": property,
+        "date_ranges": &args.date_ranges,
+        "dimensions": dimensions,
+        "metrics": metrics,
+        "conversion_spec": &args.conversion_spec,
+        "dimension_filter": &args.dimension_filter,
+        "metric_filter": &args.metric_filter,
+        "order_bys": &args.order_bys,
+        "currency_code": currency_code,
+        "return_property_quota": args.return_property_quota,
+    }));
+    stable_query_hash(&signature)
+}
+
+fn run_funnel_report_query_hash(args: &RunFunnelReportArgs) -> Result<String, AnalyticsError> {
+    let property = args.property_id.to_resource_name()?;
+    let funnel_steps = args
+        .funnel_steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            serde_json::to_value(step)
+                .map(|value| normalize_funnel_step(value, index))
+                .map_err(|err| {
+                    AnalyticsError::Internal(format!(
+                        "failed to serialize funnel step for query hash: {err}"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let funnel_breakdown = args.funnel_breakdown.as_ref().map(|breakdown| {
+        let mut value = json!({
+            "breakdown_dimension": { "name": breakdown.breakdown_dimension },
+        });
+        if let Some(limit) = breakdown.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        value
+    });
+    let funnel_next_action = args.funnel_next_action.as_ref().map(|next_action| {
+        let mut value = json!({
+            "next_action_dimension": { "name": next_action.next_action_dimension },
+        });
+        if let Some(limit) = next_action.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        value
+    });
+    let signature = snake_to_camel_json(json!({
+        "tool": "run_funnel_report",
+        "property": property,
+        "funnel_steps": funnel_steps,
+        "is_open_funnel": args.is_open_funnel,
+        "date_ranges": &args.date_ranges,
+        "funnel_breakdown": funnel_breakdown,
+        "funnel_next_action": funnel_next_action,
+        "funnel_visualization_type": &args.funnel_visualization_type,
+        "segments": &args.segments,
+        "dimension_filter": &args.dimension_filter,
+        "return_property_quota": args.return_property_quota,
+    }));
+    stable_query_hash(&signature)
+}
+
 fn run_realtime_query_hash(args: &RunRealtimeReportArgs) -> Result<String, AnalyticsError> {
     let property = args.property_id.to_resource_name()?;
     let signature = json!({
@@ -5081,12 +5949,28 @@ fn resolve_cursor_window(
         if token.query_hash != query_hash {
             return Err(AnalyticsError::CursorQueryMismatch);
         }
+        if token.offset > MAX_REPORT_LIMIT * 10 {
+            return Err(AnalyticsError::invalid(
+                "offset",
+                "is unreasonably high for a single request",
+            ));
+        }
         token.offset
     } else {
         requested_offset.unwrap_or(0)
     };
 
     Ok((offset, page_size as u64))
+}
+
+fn resolve_funnel_report_limit(max_rows: Option<usize>, requested_limit: Option<u64>) -> u64 {
+    let response_limit = max_rows
+        .unwrap_or(DEFAULT_TABULAR_MAX_ROWS)
+        .clamp(1, MAX_TABULAR_MAX_ROWS) as u64;
+    requested_limit
+        .unwrap_or(response_limit)
+        .min(response_limit)
+        .max(1)
 }
 
 fn decode_cursor(raw: &str) -> Result<CursorToken, AnalyticsError> {
@@ -5170,8 +6054,296 @@ fn contract_success_ga_tabular(
     report_kind: &'static str,
     options: TabularResponseOptions,
 ) -> CallToolResult {
-    let projection = project_ga_tabular_response(&data, report_kind);
+    contract_success_ga_tabular_with_local_cap(data, started, report_kind, options, None)
+}
+
+fn contract_success_ga_tabular_with_local_cap(
+    data: Value,
+    started: Instant,
+    report_kind: &'static str,
+    options: TabularResponseOptions,
+    local_response_cap: Option<u64>,
+) -> CallToolResult {
+    let mut projection = project_ga_tabular_response(&data, report_kind);
+    if let Some(local_response_cap) = local_response_cap {
+        let local_response_cap = usize::try_from(local_response_cap).unwrap_or(usize::MAX);
+        projection.rows.truncate(local_response_cap);
+    }
     contract_success_ga_projection(projection, started, options)
+}
+
+fn validate_ga_tabular_response_shape(
+    response: &Value,
+    report_kind: &'static str,
+) -> Result<(), AnalyticsError> {
+    let Some(response) = response.as_object() else {
+        return Err(AnalyticsError::Internal(format!(
+            "Google {report_kind} response must be an object"
+        )));
+    };
+
+    let row_count = if let Some(row_count) = response.get("rowCount") {
+        let Some(row_count) = row_count.as_u64() else {
+            return Err(AnalyticsError::Internal(format!(
+                "Google {report_kind} response field rowCount must be a non-negative integer"
+            )));
+        };
+        Some(row_count)
+    } else {
+        None
+    };
+
+    for field_name in ["dimensionHeaders", "metricHeaders"] {
+        let Some(raw_values) = response.get(field_name) else {
+            continue;
+        };
+        let Some(values) = raw_values.as_array() else {
+            return Err(AnalyticsError::Internal(format!(
+                "Google {report_kind} response field {field_name} must be an array"
+            )));
+        };
+        for (index, value) in values.iter().enumerate() {
+            if !value.is_object() {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google {report_kind} response {field_name}[{index}] must be an object"
+                )));
+            }
+        }
+    }
+
+    if let Some(raw_rows) = response.get("rows") {
+        if !raw_rows.is_array() {
+            return Err(AnalyticsError::Internal(format!(
+                "Google {report_kind} response field rows must be an array"
+            )));
+        }
+    }
+
+    if let Some(rows) = response.get("rows").and_then(Value::as_array) {
+        if let Some(row_count) = row_count {
+            let returned_row_count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+            if row_count < returned_row_count {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google {report_kind} response field rowCount must be at least the number of returned rows"
+                )));
+            }
+        }
+
+        for (row_index, row) in rows.iter().enumerate() {
+            let Some(row) = row.as_object() else {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google {report_kind} response rows[{row_index}] must be an object"
+                )));
+            };
+            for field_name in ["dimensionValues", "metricValues"] {
+                let Some(raw_values) = row.get(field_name) else {
+                    continue;
+                };
+                let Some(values) = raw_values.as_array() else {
+                    return Err(AnalyticsError::Internal(format!(
+                        "Google {report_kind} response rows[{row_index}].{field_name} must be an array"
+                    )));
+                };
+                for (value_index, value) in values.iter().enumerate() {
+                    if !value.is_object() {
+                        return Err(AnalyticsError::Internal(format!(
+                            "Google {report_kind} response rows[{row_index}].{field_name}[{value_index}] must be an object"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn contract_success_ga_funnel(
+    data: Value,
+    started: Instant,
+    options: FunnelResponseOptions,
+) -> CallToolResult {
+    let Some(funnel_table) = data.get("funnelTable").filter(|value| value.is_object()) else {
+        return contract_error(
+            AnalyticsError::Internal(
+                "Google funnel response did not include an object-valued funnelTable subreport"
+                    .to_string(),
+            ),
+            started,
+        );
+    };
+    if let Err(err) = validate_funnel_subreport_shape(funnel_table, "funnelTable") {
+        return contract_error(err, started);
+    }
+    let Some(funnel_visualization) = data
+        .get("funnelVisualization")
+        .filter(|value| value.is_object())
+    else {
+        return contract_error(
+            AnalyticsError::Internal(
+                "Google funnel response did not include an object-valued funnelVisualization subreport"
+                    .to_string(),
+            ),
+            started,
+        );
+    };
+    if let Err(err) = validate_funnel_subreport_shape(funnel_visualization, "funnelVisualization") {
+        return contract_error(err, started);
+    }
+
+    let (table_payload, table_meta, table_truncated) = project_funnel_subreport(
+        funnel_table,
+        "funnel_table",
+        options.output_mode,
+        options.summary_only,
+        options.max_cell_chars,
+        options.effective_limit,
+    );
+    let (visualization_payload, visualization_meta, visualization_truncated) =
+        project_funnel_subreport(
+            funnel_visualization,
+            "funnel_visualization",
+            options.output_mode,
+            options.summary_only,
+            options.max_cell_chars,
+            options.effective_limit,
+        );
+
+    let payload = if options.summary_only {
+        Value::Null
+    } else {
+        json!({
+            "funnel_table": table_payload,
+            "funnel_visualization": visualization_payload,
+        })
+    };
+    let meta = json!({
+        "output_mode": options.output_mode,
+        "summary_only": options.summary_only,
+        "query_hash": options.query_hash,
+        "requested_limit": options.requested_limit,
+        "effective_limit": options.effective_limit,
+        "truncated": table_truncated || visualization_truncated,
+        "row_count_total_known": false,
+        "subreports": {
+            "funnel_table": table_meta,
+            "funnel_visualization": visualization_meta,
+        },
+        "ga4": {
+            "report_kind": "run_funnel_report",
+            "kind": data.get("kind").cloned(),
+            "property_quota": data.get("propertyQuota").cloned(),
+        },
+    });
+    contract::success_with_meta(payload, meta, contract::elapsed_ms(started))
+}
+
+fn validate_funnel_subreport_shape(
+    subreport: &Value,
+    subreport_name: &str,
+) -> Result<(), AnalyticsError> {
+    let Some(subreport) = subreport.as_object() else {
+        return Err(AnalyticsError::Internal(format!(
+            "Google funnel response included a non-object {subreport_name} subreport"
+        )));
+    };
+
+    for field_name in ["dimensionHeaders", "metricHeaders"] {
+        let Some(raw_values) = subreport.get(field_name) else {
+            continue;
+        };
+        let Some(values) = raw_values.as_array() else {
+            return Err(AnalyticsError::Internal(format!(
+                "Google funnel response {subreport_name}.{field_name} must be an array"
+            )));
+        };
+        for (index, value) in values.iter().enumerate() {
+            if !value.is_object() {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google funnel response {subreport_name}.{field_name}[{index}] must be an object"
+                )));
+            }
+        }
+    }
+
+    if let Some(raw_rows) = subreport.get("rows") {
+        if !raw_rows.is_array() {
+            return Err(AnalyticsError::Internal(format!(
+                "Google funnel response {subreport_name}.rows must be an array"
+            )));
+        }
+    }
+
+    for (row_index, row) in subreport
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let Some(row) = row.as_object() else {
+            return Err(AnalyticsError::Internal(format!(
+                "Google funnel response {subreport_name}.rows[{row_index}] must be an object"
+            )));
+        };
+        for field_name in ["dimensionValues", "metricValues"] {
+            let Some(values) = row.get(field_name) else {
+                continue;
+            };
+            let Some(values) = values.as_array() else {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google funnel response {subreport_name}.rows[{row_index}].{field_name} must be an array"
+                )));
+            };
+            for (value_index, value) in values.iter().enumerate() {
+                if !value.is_object() {
+                    return Err(AnalyticsError::Internal(format!(
+                        "Google funnel response {subreport_name}.rows[{row_index}].{field_name}[{value_index}] must be an object"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn project_funnel_subreport(
+    subreport: &Value,
+    report_kind: &'static str,
+    output_mode: contract::OutputMode,
+    summary_only: bool,
+    max_cell_chars: Option<usize>,
+    effective_limit: u64,
+) -> (Value, Value, bool) {
+    let mut projection = project_ga_tabular_response(subreport, report_kind);
+    let upstream_row_count_returned = projection.rows.len();
+    let local_limit = usize::try_from(effective_limit).unwrap_or(usize::MAX);
+    projection.rows.truncate(local_limit);
+    let row_count_returned = projection.rows.len();
+    let (payload, tabular_meta) =
+        project_payload_for_mode(&projection, output_mode, summary_only, max_cell_chars);
+    let locally_truncated = upstream_row_count_returned > row_count_returned;
+    let possibly_truncated = locally_truncated || (row_count_returned as u64) >= effective_limit;
+    let meta = json!({
+        "output_mode": tabular_meta.output_mode,
+        "summary_only": tabular_meta.summary_only,
+        "row_count_returned": row_count_returned,
+        "upstream_row_count_returned": upstream_row_count_returned,
+        "row_count_total_known": false,
+        "truncated": possibly_truncated,
+        "truncation_basis": if locally_truncated {
+            "local_response_cap"
+        } else if possibly_truncated {
+            "response_filled_effective_limit"
+        } else {
+            "response_below_effective_limit"
+        },
+        "columns": tabular_meta.columns,
+        "cell_clipping": tabular_meta.cell_clipping,
+        "ga4": projection.ga_meta,
+    });
+    (payload, meta, possibly_truncated)
 }
 
 fn contract_success_ga_projection(
@@ -5194,16 +6366,18 @@ fn ga_projection_payload_and_meta(
         options.max_cell_chars,
     );
     tabular_meta.query_hash = Some(options.query_hash);
-    tabular_meta.next_cursor = if projection.row_count_total > tabular_meta.row_count_returned {
-        Some(encode_cursor(
-            tabular_meta.query_hash.as_deref().unwrap_or_default(),
-            options
-                .cursor_offset
-                .saturating_add(tabular_meta.row_count_returned as u64),
-        ))
-    } else {
-        None
-    };
+    let next_offset = options
+        .cursor_offset
+        .saturating_add(tabular_meta.row_count_returned as u64);
+    tabular_meta.next_cursor =
+        if tabular_meta.row_count_returned > 0 && next_offset < projection.row_count_total as u64 {
+            Some(encode_cursor(
+                tabular_meta.query_hash.as_deref().unwrap_or_default(),
+                next_offset,
+            ))
+        } else {
+            None
+        };
 
     let mut meta = serde_json::to_value(&tabular_meta).unwrap_or_else(|_| json!({}));
     if let Value::Object(ref mut map) = meta {
@@ -5979,6 +7153,51 @@ mod tests {
     }
 
     #[test]
+    fn alpha_report_args_keep_read_only_safe_defaults() {
+        let conversions: RunConversionsReportArgs = serde_json::from_value(json!({
+            "property_id": "properties/123456789",
+            "date_ranges": [{"start_date":"2026-04-01","end_date":"2026-04-30"}],
+            "dimensions": ["campaignName"],
+            "metrics": ["allConversionsByConversionDate"],
+            "conversion_spec": {}
+        }))
+        .expect("conversion args should deserialize");
+        assert!(conversions.conversion_spec.conversion_actions.is_empty());
+        assert!(conversions.conversion_spec.attribution_model.is_none());
+        assert!(!conversions.return_property_quota);
+
+        let funnel: RunFunnelReportArgs = serde_json::from_value(json!({
+            "property_id": "properties/123456789",
+            "funnel_steps": [{"event":"page_view"}]
+        }))
+        .expect("funnel args should deserialize");
+        assert!(!funnel.is_open_funnel);
+        assert!(funnel.date_ranges.is_empty());
+        assert!(!funnel.return_property_quota);
+    }
+
+    #[test]
+    fn alpha_report_args_reject_unknown_enum_values() {
+        let conversion_err = serde_json::from_value::<RunConversionsReportArgs>(json!({
+            "property_id": "properties/123456789",
+            "date_ranges": [{"start_date":"2026-04-01","end_date":"2026-04-30"}],
+            "dimensions": ["campaignName"],
+            "metrics": ["allConversionsByConversionDate"],
+            "conversion_spec": {"attribution_model":"LINEAR"}
+        }))
+        .expect_err("unsupported attribution model must fail deserialization");
+        assert!(conversion_err.to_string().contains("DATA_DRIVEN"));
+
+        let funnel_err = serde_json::from_value::<RunFunnelReportArgs>(json!({
+            "property_id": "properties/123456789",
+            "funnel_steps": [{"event":"page_view"}],
+            "funnel_visualization_type": "FREE_FORM"
+        }))
+        .expect_err("unsupported funnel visualization type must fail deserialization");
+        assert!(funnel_err.to_string().contains("STANDARD_FUNNEL"));
+    }
+
+    #[test]
     fn run_realtime_defaults_return_property_quota_to_true() {
         let args: RunRealtimeReportArgs = serde_json::from_value(json!({
             "property_id": "properties/123456789",
@@ -6349,6 +7568,816 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    fn valid_conversions_report_args() -> RunConversionsReportArgs {
+        RunConversionsReportArgs {
+            property_id: PropertyId::Number(1234),
+            date_ranges: vec![json!({
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-30",
+            })],
+            dimensions: vec!["campaignName".to_string()],
+            metrics: vec!["allConversionsByConversionDate".to_string()],
+            conversion_spec: ConversionSpecArgs {
+                conversion_actions: vec!["conversionActions/1234".to_string()],
+                attribution_model: Some(AttributionModel::DataDriven),
+            },
+            dimension_filter: None,
+            metric_filter: None,
+            order_bys: None,
+            limit: Some(100),
+            offset: Some(0),
+            currency_code: None,
+            return_property_quota: false,
+            max_rows: Some(50),
+            cursor: None,
+            output_mode: None,
+            summary_only: false,
+            max_cell_chars: None,
+        }
+    }
+
+    #[test]
+    fn validate_conversions_report_accepts_documented_fields() {
+        assert!(validate_conversions_report_inputs(&valid_conversions_report_args()).is_ok());
+    }
+
+    #[test]
+    fn validate_conversions_report_rejects_unsupported_dimension() {
+        let mut args = valid_conversions_report_args();
+        args.dimensions = vec!["city".to_string()];
+        let err = validate_conversions_report_inputs(&args)
+            .expect_err("unsupported conversion dimension must fail");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("campaignName"));
+    }
+
+    #[test]
+    fn validate_conversions_report_rejects_malformed_action_resource() {
+        let mut args = valid_conversions_report_args();
+        args.conversion_spec.conversion_actions = vec!["purchase".to_string()];
+        let err = validate_conversions_report_inputs(&args)
+            .expect_err("malformed conversion action must fail");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("conversionActions/<numeric-id>"));
+    }
+
+    #[test]
+    fn validate_conversions_report_rejects_too_many_conversion_actions() {
+        let mut args = valid_conversions_report_args();
+        args.conversion_spec.conversion_actions = (0..=MAX_CONVERSION_ACTIONS)
+            .map(|id| format!("conversionActions/{id}"))
+            .collect();
+        let err = validate_conversions_report_inputs(&args)
+            .expect_err("conversion action count must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("at most 50 entries"));
+    }
+
+    #[test]
+    fn validate_conversions_report_rejects_oversized_provider_payload() {
+        let mut args = valid_conversions_report_args();
+        args.dimension_filter = Some(json!({
+            "filter": {
+                "field_name": "campaignName",
+                "string_filter": { "value": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES) }
+            }
+        }));
+        validate_conversions_report_inputs(&args).expect("semantic conversion validation");
+        let err = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(&args, 50, 0),
+        )
+        .expect_err("provider-boundary conversion JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn validate_conversions_report_rejects_oversized_date_range_payload() {
+        let mut args = valid_conversions_report_args();
+        args.date_ranges = vec![json!({
+            "start_date": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES),
+            "end_date": "2026-04-30",
+        })];
+        validate_conversions_report_inputs(&args).expect("semantic conversion validation");
+        let err = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(&args, 50, 0),
+        )
+        .expect_err("provider-boundary conversion date-range JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn normalized_conversions_provider_payload_matches_outbound_shape_and_effective_window() {
+        let mut args = valid_conversions_report_args();
+        args.limit = Some(100);
+        args.max_rows = Some(25);
+        args.offset = Some(10);
+        args.cursor = Some("v1:hash:20".to_string());
+        let payload = normalized_conversions_provider_boundary_payload(&args, 25, 20);
+
+        assert_eq!(payload["dateRanges"][0]["startDate"], json!("2026-04-01"));
+        assert_eq!(payload["dimensions"][0]["name"], json!("campaignName"));
+        assert_eq!(
+            payload["conversionSpec"]["conversionActions"][0],
+            json!("conversionActions/1234")
+        );
+        assert_eq!(
+            payload["conversionSpec"]["attributionModel"],
+            json!("DATA_DRIVEN")
+        );
+        assert_eq!(payload["limit"], json!("25"));
+        assert_eq!(payload["offset"], json!("20"));
+        assert!(payload.get("dimensionFilter").is_none());
+        assert!(payload.get("metricFilter").is_none());
+    }
+
+    #[test]
+    fn conversions_report_fallback_window_is_bounded_before_cursor_resolution() {
+        let mut args = valid_conversions_report_args();
+        args.limit = Some(MAX_REPORT_LIMIT);
+        args.max_rows = Some(MAX_TABULAR_MAX_ROWS);
+        args.offset = Some(MAX_REPORT_LIMIT * 10);
+
+        assert_eq!(
+            conversions_report_fallback_window(&args),
+            (MAX_REPORT_LIMIT * 10, MAX_TABULAR_MAX_ROWS as u64)
+        );
+
+        args.cursor = Some("v1:pending-query-hash:123".to_string());
+        assert_eq!(
+            conversions_report_fallback_window(&args),
+            (0, MAX_TABULAR_MAX_ROWS as u64)
+        );
+    }
+
+    #[test]
+    fn conversions_query_hash_matches_outbound_json_normalization_and_trimmed_currency() {
+        let mut snake_case = valid_conversions_report_args();
+        snake_case.dimensions = vec![" campaignName ".to_string()];
+        snake_case.metrics = vec![" totalRevenueByConversionDate ".to_string()];
+        snake_case.dimension_filter = Some(json!({
+            "and_group": {
+                "expressions": [{
+                    "filter": { "field_name": "campaignName" }
+                }]
+            }
+        }));
+        snake_case.order_bys = Some(vec![json!({
+            "dimension": { "dimension_name": "campaignName" },
+            "desc": true
+        })]);
+        snake_case.currency_code = Some(" USD ".to_string());
+
+        let mut camel_case = valid_conversions_report_args();
+        camel_case.dimensions = vec!["campaignName".to_string()];
+        camel_case.metrics = vec!["totalRevenueByConversionDate".to_string()];
+        camel_case.date_ranges = vec![json!({
+            "startDate": "2026-04-01",
+            "endDate": "2026-04-30",
+        })];
+        camel_case.dimension_filter = Some(json!({
+            "andGroup": {
+                "expressions": [{
+                    "filter": { "fieldName": "campaignName" }
+                }]
+            }
+        }));
+        camel_case.order_bys = Some(vec![json!({
+            "dimension": { "dimensionName": "campaignName" },
+            "desc": true
+        })]);
+        camel_case.currency_code = Some("USD".to_string());
+
+        assert_eq!(
+            run_conversions_report_query_hash(&snake_case).expect("snake hash"),
+            run_conversions_report_query_hash(&camel_case).expect("camel hash")
+        );
+    }
+
+    fn valid_funnel_report_args() -> RunFunnelReportArgs {
+        RunFunnelReportArgs {
+            property_id: PropertyId::Number(1234),
+            funnel_steps: vec![
+                FunnelStepArgs {
+                    name: Some("Read".to_string()),
+                    event: Some("page_view".to_string()),
+                    filter_expression: None,
+                    is_directly_followed_by: None,
+                    within_duration_from_prior_step: None,
+                },
+                FunnelStepArgs {
+                    name: Some("Subscribe".to_string()),
+                    event: Some("sign_up".to_string()),
+                    filter_expression: None,
+                    is_directly_followed_by: Some(false),
+                    within_duration_from_prior_step: Some("3600s".to_string()),
+                },
+            ],
+            is_open_funnel: false,
+            date_ranges: vec![json!({
+                "start_date": "7daysAgo",
+                "end_date": "yesterday",
+            })],
+            funnel_breakdown: Some(FunnelBreakdownArgs {
+                breakdown_dimension: "deviceCategory".to_string(),
+                limit: Some(5),
+            }),
+            funnel_next_action: Some(FunnelNextActionArgs {
+                next_action_dimension: "eventName".to_string(),
+                limit: Some(5),
+            }),
+            funnel_visualization_type: Some(FunnelVisualizationType::StandardFunnel),
+            segments: None,
+            dimension_filter: None,
+            limit: Some(100),
+            return_property_quota: false,
+            max_rows: Some(50),
+            output_mode: None,
+            summary_only: false,
+            max_cell_chars: None,
+        }
+    }
+
+    #[test]
+    fn validate_funnel_report_accepts_event_shorthand() {
+        assert!(validate_funnel_report_inputs(&valid_funnel_report_args()).is_ok());
+    }
+
+    #[test]
+    fn funnel_query_hash_matches_outbound_json_normalization() {
+        let mut snake_case = valid_funnel_report_args();
+        snake_case.funnel_breakdown = Some(FunnelBreakdownArgs {
+            breakdown_dimension: "deviceCategory".to_string(),
+            limit: Some(12),
+        });
+        snake_case.funnel_next_action = Some(FunnelNextActionArgs {
+            next_action_dimension: "eventName".to_string(),
+            limit: Some(4),
+        });
+        snake_case.segments = Some(vec![json!({
+            "segment_filter": {
+                "and_group": {
+                    "expressions": [{
+                        "filter": { "field_name": "country" }
+                    }]
+                }
+            }
+        })]);
+        snake_case.dimension_filter = Some(json!({
+            "filter": { "field_name": "deviceCategory" }
+        }));
+
+        let mut camel_case = valid_funnel_report_args();
+        camel_case.funnel_breakdown = Some(FunnelBreakdownArgs {
+            breakdown_dimension: "deviceCategory".to_string(),
+            limit: Some(12),
+        });
+        camel_case.funnel_next_action = Some(FunnelNextActionArgs {
+            next_action_dimension: "eventName".to_string(),
+            limit: Some(4),
+        });
+        camel_case.date_ranges = vec![json!({
+            "startDate": "7daysAgo",
+            "endDate": "yesterday",
+        })];
+        camel_case.segments = Some(vec![json!({
+            "segmentFilter": {
+                "andGroup": {
+                    "expressions": [{
+                        "filter": { "fieldName": "country" }
+                    }]
+                }
+            }
+        })]);
+        camel_case.dimension_filter = Some(json!({
+            "filter": { "fieldName": "deviceCategory" }
+        }));
+
+        assert_eq!(
+            run_funnel_report_query_hash(&snake_case).expect("snake hash"),
+            run_funnel_report_query_hash(&camel_case).expect("camel hash")
+        );
+    }
+
+    #[test]
+    fn funnel_query_hash_matches_outbound_step_expansion_and_default_name() {
+        let mut shorthand = valid_funnel_report_args();
+        shorthand.funnel_steps[0].name = None;
+
+        let mut expanded = valid_funnel_report_args();
+        expanded.funnel_steps[0].name = Some("Step 1".to_string());
+        expanded.funnel_steps[0].event = None;
+        expanded.funnel_steps[0].filter_expression = Some(json!({
+            "funnelEventFilter": { "eventName": "page_view" }
+        }));
+
+        assert_eq!(
+            run_funnel_report_query_hash(&shorthand).expect("shorthand hash"),
+            run_funnel_report_query_hash(&expanded).expect("expanded hash")
+        );
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_conflicting_step_selectors() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_steps[0].filter_expression = Some(json!({
+            "funnel_event_filter": { "event_name": "page_view" }
+        }));
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("event and filter_expression together must fail");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_direct_follow_on_first_step() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_steps[0].is_directly_followed_by = Some(true);
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("the first funnel step has no prior step to follow directly");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("no prior step"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_malformed_step_duration() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_steps[1].within_duration_from_prior_step = Some("one hour".to_string());
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("step duration must use protobuf duration syntax");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("protobuf duration"));
+    }
+
+    #[test]
+    fn validate_funnel_report_enforces_google_duration_bounds() {
+        let valid_values = [
+            format!("{MAX_FUNNEL_DURATION_SECONDS}s"),
+            format!("{MAX_FUNNEL_DURATION_SECONDS}.000000000s"),
+        ];
+        for value in valid_values {
+            let mut args = valid_funnel_report_args();
+            args.funnel_steps[1].within_duration_from_prior_step = Some(value);
+            assert!(
+                validate_funnel_report_inputs(&args).is_ok(),
+                "maximum protobuf duration should be accepted"
+            );
+        }
+
+        for value in [
+            format!("{}s", MAX_FUNNEL_DURATION_SECONDS + 1),
+            format!("{MAX_FUNNEL_DURATION_SECONDS}.000000001s"),
+        ] {
+            let mut args = valid_funnel_report_args();
+            args.funnel_steps[1].within_duration_from_prior_step = Some(value);
+            let err = validate_funnel_report_inputs(&args)
+                .expect_err("duration above Google's protobuf bound must fail");
+            assert_eq!(err.code(), "INVALID_PARAMS");
+            assert!(err.to_string().contains("protobuf duration"));
+        }
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_more_than_four_segments() {
+        let mut args = valid_funnel_report_args();
+        args.segments = Some(vec![json!({}); MAX_FUNNEL_SEGMENTS + 1]);
+        let err =
+            validate_funnel_report_inputs(&args).expect_err("too many funnel segments must fail");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("at most 4"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_too_many_steps() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_steps = (0..=MAX_FUNNEL_STEPS)
+            .map(|index| FunnelStepArgs {
+                name: Some(format!("Step {index}")),
+                event: Some("page_view".to_string()),
+                filter_expression: None,
+                is_directly_followed_by: None,
+                within_duration_from_prior_step: None,
+            })
+            .collect();
+        let err =
+            validate_funnel_report_inputs(&args).expect_err("funnel step count must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("at most 10 funnel steps"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_oversized_provider_payload() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_steps[0].filter_expression = Some(json!({
+            "funnel_field_filter": {
+                "field_name": "eventName",
+                "string_filter": { "value": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES) }
+            }
+        }));
+        args.funnel_steps[0].event = None;
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("provider-boundary funnel JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_oversized_date_range_payload() {
+        let mut args = valid_funnel_report_args();
+        args.date_ranges = vec![json!({
+            "start_date": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES),
+            "end_date": "yesterday",
+        })];
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("provider-boundary funnel date-range JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn normalized_funnel_provider_payload_matches_outbound_shape_and_limit() {
+        let payload = normalized_funnel_provider_boundary_payload(&valid_funnel_report_args())
+            .expect("normalized payload");
+
+        assert_eq!(payload["funnel"]["isOpenFunnel"], json!(false));
+        assert_eq!(
+            payload["funnel"]["steps"][0]["filterExpression"]["funnelEventFilter"]["eventName"],
+            json!("page_view")
+        );
+        assert_eq!(payload["dateRanges"][0]["startDate"], json!("7daysAgo"));
+        assert_eq!(
+            payload["funnelBreakdown"]["breakdownDimension"]["name"],
+            json!("deviceCategory")
+        );
+        assert_eq!(
+            payload["funnelNextAction"]["nextActionDimension"]["name"],
+            json!("eventName")
+        );
+        assert_eq!(payload["limit"], json!("50"));
+        assert_eq!(payload["returnPropertyQuota"], json!(false));
+        assert!(payload.get("segments").is_none());
+        assert!(payload.get("dimensionFilter").is_none());
+    }
+
+    #[test]
+    fn normalized_funnel_provider_payload_omits_optional_nulls() {
+        let mut args = valid_funnel_report_args();
+        args.date_ranges.clear();
+        args.funnel_breakdown = None;
+        args.funnel_next_action = None;
+        args.funnel_visualization_type = None;
+        args.limit = None;
+        args.max_rows = None;
+
+        let payload = normalized_funnel_provider_boundary_payload(&args).expect("payload");
+        assert_eq!(payload["limit"], json!("200"));
+        assert!(payload.get("dateRanges").is_none());
+        assert!(payload.get("funnelBreakdown").is_none());
+        assert!(payload.get("funnelNextAction").is_none());
+        assert!(payload.get("funnelVisualizationType").is_none());
+        assert!(payload.get("segments").is_none());
+        assert!(payload.get("dimensionFilter").is_none());
+    }
+
+    #[test]
+    fn validate_funnel_report_caps_normalized_event_shorthand_payload() {
+        let mut args = valid_funnel_report_args();
+        let raw_payload = |args: &RunFunnelReportArgs| {
+            let funnel_steps = serde_json::to_value(&args.funnel_steps).expect("raw steps");
+            json!({
+                "funnel_steps": funnel_steps,
+                "segments": &args.segments,
+                "dimension_filter": &args.dimension_filter,
+                "funnel_breakdown": &args.funnel_breakdown,
+                "funnel_next_action": &args.funnel_next_action,
+            })
+        };
+        let raw_size = serde_json::to_vec(&raw_payload(&args))
+            .expect("raw payload JSON")
+            .len();
+        let normalized_size = serde_json::to_vec(
+            &normalized_funnel_provider_boundary_payload(&args).expect("normalized payload"),
+        )
+        .expect("normalized payload JSON")
+        .len();
+        let expansion = normalized_size.saturating_sub(raw_size);
+        assert!(
+            expansion > 1,
+            "event shorthand should expand at the provider boundary"
+        );
+
+        let event_len = MAX_PROVIDER_BOUNDARY_JSON_BYTES
+            .checked_sub(raw_size)
+            .expect("valid fixture should start below provider cap");
+        args.funnel_steps[0].event = Some("x".repeat(event_len));
+
+        let raw_size = serde_json::to_vec(&raw_payload(&args))
+            .expect("raw payload JSON")
+            .len();
+        let normalized_size = serde_json::to_vec(
+            &normalized_funnel_provider_boundary_payload(&args).expect("normalized payload"),
+        )
+        .expect("normalized payload JSON")
+        .len();
+        assert!(raw_size <= MAX_PROVIDER_BOUNDARY_JSON_BYTES);
+        assert!(normalized_size > MAX_PROVIDER_BOUNDARY_JSON_BYTES);
+
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("normalized provider-boundary payload must be capped");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_invalid_nested_limits() {
+        let mut args = valid_funnel_report_args();
+        args.funnel_breakdown.as_mut().expect("breakdown").limit = Some(16);
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("breakdown limit above Google maximum must fail");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("between 1 and 15"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_edge_whitespace_but_preserves_internal_spaces() {
+        let mut event_args = valid_funnel_report_args();
+        event_args.funnel_steps[0].event = Some(" page view".to_string());
+        let err = validate_funnel_report_inputs(&event_args)
+            .expect_err("event shorthand with leading whitespace must fail");
+        assert!(
+            err.to_string()
+                .contains("event must not have leading or trailing whitespace")
+        );
+
+        let mut breakdown_args = valid_funnel_report_args();
+        breakdown_args
+            .funnel_breakdown
+            .as_mut()
+            .expect("breakdown")
+            .breakdown_dimension = " device category".to_string();
+        let err = validate_funnel_report_inputs(&breakdown_args)
+            .expect_err("breakdown dimension with leading whitespace must fail");
+        assert!(
+            err.to_string()
+                .contains("breakdown_dimension must not have leading or trailing whitespace")
+        );
+
+        let mut next_action_args = valid_funnel_report_args();
+        next_action_args
+            .funnel_next_action
+            .as_mut()
+            .expect("next action")
+            .next_action_dimension = "eventName ".to_string();
+        let err = validate_funnel_report_inputs(&next_action_args)
+            .expect_err("next-action dimension with trailing whitespace must fail");
+        assert!(
+            err.to_string()
+                .contains("next_action_dimension must not have leading or trailing whitespace")
+        );
+
+        let mut internal_space_args = valid_funnel_report_args();
+        internal_space_args.funnel_steps[0].event = Some("page view".to_string());
+        internal_space_args
+            .funnel_breakdown
+            .as_mut()
+            .expect("breakdown")
+            .breakdown_dimension = "device category".to_string();
+        internal_space_args
+            .funnel_next_action
+            .as_mut()
+            .expect("next action")
+            .next_action_dimension = "event name".to_string();
+        assert!(validate_funnel_report_inputs(&internal_space_args).is_ok());
+    }
+
+    #[test]
+    fn resolve_funnel_report_limit_applies_response_cap() {
+        assert_eq!(resolve_funnel_report_limit(None, None), 200);
+        assert_eq!(resolve_funnel_report_limit(Some(50), Some(100)), 50);
+        assert_eq!(resolve_funnel_report_limit(Some(500), Some(25)), 25);
+    }
+
+    #[test]
+    fn funnel_contract_projects_both_subreports_without_total_overclaim() {
+        let response = json!({
+            "funnelTable": {
+                "dimensionHeaders": [{ "name": "funnelStepName" }],
+                "metricHeaders": [{ "name": "activeUsers", "type": "TYPE_INTEGER" }],
+                "rows": [
+                    {
+                        "dimensionValues": [{ "value": "1. Read" }],
+                        "metricValues": [{ "value": "20" }]
+                    },
+                    {
+                        "dimensionValues": [{ "value": "2. Subscribe" }],
+                        "metricValues": [{ "value": "5" }]
+                    }
+                ],
+                "metadata": { "samplingMetadatas": [] }
+            },
+            "funnelVisualization": {
+                "dimensionHeaders": [{ "name": "funnelStepName" }],
+                "metricHeaders": [{ "name": "activeUsers", "type": "TYPE_INTEGER" }],
+                "rows": [{
+                    "dimensionValues": [{ "value": "1. Read" }],
+                    "metricValues": [{ "value": "20" }]
+                }],
+                "metadata": { "samplingMetadatas": [] }
+            },
+            "propertyQuota": { "tokensPerDay": { "remaining": 999 } },
+            "kind": "analyticsData#runFunnelReport"
+        });
+        let result = contract_success_ga_funnel(
+            response,
+            Instant::now(),
+            FunnelResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                effective_limit: 2,
+                requested_limit: Some(2),
+            },
+        );
+        let payload = result
+            .structured_content
+            .expect("funnel response must be structured");
+
+        assert_eq!(payload["ok"], json!(true));
+        assert_eq!(
+            payload["data"]["funnel_table"][0]["funnelStepName"],
+            json!("1. Read")
+        );
+        assert_eq!(
+            payload["meta"]["subreports"]["funnel_table"]["row_count_returned"],
+            json!(2)
+        );
+        assert_eq!(
+            payload["meta"]["subreports"]["funnel_table"]["row_count_total_known"],
+            json!(false)
+        );
+        assert_eq!(
+            payload["meta"]["subreports"]["funnel_table"]["truncated"],
+            json!(true)
+        );
+        assert_eq!(
+            payload["meta"]["subreports"]["funnel_visualization"]["truncated"],
+            json!(false)
+        );
+        assert!(
+            payload["meta"]["subreports"]["funnel_table"]
+                .get("row_count_total")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn funnel_contract_rejects_missing_subreports() {
+        let result = contract_success_ga_funnel(
+            json!({
+                "funnelTable": {
+                    "dimensionHeaders": [],
+                    "metricHeaders": [],
+                    "rows": []
+                }
+            }),
+            Instant::now(),
+            FunnelResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                effective_limit: 10,
+                requested_limit: None,
+            },
+        );
+        let payload = result
+            .structured_content
+            .expect("funnel error must be structured");
+        assert_eq!(payload["ok"], json!(false));
+        assert!(
+            payload["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("funnelVisualization"))
+        );
+    }
+
+    #[test]
+    fn funnel_contract_rejects_malformed_subreport_tabular_shapes() {
+        let valid_subreport = || {
+            json!({
+                "dimensionHeaders": [],
+                "metricHeaders": [],
+                "rows": []
+            })
+        };
+        let malformed_subreports = vec![
+            json!({
+                "dimensionHeaders": {},
+                "metricHeaders": [],
+                "rows": []
+            }),
+            json!({
+                "dimensionHeaders": [],
+                "metricHeaders": [],
+                "rows": [null]
+            }),
+            json!({
+                "dimensionHeaders": [],
+                "metricHeaders": [],
+                "rows": [{"metricValues": {}}]
+            }),
+        ];
+
+        for malformed in malformed_subreports {
+            let result = contract_success_ga_funnel(
+                json!({
+                    "funnelTable": malformed,
+                    "funnelVisualization": valid_subreport()
+                }),
+                Instant::now(),
+                FunnelResponseOptions {
+                    query_hash: "abcd".to_string(),
+                    output_mode: contract::OutputMode::Rows,
+                    summary_only: false,
+                    max_cell_chars: None,
+                    effective_limit: 10,
+                    requested_limit: None,
+                },
+            );
+            let payload = result
+                .structured_content
+                .expect("malformed funnel response must be structured");
+            assert_eq!(payload["ok"], json!(false));
+            assert!(payload["error"]["message"].is_string());
+        }
+    }
+
+    #[test]
+    fn funnel_contract_accepts_omitted_repeated_fields_as_empty() {
+        let result = contract_success_ga_funnel(
+            json!({
+                "funnelTable": {},
+                "funnelVisualization": {}
+            }),
+            Instant::now(),
+            FunnelResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                effective_limit: 10,
+                requested_limit: None,
+            },
+        );
+        let payload = result
+            .structured_content
+            .expect("omitted repeated fields should still be structured");
+        assert_eq!(payload["ok"], json!(true));
+        assert_eq!(payload["data"]["funnel_table"], json!([]));
+        assert_eq!(payload["data"]["funnel_visualization"], json!([]));
+    }
+
+    #[test]
+    fn conversions_contract_validates_tabular_response_shapes_fail_closed() {
+        assert!(validate_ga_tabular_response_shape(&json!({}), "run_conversions_report").is_ok());
+
+        let malformed_responses = vec![
+            json!({"dimensionHeaders": null}),
+            json!({"metricHeaders": {}}),
+            json!({"rows": "not-an-array"}),
+            json!({"dimensionHeaders": [null]}),
+            json!({"metricHeaders": ["not-an-object"]}),
+            json!({"rows": [null]}),
+            json!({"rows": [{"dimensionValues": {}}]}),
+            json!({"rows": [{"metricValues": [null]}]}),
+        ];
+
+        for response in malformed_responses {
+            let err = validate_ga_tabular_response_shape(&response, "run_conversions_report")
+                .expect_err("malformed conversion response shape must fail closed");
+            assert!(err.to_string().contains("Google run_conversions_report"));
+        }
+    }
+
+    #[test]
+    fn conversions_contract_rejects_row_count_below_returned_rows() {
+        let response = json!({
+            "rowCount": 1,
+            "rows": [{}, {}]
+        });
+
+        let err = validate_ga_tabular_response_shape(&response, "run_conversions_report")
+            .expect_err("rowCount must not under-report returned rows");
+        assert!(
+            err.to_string()
+                .contains("rowCount must be at least the number of returned rows")
+        );
+    }
+
     #[test]
     fn validate_pivot_requires_pivots() {
         let err = validate_pivot_inputs(
@@ -6458,6 +8487,41 @@ mod tests {
     }
 
     #[test]
+    fn conversion_projection_applies_effective_local_response_cap() {
+        let response = json!({
+            "dimensionHeaders": [{ "name": "campaignName" }],
+            "metricHeaders": [{ "name": "allConversionsByConversionDate", "type": "TYPE_INTEGER" }],
+            "rows": [
+                { "dimensionValues": [{ "value": "a" }], "metricValues": [{ "value": "3" }] },
+                { "dimensionValues": [{ "value": "b" }], "metricValues": [{ "value": "2" }] },
+                { "dimensionValues": [{ "value": "c" }], "metricValues": [{ "value": "1" }] }
+            ],
+            "rowCount": 10,
+            "kind": "analyticsData#runConversionsReport"
+        });
+        let result = contract_success_ga_tabular_with_local_cap(
+            response,
+            Instant::now(),
+            "run_conversions_report",
+            TabularResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                cursor_offset: 0,
+            },
+            Some(2),
+        );
+        let payload = result
+            .structured_content
+            .expect("conversion projection should return structured content");
+        assert_eq!(payload["data"].as_array().map(Vec::len), Some(2));
+        assert_eq!(payload["meta"]["row_count_total"], json!(10));
+        assert_eq!(payload["meta"]["row_count_returned"], json!(2));
+        assert!(payload["meta"]["truncated"].as_bool().unwrap_or(false));
+    }
+
+    #[test]
     fn project_ga_tabular_response_falls_back_when_row_count_missing() {
         let response = json!({
             "rows": [
@@ -6513,6 +8577,57 @@ mod tests {
         let err = decode_cursor("bad-token").expect_err("invalid cursor should fail");
         assert_eq!(err.code(), "INVALID_CURSOR");
         assert_eq!(err.reason(), "invalid_cursor");
+    }
+
+    #[test]
+    fn resolve_cursor_window_rejects_unreasonably_high_decoded_offset() {
+        let raw_cursor = format!(
+            "v1:deadbeef:{}",
+            MAX_REPORT_LIMIT.saturating_mul(10).saturating_add(1)
+        );
+        let err = resolve_cursor_window("deadbeef", Some(&raw_cursor), None, Some(100), None)
+            .expect_err("decoded cursor offset above the direct offset cap must fail");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("unreasonably high"));
+    }
+
+    #[test]
+    fn ga_projection_does_not_repeat_cursor_for_empty_or_out_of_range_pages() {
+        let empty_projection = GaTabularProjection {
+            rows: Vec::new(),
+            row_count_total: 5,
+            columns: vec![contract::ColumnMeta::new("country")],
+            ga_meta: json!({}),
+        };
+        let (_, empty_meta) = ga_projection_payload_and_meta(
+            empty_projection,
+            TabularResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                cursor_offset: 2,
+            },
+        );
+        assert_eq!(empty_meta.get("next_cursor"), Some(&Value::Null));
+
+        let out_of_range_projection = GaTabularProjection {
+            rows: vec![Map::from_iter([("country".to_string(), json!("US"))])],
+            row_count_total: 1,
+            columns: vec![contract::ColumnMeta::new("country")],
+            ga_meta: json!({}),
+        };
+        let (_, out_of_range_meta) = ga_projection_payload_and_meta(
+            out_of_range_projection,
+            TabularResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                cursor_offset: 1,
+            },
+        );
+        assert_eq!(out_of_range_meta.get("next_cursor"), Some(&Value::Null));
     }
 
     #[test]

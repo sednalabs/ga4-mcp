@@ -18,9 +18,17 @@ scratchpad analysis tools. All responses use Contract V1 envelopes:
 
 ## Report Tools
 
+The table below describes the local `ga4-mcp` surface. It includes both
+`run_funnel_report` and `run_conversions_report`, which use Google Analytics
+Data API v1alpha. The upstream reference inventory may vary by revision.
+Contract V1 envelopes, validation, projections, and related response metadata
+described below are local `ga4-mcp` semantics and extensions.
+
 | Tool | Purpose |
 |---|---|
 | `run_report` | Run a GA Data API report. |
+| `run_conversions_report` | Run a v1alpha conversion, ad-performance, ROAS, or attribution report. |
+| `run_funnel_report` | Run a v1alpha funnel report with optional breakdown, next-action, segment, and trended views. |
 | `run_realtime_report` | Run a realtime report. |
 | `run_pivot_report` | Run a pivot report. |
 | `batch_run_reports` | Run up to five report requests in one batch. |
@@ -34,6 +42,47 @@ Report-like tools support tabular response controls where applicable:
 - `output_mode` as `rows`, `tuples`, `scalar`, or `compact`.
 - `summary_only=true` to return metadata without row payload.
 - `max_cell_chars` to clip large cell values.
+
+`run_conversions_report` uses the same tabular controls and cursor behavior as
+`run_report`. Its `conversion_spec.conversion_actions` accepts zero or more
+`conversionActions/<id>` resource names; an empty list means all conversions.
+The MCP accepts at most 50 conversion actions and caps the combined outbound
+JSON size of the date ranges, dimensions, metrics, conversion spec, filters,
+ordering expressions, and currency code at 64 KiB before calling Google.
+The optional attribution model is `DATA_DRIVEN` or `LAST_CLICK`. Google limits
+this alpha report to its documented conversion dimensions and metrics, which
+the MCP validates before making an upstream request.
+
+`run_funnel_report` accepts simple event steps such as
+`{"name":"Read","event":"page_view"}` or complete GA
+`filter_expression` objects. When `name` is omitted, local normalization names
+steps `Step 1`, `Step 2`, and so on. It returns `funnel_table` and
+`funnel_visualization` as
+separately projected subreports. `max_rows`,
+`output_mode`, `summary_only`, and `max_cell_chars` apply to both. Google does
+not return an exact total row count for these subreports, so metadata reports
+`row_count_total_known=false` and conservatively marks a subreport truncated
+when it fills the effective request limit; no cursor is advertised.
+Requests are limited to 10 funnel steps, and the combined outbound JSON size
+of funnel steps, date ranges, segments, filters, breakdown, and next-action
+structures is capped at 64 KiB before calling Google.
+
+The generated JSON schema describes request structure; runtime validation also
+enforces semantic constraints. Each funnel step must be non-empty and provide
+exactly one of `event` or `filter_expression`.
+
+Funnel `segments` are provider-boundary JSON objects. The MCP enforces at most
+four non-empty objects, but does not fully validate Google's segment union
+shape; malformed or unsupported segment objects may therefore be rejected by
+Google.
+
+Both tools use Google Analytics Data API v1alpha. Conversion reporting may not
+be enabled for every property, and alpha contracts can change. Provider
+eligibility and alpha errors are returned through the normal Contract V1 error
+envelope.
+
+Provider references: [funnel reports](https://developers.google.com/analytics/devguides/reporting/data/v1/funnels)
+and [conversion reports](https://developers.google.com/analytics/devguides/reporting/data/v1/conversions-api-basics).
 
 ## Preflight Tools
 

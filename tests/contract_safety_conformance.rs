@@ -204,4 +204,64 @@ fn tool_snapshot_exposes_tabular_request_controls_for_contract_v1() {
         batch_schema["properties"]["requests"].is_object(),
         "batch_run_reports must expose requests array input"
     );
+
+    let conversions_keys = tool_input_property_names(&snapshot, "run_conversions_report");
+    for required in [
+        "conversion_spec",
+        "max_rows",
+        "cursor",
+        "output_mode",
+        "summary_only",
+        "max_cell_chars",
+    ] {
+        assert!(
+            conversions_keys.iter().any(|name| name == required),
+            "run_conversions_report is missing required control: {required}"
+        );
+    }
+    let conversions_schema = tool_input_schema(&snapshot, "run_conversions_report");
+    let conversions_required = conversions_schema["required"]
+        .as_array()
+        .expect("run_conversions_report required fields must be an array");
+    for required in [
+        "property_id",
+        "date_ranges",
+        "dimensions",
+        "metrics",
+        "conversion_spec",
+    ] {
+        assert!(
+            conversions_required
+                .iter()
+                .any(|value| value.as_str() == Some(required)),
+            "run_conversions_report must require {required}"
+        );
+    }
+
+    let funnel_keys = tool_input_property_names(&snapshot, "run_funnel_report");
+    for required in [
+        "funnel_steps",
+        "max_rows",
+        "output_mode",
+        "summary_only",
+        "max_cell_chars",
+    ] {
+        assert!(
+            funnel_keys.iter().any(|name| name == required),
+            "run_funnel_report is missing required control: {required}"
+        );
+    }
+
+    let funnel_schema = tool_input_schema(&snapshot, "run_funnel_report");
+    let funnel_required = funnel_schema["required"]
+        .as_array()
+        .expect("run_funnel_report required fields must be an array");
+    for required in ["property_id", "funnel_steps"] {
+        assert!(
+            funnel_required
+                .iter()
+                .any(|value| value.as_str() == Some(required)),
+            "run_funnel_report must require {required}"
+        );
+    }
 }

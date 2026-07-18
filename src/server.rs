@@ -8,7 +8,9 @@ use std::sync::Arc;
 use axum::http::request::Parts;
 use mcp_toolkit_core::rmcp_models;
 use mcp_toolkit_core::tool_schema::tool_schema_snapshot_value;
-use mcp_toolkit_observability::{EventContext, Level, emit_event, safe_error, safe_text};
+use mcp_toolkit_observability::{
+    EventContext, Level, SafeField, emit_event, safe_error, safe_text,
+};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
@@ -17,7 +19,7 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::config::{CapabilityProfile, UpstreamTokenSource};
 use crate::contract;
@@ -231,6 +233,27 @@ struct ContractSummary {
     row_count_returned: Option<u64>,
     truncated: Option<bool>,
     next_cursor_present: Option<bool>,
+    query_hash: Option<String>,
+    requested_limit: Option<u64>,
+    effective_limit: Option<u64>,
+    row_count_total_known: Option<bool>,
+    truncation_basis: Option<String>,
+    subreports: Vec<ContractSubreportSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContractSubreportSummary {
+    subreport: String,
+    output_mode: Option<String>,
+    row_count_total: Option<u64>,
+    row_count_returned: Option<u64>,
+    truncated: Option<bool>,
+    next_cursor_present: Option<bool>,
+    query_hash: Option<String>,
+    requested_limit: Option<u64>,
+    effective_limit: Option<u64>,
+    row_count_total_known: Option<bool>,
+    truncation_basis: Option<String>,
 }
 
 fn emit_contract_observability(tool_name: &str, result: &CallToolResult) {
@@ -270,40 +293,92 @@ fn emit_contract_observability(tool_name: &str, result: &CallToolResult) {
         ],
     );
 
-    if summary.row_count_total.is_some() || summary.row_count_returned.is_some() {
-        emit_event(
-            Level::INFO,
-            "ga4_mcp.pagination.meta",
-            &context,
-            &[
-                safe_text("tool", tool_name),
-                safe_text(
-                    "output_mode",
-                    summary.output_mode.as_deref().unwrap_or("unknown"),
-                ),
-                safe_text(
-                    "row_count_total",
-                    summary
-                        .row_count_total
-                        .map(|value| value.to_string())
-                        .as_deref()
-                        .unwrap_or("unknown"),
-                ),
-                safe_text(
-                    "row_count_returned",
-                    summary
-                        .row_count_returned
-                        .map(|value| value.to_string())
-                        .as_deref()
-                        .unwrap_or("unknown"),
-                ),
-                safe_text("truncated", bool_label(summary.truncated)),
-                safe_text(
-                    "next_cursor_present",
-                    bool_label(summary.next_cursor_present),
-                ),
-            ],
+    if summary.row_count_total.is_some()
+        || summary.row_count_returned.is_some()
+        || summary.query_hash.is_some()
+        || summary.requested_limit.is_some()
+        || summary.effective_limit.is_some()
+        || summary.row_count_total_known.is_some()
+        || summary.truncation_basis.is_some()
+    {
+        let mut fields = vec![
+            safe_text("tool", tool_name),
+            safe_text(
+                "output_mode",
+                summary.output_mode.as_deref().unwrap_or("unknown"),
+            ),
+            safe_text(
+                "row_count_total",
+                summary
+                    .row_count_total
+                    .map(|value| value.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            safe_text(
+                "row_count_returned",
+                summary
+                    .row_count_returned
+                    .map(|value| value.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            safe_text("truncated", bool_label(summary.truncated)),
+            safe_text(
+                "next_cursor_present",
+                bool_label(summary.next_cursor_present),
+            ),
+        ];
+        add_optional_pagination_fields(
+            &mut fields,
+            summary.query_hash.as_deref(),
+            summary.requested_limit,
+            summary.effective_limit,
+            summary.row_count_total_known,
+            summary.truncation_basis.as_deref(),
         );
+        emit_event(Level::INFO, "ga4_mcp.pagination.meta", &context, &fields);
+    }
+
+    for subreport in &summary.subreports {
+        let mut fields = vec![
+            safe_text("tool", tool_name),
+            safe_text("subreport", &subreport.subreport),
+            safe_text(
+                "output_mode",
+                subreport.output_mode.as_deref().unwrap_or("unknown"),
+            ),
+            safe_text(
+                "row_count_total",
+                subreport
+                    .row_count_total
+                    .map(|value| value.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            safe_text(
+                "row_count_returned",
+                subreport
+                    .row_count_returned
+                    .map(|value| value.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            safe_text("truncated", bool_label(subreport.truncated)),
+            safe_text(
+                "next_cursor_present",
+                bool_label(subreport.next_cursor_present),
+            ),
+        ];
+        add_optional_pagination_fields(
+            &mut fields,
+            subreport.query_hash.as_deref(),
+            subreport.requested_limit,
+            subreport.effective_limit,
+            subreport.row_count_total_known,
+            subreport.truncation_basis.as_deref(),
+        );
+        emit_event(Level::INFO, "ga4_mcp.pagination.meta", &context, &fields);
     }
 
     if summary.error_reason.as_deref() == Some("invalid_cursor") {
@@ -323,6 +398,34 @@ fn emit_contract_observability(tool_name: &str, result: &CallToolResult) {
                 ),
             ],
         );
+    }
+}
+
+fn add_optional_pagination_fields(
+    fields: &mut Vec<SafeField>,
+    query_hash: Option<&str>,
+    requested_limit: Option<u64>,
+    effective_limit: Option<u64>,
+    row_count_total_known: Option<bool>,
+    truncation_basis: Option<&str>,
+) {
+    if let Some(query_hash) = query_hash {
+        fields.push(safe_text("query_hash", summarize_query_hash(query_hash)));
+    }
+    if let Some(requested_limit) = requested_limit {
+        fields.push(safe_text("requested_limit", requested_limit.to_string()));
+    }
+    if let Some(effective_limit) = effective_limit {
+        fields.push(safe_text("effective_limit", effective_limit.to_string()));
+    }
+    if let Some(row_count_total_known) = row_count_total_known {
+        fields.push(safe_text(
+            "row_count_total_known",
+            bool_label(Some(row_count_total_known)),
+        ));
+    }
+    if let Some(truncation_basis) = truncation_basis {
+        fields.push(safe_text("truncation_basis", truncation_basis));
     }
 }
 
@@ -360,8 +463,104 @@ fn summarize_contract_payload(result: &CallToolResult) -> Option<ContractSummary
             .and_then(Value::as_bool),
         next_cursor_present: meta
             .and_then(|value| value.get("next_cursor"))
-            .map(|value| !value.is_null()),
+            .map(|value| !value.is_null())
+            .or_else(|| {
+                meta.and_then(|value| value.get("subreports"))
+                    .and_then(Value::as_object)
+                    .map(|_| false)
+            }),
+        query_hash: meta
+            .and_then(|value| value.get("query_hash"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        requested_limit: meta
+            .and_then(|value| value.get("requested_limit"))
+            .and_then(Value::as_u64),
+        effective_limit: meta
+            .and_then(|value| value.get("effective_limit"))
+            .and_then(Value::as_u64),
+        row_count_total_known: meta
+            .and_then(|value| value.get("row_count_total_known"))
+            .and_then(Value::as_bool),
+        truncation_basis: meta
+            .and_then(|value| value.get("truncation_basis"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        subreports: summarize_subreport_pagination(meta),
     })
+}
+
+fn summarize_subreport_pagination(
+    meta: Option<&Map<String, Value>>,
+) -> Vec<ContractSubreportSummary> {
+    let Some(subreports) = meta
+        .and_then(|value| value.get("subreports"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let query_hash = meta
+        .and_then(|value| value.get("query_hash"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let requested_limit = meta
+        .and_then(|value| value.get("requested_limit"))
+        .and_then(Value::as_u64);
+    let effective_limit = meta
+        .and_then(|value| value.get("effective_limit"))
+        .and_then(Value::as_u64);
+
+    let mut summaries = subreports
+        .iter()
+        .filter_map(|(label, value)| {
+            let object = value.as_object()?;
+            Some(ContractSubreportSummary {
+                subreport: safe_subreport_label(label),
+                output_mode: object
+                    .get("output_mode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                row_count_total: object.get("row_count_total").and_then(Value::as_u64),
+                row_count_returned: object.get("row_count_returned").and_then(Value::as_u64),
+                truncated: object.get("truncated").and_then(Value::as_bool),
+                // Funnel subreports do not support cursors. Emit an explicit
+                // false when the field is absent so operators can distinguish
+                // that contract from an unavailable/unknown value.
+                next_cursor_present: Some(
+                    object
+                        .get("next_cursor")
+                        .map(|value| !value.is_null())
+                        .unwrap_or(false),
+                ),
+                query_hash: query_hash.clone(),
+                requested_limit,
+                effective_limit,
+                row_count_total_known: object.get("row_count_total_known").and_then(Value::as_bool),
+                truncation_basis: object
+                    .get("truncation_basis")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| left.subreport.cmp(&right.subreport));
+    summaries
+}
+
+fn safe_subreport_label(label: &str) -> String {
+    let mut safe = String::with_capacity(label.len().min(64));
+    for character in label.chars().take(64) {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+            safe.push(character);
+        } else {
+            safe.push('_');
+        }
+    }
+    if safe.is_empty() {
+        "unknown".to_string()
+    } else {
+        safe
+    }
 }
 
 fn bool_label(value: Option<bool>) -> &'static str {
@@ -369,6 +568,15 @@ fn bool_label(value: Option<bool>) -> &'static str {
         Some(true) => "true",
         Some(false) => "false",
         None => "unknown",
+    }
+}
+
+fn summarize_query_hash(query_hash: &str) -> String {
+    let hash = query_hash.trim();
+    if hash.len() <= 12 {
+        hash.to_string()
+    } else {
+        format!("{}..", &hash[..12])
     }
 }
 
@@ -393,6 +601,14 @@ mod tests {
         assert!(tool_allowed_for_profile(
             CapabilityProfile::ReadOnly,
             "run_report"
+        ));
+        assert!(tool_allowed_for_profile(
+            CapabilityProfile::ReadOnly,
+            "run_funnel_report"
+        ));
+        assert!(tool_allowed_for_profile(
+            CapabilityProfile::ReadOnly,
+            "run_conversions_report"
         ));
         assert!(!tool_allowed_for_profile(
             CapabilityProfile::ReadOnly,
@@ -428,6 +644,91 @@ mod tests {
         assert_eq!(summary.row_count_returned, Some(5));
         assert_eq!(summary.truncated, Some(true));
         assert_eq!(summary.next_cursor_present, Some(true));
+        assert!(summary.subreports.is_empty());
+    }
+
+    #[test]
+    fn summarize_contract_payload_extracts_nested_subreport_metadata() {
+        let result = CallToolResult::structured(json!({
+            "ok": true,
+            "data": {
+                "funnel_table": [],
+                "funnel_visualization": []
+            },
+            "meta": {
+                "output_mode": "rows",
+                "query_hash": "abcdef1234567890",
+                "requested_limit": 10,
+                "effective_limit": 8,
+                "row_count_total_known": false,
+                "truncation_basis": "response_filled_effective_limit",
+                "subreports": {
+                    "funnel_visualization": {
+                        "output_mode": "summary",
+                        "row_count_returned": 3,
+                        "truncated": false,
+                        "row_count_total_known": false,
+                        "truncation_basis": "response_below_effective_limit"
+                    },
+                    "funnel_table": {
+                        "output_mode": "rows",
+                        "row_count_returned": 5,
+                        "truncated": true,
+                        "row_count_total_known": false,
+                        "truncation_basis": "local_response_cap"
+                    }
+                }
+            }
+        }));
+
+        let summary = summarize_contract_payload(&result).expect("summary should parse");
+        assert_eq!(summary.query_hash.as_deref(), Some("abcdef1234567890"));
+        assert_eq!(summary.next_cursor_present, Some(false));
+        assert_eq!(summary.requested_limit, Some(10));
+        assert_eq!(summary.effective_limit, Some(8));
+        assert_eq!(summary.row_count_total_known, Some(false));
+        assert_eq!(
+            summary.truncation_basis.as_deref(),
+            Some("response_filled_effective_limit")
+        );
+        assert_eq!(
+            summary.subreports,
+            vec![
+                ContractSubreportSummary {
+                    subreport: "funnel_table".to_string(),
+                    output_mode: Some("rows".to_string()),
+                    row_count_total: None,
+                    row_count_returned: Some(5),
+                    truncated: Some(true),
+                    next_cursor_present: Some(false),
+                    query_hash: Some("abcdef1234567890".to_string()),
+                    requested_limit: Some(10),
+                    effective_limit: Some(8),
+                    row_count_total_known: Some(false),
+                    truncation_basis: Some("local_response_cap".to_string()),
+                },
+                ContractSubreportSummary {
+                    subreport: "funnel_visualization".to_string(),
+                    output_mode: Some("summary".to_string()),
+                    row_count_total: None,
+                    row_count_returned: Some(3),
+                    truncated: Some(false),
+                    next_cursor_present: Some(false),
+                    query_hash: Some("abcdef1234567890".to_string()),
+                    requested_limit: Some(10),
+                    effective_limit: Some(8),
+                    row_count_total_known: Some(false),
+                    truncation_basis: Some("response_below_effective_limit".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn safe_subreport_label_bounds_and_sanitizes_keys() {
+        assert_eq!(safe_subreport_label("funnel/table\n"), "funnel_table_");
+        assert_eq!(safe_subreport_label(""), "unknown");
+        assert_eq!(safe_subreport_label(&"x".repeat(80)).len(), 64);
     }
 
     #[test]

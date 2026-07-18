@@ -2,7 +2,9 @@
 
 Rust MCP server for Google Analytics 4 (GA4), built for low-latency agent workflows.
 
-This project keeps parity with the core read/report intent of the official Google Analytics MCP server, then extends it with stricter contracts, policy gating, and an embedded DuckDB scratchpad workflow for analysis-heavy use cases.
+This project provides Google Analytics read/report tooling for agent workflows,
+with stricter local contracts, policy gating, and an embedded DuckDB scratchpad
+workflow for analysis-heavy use cases.
 
 ## Documentation
 
@@ -12,13 +14,18 @@ This project keeps parity with the core read/report intent of the official Googl
 - [Auth modes](docs/auth-modes.md)
 - [Payload Contract V1](docs/payload-contract-v1.md)
 
-## Upstream Alignment
+## Reference Alignment
 
 Upstream reference: <https://github.com/googleanalytics/google-analytics-mcp>
 
-As of 2026-02-24, the upstream README describes a smaller core tool set (`get_account_summaries`, `get_property_details`, `list_google_ads_links`, `run_report`, `run_realtime_report`, `get_custom_dimensions_and_metrics`).
+The upstream repository is useful context when comparing report and tool
+coverage, but its inventory may vary by revision and is not a complete contract
+for this server. `ga4-mcp` exposes both `run_funnel_report` and
+`run_conversions_report` through Google Analytics Data API v1alpha. Contract V1
+envelopes, validation, projections, and related response metadata/extensions
+described here are local `ga4-mcp` semantics.
 
-`ga4-mcp` keeps those core capabilities and adds:
+The server also includes:
 
 - additional GA Admin/Data API coverage (pivot, batch, access reports, annotations, retention, sharing settings)
 - local request preflight helpers (`preview_report_request`, `check_report_compatibility`)
@@ -44,11 +51,18 @@ As of 2026-02-24, the upstream README describes a smaller core tool set (`get_ac
 - `list_property_annotations`
 - `get_custom_dimensions_and_metrics`
 - `run_report`
+- `run_conversions_report`
+- `run_funnel_report`
 - `run_realtime_report`
 - `run_pivot_report`
 - `batch_run_reports`
 - `run_property_access_report`
 - `run_account_access_report`
+
+`run_conversions_report` and `run_funnel_report` use Google Analytics Data API
+v1alpha endpoints. Alpha features can change and conversion reporting may not
+be enabled for every property. Both tools remain read-only and use the same
+`analytics.readonly` OAuth scope as the other report tools.
 
 ### Request preflight and compatibility tools
 
@@ -415,8 +429,8 @@ cargo fmt --all
 cargo check
 cargo test
 ./scripts/sql_policy_toolkit_conformance.sh
-cargo run -- --print-tools
-cargo run -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
+cargo run --bin ga4-mcp -- --print-tools
+cargo run --bin ga4-mcp -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
 ```
 
 ### Live smoke verification (production-facing)

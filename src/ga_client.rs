@@ -148,6 +148,37 @@ pub struct RunReportRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct RunConversionsReportRequest {
+    pub property_id: PropertyId,
+    pub date_ranges: Vec<Value>,
+    pub dimensions: Vec<String>,
+    pub metrics: Vec<String>,
+    pub conversion_spec: Value,
+    pub dimension_filter: Option<Value>,
+    pub metric_filter: Option<Value>,
+    pub order_bys: Option<Vec<Value>>,
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+    pub currency_code: Option<String>,
+    pub return_property_quota: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunFunnelReportRequest {
+    pub property_id: PropertyId,
+    pub funnel_steps: Vec<Value>,
+    pub is_open_funnel: bool,
+    pub date_ranges: Vec<Value>,
+    pub funnel_breakdown: Option<Value>,
+    pub funnel_next_action: Option<Value>,
+    pub funnel_visualization_type: Option<String>,
+    pub segments: Option<Vec<Value>>,
+    pub dimension_filter: Option<Value>,
+    pub limit: Option<u64>,
+    pub return_property_quota: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct RunRealtimeReportRequest {
     pub property_id: PropertyId,
     pub dimensions: Vec<String>,
@@ -448,6 +479,34 @@ impl AnalyticsApiClient {
         .await
     }
 
+    pub async fn run_conversions_report(
+        &self,
+        request: RunConversionsReportRequest,
+    ) -> Result<Value, AnalyticsError> {
+        let property = request.property_id.to_resource_name()?;
+        let payload = build_run_conversions_report_payload(request);
+
+        self.post_json(
+            &format!("{}/v1alpha/{property}:runReport", self.data_base_url),
+            Value::Object(payload),
+        )
+        .await
+    }
+
+    pub async fn run_funnel_report(
+        &self,
+        request: RunFunnelReportRequest,
+    ) -> Result<Value, AnalyticsError> {
+        let property = request.property_id.to_resource_name()?;
+        let payload = build_run_funnel_report_payload(request);
+
+        self.post_json(
+            &format!("{}/v1alpha/{property}:runFunnelReport", self.data_base_url),
+            Value::Object(payload),
+        )
+        .await
+    }
+
     pub async fn check_report_compatibility(
         &self,
         property_id: &PropertyId,
@@ -465,6 +524,7 @@ impl AnalyticsApiClient {
                 .map(|name| json!({"name": name}))
                 .collect::<Vec<_>>(),
         });
+
         self.post_json(
             &format!(
                 "{}/v1beta/{property}:checkCompatibility",
@@ -1248,6 +1308,115 @@ fn build_run_report_payload(
     payload
 }
 
+pub(crate) fn build_run_conversions_report_payload(
+    request: RunConversionsReportRequest,
+) -> Map<String, Value> {
+    let mut payload = build_run_report_payload(
+        request.date_ranges,
+        request.dimensions,
+        request.metrics,
+        request.dimension_filter,
+        request.metric_filter,
+        request.order_bys,
+        request.limit,
+        request.offset,
+        request.currency_code,
+        request.return_property_quota,
+    );
+    payload.insert(
+        "conversionSpec".to_string(),
+        snake_to_camel_json(request.conversion_spec),
+    );
+    payload
+}
+
+pub(crate) fn build_run_funnel_report_payload(
+    request: RunFunnelReportRequest,
+) -> Map<String, Value> {
+    let mut payload = Map::new();
+    payload.insert(
+        "funnel".to_string(),
+        json!({
+            "isOpenFunnel": request.is_open_funnel,
+            "steps": request
+                .funnel_steps
+                .into_iter()
+                .enumerate()
+                .map(|(index, step)| normalize_funnel_step(step, index))
+                .collect::<Vec<_>>(),
+        }),
+    );
+    payload.insert(
+        "returnPropertyQuota".to_string(),
+        Value::Bool(request.return_property_quota),
+    );
+    if !request.date_ranges.is_empty() {
+        payload.insert(
+            "dateRanges".to_string(),
+            Value::Array(
+                request
+                    .date_ranges
+                    .into_iter()
+                    .map(snake_to_camel_json)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(funnel_breakdown) = request.funnel_breakdown {
+        payload.insert(
+            "funnelBreakdown".to_string(),
+            snake_to_camel_json(funnel_breakdown),
+        );
+    }
+    if let Some(funnel_next_action) = request.funnel_next_action {
+        payload.insert(
+            "funnelNextAction".to_string(),
+            snake_to_camel_json(funnel_next_action),
+        );
+    }
+    if let Some(funnel_visualization_type) = request.funnel_visualization_type {
+        payload.insert(
+            "funnelVisualizationType".to_string(),
+            Value::String(funnel_visualization_type),
+        );
+    }
+    if let Some(segments) = request.segments {
+        payload.insert(
+            "segments".to_string(),
+            Value::Array(segments.into_iter().map(snake_to_camel_json).collect()),
+        );
+    }
+    if let Some(dimension_filter) = request.dimension_filter {
+        payload.insert(
+            "dimensionFilter".to_string(),
+            snake_to_camel_json(dimension_filter),
+        );
+    }
+    if let Some(limit) = request.limit {
+        payload.insert("limit".to_string(), Value::String(limit.to_string()));
+    }
+    payload
+}
+
+pub(crate) fn normalize_funnel_step(step: Value, index: usize) -> Value {
+    let Value::Object(mut step) = step else {
+        return snake_to_camel_json(step);
+    };
+    step.entry("name".to_string())
+        .or_insert_with(|| Value::String(format!("Step {}", index + 1)));
+    if let Some(event) = step.remove("event") {
+        step.insert(
+            "filter_expression".to_string(),
+            json!({
+                "funnel_event_filter": {
+                    "event_name": event,
+                }
+            }),
+        );
+    }
+    snake_to_camel_json(Value::Object(step))
+}
+
 fn build_access_report_payload(request: RunAccessReportRequest) -> Map<String, Value> {
     let mut payload = Map::new();
     payload.insert(
@@ -1524,6 +1693,135 @@ mod tests {
                 .and_then(|v| v.get("andGroup"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn build_run_funnel_report_payload_normalizes_simple_event_steps() {
+        let payload = build_run_funnel_report_payload(RunFunnelReportRequest {
+            property_id: PropertyId::Number(1234),
+            funnel_steps: vec![json!({
+                "event": "page_view",
+                "is_directly_followed_by": false,
+            })],
+            is_open_funnel: true,
+            date_ranges: vec![json!({
+                "start_date": "7daysAgo",
+                "end_date": "yesterday",
+            })],
+            funnel_breakdown: Some(json!({
+                "breakdown_dimension": { "name": "deviceCategory" },
+                "limit": "10",
+            })),
+            funnel_next_action: Some(json!({
+                "next_action_dimension": { "name": "eventName" },
+                "limit": "5",
+            })),
+            funnel_visualization_type: Some("TRENDED_FUNNEL".to_string()),
+            segments: Some(vec![json!({
+                "name": "Readers",
+                "session_segment": {},
+            })]),
+            dimension_filter: Some(json!({
+                "filter": {
+                    "field_name": "country",
+                    "string_filter": { "value": "Australia" },
+                }
+            })),
+            limit: Some(200),
+            return_property_quota: true,
+        });
+
+        assert_eq!(payload["funnel"]["isOpenFunnel"], json!(true));
+        assert_eq!(payload["funnel"]["steps"][0]["name"], json!("Step 1"));
+        assert_eq!(
+            payload["funnel"]["steps"][0]["filterExpression"]["funnelEventFilter"]["eventName"],
+            json!("page_view")
+        );
+        assert_eq!(
+            payload["funnel"]["steps"][0]["isDirectlyFollowedBy"],
+            json!(false)
+        );
+        assert!(payload["funnel"]["steps"][0].get("event").is_none());
+        assert_eq!(payload["dateRanges"][0]["startDate"], json!("7daysAgo"));
+        assert_eq!(
+            payload["funnelBreakdown"]["breakdownDimension"]["name"],
+            json!("deviceCategory")
+        );
+        assert_eq!(
+            payload["funnelNextAction"]["nextActionDimension"]["name"],
+            json!("eventName")
+        );
+        assert_eq!(payload["funnelVisualizationType"], json!("TRENDED_FUNNEL"));
+        assert_eq!(payload["segments"][0]["sessionSegment"], json!({}));
+        assert_eq!(payload["limit"], json!("200"));
+    }
+
+    #[test]
+    fn build_run_funnel_report_payload_preserves_full_filter_expression() {
+        let payload = build_run_funnel_report_payload(RunFunnelReportRequest {
+            property_id: PropertyId::Number(1234),
+            funnel_steps: vec![json!({
+                "name": "Organic visitor",
+                "filter_expression": {
+                    "funnel_field_filter": {
+                        "field_name": "firstUserMedium",
+                        "string_filter": {
+                            "match_type": "CONTAINS",
+                            "value": "organic",
+                        }
+                    }
+                }
+            })],
+            is_open_funnel: false,
+            date_ranges: Vec::new(),
+            funnel_breakdown: None,
+            funnel_next_action: None,
+            funnel_visualization_type: None,
+            segments: None,
+            dimension_filter: None,
+            limit: None,
+            return_property_quota: false,
+        });
+
+        assert_eq!(
+            payload["funnel"]["steps"][0]["filterExpression"]["funnelFieldFilter"]["fieldName"],
+            json!("firstUserMedium")
+        );
+        assert!(payload.get("dateRanges").is_none());
+    }
+
+    #[test]
+    fn build_conversion_report_payload_uses_v1alpha_conversion_spec_shape() {
+        let payload = build_run_conversions_report_payload(RunConversionsReportRequest {
+            property_id: PropertyId::Number(1234),
+            date_ranges: vec![json!({
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-30",
+            })],
+            dimensions: vec!["campaignName".to_string()],
+            metrics: vec!["allConversionsByConversionDate".to_string()],
+            conversion_spec: json!({
+                "conversion_actions": ["conversionActions/1234"],
+                "attribution_model": "DATA_DRIVEN",
+            }),
+            dimension_filter: None,
+            metric_filter: None,
+            order_bys: None,
+            limit: Some(100),
+            offset: Some(0),
+            currency_code: None,
+            return_property_quota: false,
+        });
+
+        assert_eq!(
+            payload["conversionSpec"]["conversionActions"][0],
+            json!("conversionActions/1234")
+        );
+        assert_eq!(
+            payload["conversionSpec"]["attributionModel"],
+            json!("DATA_DRIVEN")
+        );
+        assert_eq!(payload["dateRanges"][0]["startDate"], json!("2026-04-01"));
     }
 
     #[test]

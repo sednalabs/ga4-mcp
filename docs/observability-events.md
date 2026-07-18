@@ -31,6 +31,8 @@ sanitized/redacted text fields.
   - Fields: `tool`, `query_hash`, `cursor_supplied`, `offset`, `page_size`
 - `ga4_mcp.pagination.meta`
   - Fields: `tool`, `output_mode`, `row_count_total`, `row_count_returned`, `truncated`, `next_cursor_present`
+  - Optional fields (when present in Contract V1 metadata): `query_hash`, `requested_limit`, `effective_limit`, `row_count_total_known`, `truncation_basis`
+  - Subreport events also include `subreport`; `query_hash`, `requested_limit`, and `effective_limit` are inherited from the top-level metadata, while `row_count_total_known` and `truncation_basis` are read from that subreport's metadata.
 - `ga4_mcp.pagination.cursor_error`
   - Fields: `tool`, `error_code`, `error_reason`, `error`
 
@@ -58,5 +60,10 @@ sanitized/redacted text fields.
 ## Notes
 
 - `query_hash` values are emitted in shortened form.
+- `run_funnel_report` emits one `ga4_mcp.pagination.window` event before its
+  upstream request. Because funnel responses contain independent table and
+  visualization subreports rather than cursor pages, it always reports
+  `cursor_supplied=false` and `offset=0`; `page_size` is the effective funnel
+  response limit.
 - Cursor errors are duplicated at both tool-level contract (`ga4_mcp.contract.response`)
   and pagination-specific (`ga4_mcp.pagination.cursor_error`) events to simplify alerting.
