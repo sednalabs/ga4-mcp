@@ -1635,6 +1635,18 @@ impl AnalyticsMcp {
             return Ok(contract_error(err, started));
         }
 
+        let (fallback_offset, fallback_limit) = conversions_report_fallback_window(&args);
+        if let Err(err) = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(
+                &args,
+                fallback_limit,
+                fallback_offset,
+            ),
+        ) {
+            return Ok(contract_error(err, started));
+        }
+
         let query_hash = match run_conversions_report_query_hash(&args) {
             Ok(value) => value,
             Err(err) => return Ok(contract_error(err, started)),
@@ -3441,6 +3453,24 @@ fn normalized_conversions_provider_boundary_payload(
     Value::Object(build_run_conversions_report_payload(
         build_conversions_report_request(args, effective_limit, effective_offset),
     ))
+}
+
+fn conversions_report_fallback_window(args: &RunConversionsReportArgs) -> (u64, u64) {
+    let response_limit = args
+        .max_rows
+        .unwrap_or(DEFAULT_TABULAR_MAX_ROWS)
+        .clamp(1, MAX_TABULAR_MAX_ROWS) as u64;
+    let effective_limit = args
+        .limit
+        .unwrap_or(response_limit)
+        .min(response_limit)
+        .max(1);
+    let effective_offset = if args.cursor.is_some() {
+        0
+    } else {
+        args.offset.unwrap_or(0).min(MAX_REPORT_LIMIT * 10)
+    };
+    (effective_offset, effective_limit)
 }
 
 fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), AnalyticsError> {
@@ -6062,7 +6092,7 @@ fn validate_ga_tabular_response_shape(
         None
     };
 
-    for field_name in ["dimensionHeaders", "metricHeaders", "rows"] {
+    for field_name in ["dimensionHeaders", "metricHeaders"] {
         let Some(raw_values) = response.get(field_name) else {
             continue;
         };
@@ -6080,6 +6110,14 @@ fn validate_ga_tabular_response_shape(
         }
     }
 
+    if let Some(raw_rows) = response.get("rows") {
+        if !raw_rows.is_array() {
+            return Err(AnalyticsError::Internal(format!(
+                "Google {report_kind} response field rows must be an array"
+            )));
+        }
+    }
+
     if let Some(rows) = response.get("rows").and_then(Value::as_array) {
         if let Some(row_count) = row_count {
             let returned_row_count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
@@ -6091,6 +6129,11 @@ fn validate_ga_tabular_response_shape(
         }
 
         for (row_index, row) in rows.iter().enumerate() {
+            let Some(row) = row.as_object() else {
+                return Err(AnalyticsError::Internal(format!(
+                    "Google {report_kind} response rows[{row_index}] must be an object"
+                )));
+            };
             for field_name in ["dimensionValues", "metricValues"] {
                 let Some(raw_values) = row.get(field_name) else {
                     continue;
@@ -6204,7 +6247,7 @@ fn validate_funnel_subreport_shape(
         )));
     };
 
-    for field_name in ["dimensionHeaders", "metricHeaders", "rows"] {
+    for field_name in ["dimensionHeaders", "metricHeaders"] {
         let Some(raw_values) = subreport.get(field_name) else {
             continue;
         };
@@ -6222,6 +6265,14 @@ fn validate_funnel_subreport_shape(
         }
     }
 
+    if let Some(raw_rows) = subreport.get("rows") {
+        if !raw_rows.is_array() {
+            return Err(AnalyticsError::Internal(format!(
+                "Google funnel response {subreport_name}.rows must be an array"
+            )));
+        }
+    }
+
     for (row_index, row) in subreport
         .get("rows")
         .and_then(Value::as_array)
@@ -6229,6 +6280,11 @@ fn validate_funnel_subreport_shape(
         .flatten()
         .enumerate()
     {
+        let Some(row) = row.as_object() else {
+            return Err(AnalyticsError::Internal(format!(
+                "Google funnel response {subreport_name}.rows[{row_index}] must be an object"
+            )));
+        };
         for field_name in ["dimensionValues", "metricValues"] {
             let Some(values) = row.get(field_name) else {
                 continue;
@@ -7635,6 +7691,25 @@ mod tests {
         assert_eq!(payload["offset"], json!("20"));
         assert!(payload.get("dimensionFilter").is_none());
         assert!(payload.get("metricFilter").is_none());
+    }
+
+    #[test]
+    fn conversions_report_fallback_window_is_bounded_before_cursor_resolution() {
+        let mut args = valid_conversions_report_args();
+        args.limit = Some(MAX_REPORT_LIMIT);
+        args.max_rows = Some(MAX_TABULAR_MAX_ROWS);
+        args.offset = Some(MAX_REPORT_LIMIT * 10);
+
+        assert_eq!(
+            conversions_report_fallback_window(&args),
+            (MAX_REPORT_LIMIT * 10, MAX_TABULAR_MAX_ROWS as u64)
+        );
+
+        args.cursor = Some("v1:pending-query-hash:123".to_string());
+        assert_eq!(
+            conversions_report_fallback_window(&args),
+            (0, MAX_TABULAR_MAX_ROWS as u64)
+        );
     }
 
     #[test]
