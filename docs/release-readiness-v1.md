@@ -10,30 +10,31 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 
 - [x] Contract policy is V1-only (no legacy mode).
 - [x] Tool schema snapshot regenerated from current build.
-- [x] Core validation commands executed in clean sequence.
+- [x] Core Rust validation and tool-contract checks are green in hosted CI.
 - [x] Scratchpad tools included in schema snapshot.
 - [x] Policy gating (`read_only` vs `scratchpad`) documented.
 - [x] Operator runbook with request/response examples published.
 - [x] Public documentation front door reviewed for release-facing links.
 
-## Verification Commands
+## Verification Evidence
 
-Executed:
+Current PR evidence is provided by the hosted GitHub Actions runs for commit
+`3ca91af982efaee65263c553a65a3b1acf034be3`:
+
+- [Test And Tool Contract](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947145): pass. This run includes `cargo fmt --check`, `cargo test`, and the
+  `ga4-mcp` tool-inventory command.
+- [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140): pass.
+
+The tool schema snapshot was regenerated with the explicit binary target:
 
 ```bash
-cargo fmt --all
-cargo check
-cargo test
-./scripts/sql_policy_toolkit_conformance.sh
 cargo run --bin ga4-mcp -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
 ```
 
-Observed result:
-
-- `cargo check`: pass
-- `cargo test`: pass
-- `sql_policy_toolkit_conformance`: pass
-- schema snapshot generation: pass
+The local `sql_policy_toolkit_conformance` command was not rerun for this PR:
+the sibling `mcp-policy-kernel` checkout required by that script is not
+available in this workspace. Any earlier pass recorded for that command is
+historical baseline evidence only, not current PR verification.
 
 ## Tool Inventory (from `spec/tool_schema_snapshot.v1.json`)
 
