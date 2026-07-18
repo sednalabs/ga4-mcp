@@ -2,7 +2,9 @@
 
 Rust MCP server for Google Analytics 4 (GA4), built for low-latency agent workflows.
 
-This project keeps parity with the core read/report intent of the official Google Analytics MCP server, then extends it with stricter contracts, policy gating, and an embedded DuckDB scratchpad workflow for analysis-heavy use cases.
+This project provides Google Analytics read/report tooling for agent workflows,
+with stricter local contracts, policy gating, and an embedded DuckDB scratchpad
+workflow for analysis-heavy use cases.
 
 ## Documentation
 
@@ -12,19 +14,18 @@ This project keeps parity with the core read/report intent of the official Googl
 - [Auth modes](docs/auth-modes.md)
 - [Payload Contract V1](docs/payload-contract-v1.md)
 
-## Upstream Alignment
+## Reference Alignment
 
 Upstream reference: <https://github.com/googleanalytics/google-analytics-mcp>
 
-The upstream repository is a reference for the core read/report intent of this
-server; this section does not promise that every `ga4-mcp` tool is present
-upstream. `run_funnel_report` follows Google's official funnel-report surface
-and is an upstream-aligned core capability. `run_conversions_report` is a
-Sedna `ga4-mcp` addition backed by the Google Analytics Data API v1alpha. Both
-use the local server's stricter Contract V1 response and validation semantics;
-those envelopes and local projections/extensions are Sedna-specific.
+The upstream repository is useful context when comparing report and tool
+coverage, but its inventory may vary by revision and is not a complete contract
+for this server. `ga4-mcp` exposes both `run_funnel_report` and
+`run_conversions_report` through Google Analytics Data API v1alpha. Contract V1
+envelopes, validation, projections, and related response metadata/extensions
+described here are local `ga4-mcp` semantics.
 
-`ga4-mcp` keeps the upstream-aligned core capabilities and adds:
+The server also includes:
 
 - additional GA Admin/Data API coverage (pivot, batch, access reports, annotations, retention, sharing settings)
 - local request preflight helpers (`preview_report_request`, `check_report_compatibility`)

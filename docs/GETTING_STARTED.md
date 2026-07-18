@@ -125,16 +125,14 @@ Start with low-cost discovery and validation:
 6. `preview_report_request` to validate and normalize a report payload without
    calling GA.
 7. `run_report` or `run_realtime_report` after the request shape is confirmed.
-8. `run_funnel_report` for Google's upstream-aligned funnel-report surface,
-   followed by Sedna's `run_conversions_report` addition for conversion, ROAS,
-   and attribution questions.
+8. `run_funnel_report` and `run_conversions_report` for v1alpha funnel,
+   conversion, ROAS, and attribution reporting.
 
-The funnel and conversion tools use Google Analytics Data API v1alpha. The
-funnel surface follows Google's official funnel-report contract; conversion
-reporting is a Sedna-specific addition and may not be enabled for every
-property. Alpha contracts can change. Both remain read-only under the standard
-`analytics.readonly` scope, while Contract V1 envelopes and local projections
-remain `ga4-mcp` semantics.
+The funnel and conversion tools use Google Analytics Data API v1alpha, and
+`ga4-mcp` exposes both tools as read-only report surfaces. The upstream reference
+inventory may vary by revision. Alpha contracts can change, and conversion
+reporting may not be enabled for every property. Contract V1 envelopes and
+local projections remain `ga4-mcp` semantics.
 
 ## Optional Scratchpad Profile
 
