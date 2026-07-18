@@ -3573,21 +3573,64 @@ fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), Analy
             MAX_FUNNEL_NEXT_ACTION_LIMIT,
         )?;
     }
-    let funnel_steps = serde_json::to_value(&args.funnel_steps).map_err(|err| {
-        AnalyticsError::invalid(
-            "provider_payload",
-            format!("funnel steps could not be serialized as JSON: {err}"),
-        )
-    })?;
-    let provider_payload = json!({
-        "funnel_steps": funnel_steps,
-        "segments": &args.segments,
-        "dimension_filter": &args.dimension_filter,
-        "funnel_breakdown": &args.funnel_breakdown,
-        "funnel_next_action": &args.funnel_next_action,
-    });
+    let provider_payload = normalized_funnel_provider_boundary_payload(args)?;
     validate_provider_boundary_json_size("provider_payload", &provider_payload)?;
     validate_limit_offset(args.limit, None)
+}
+
+fn normalized_funnel_provider_boundary_payload(
+    args: &RunFunnelReportArgs,
+) -> Result<Value, AnalyticsError> {
+    let funnel_steps = args
+        .funnel_steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            serde_json::to_value(step)
+                .map(|value| normalize_funnel_step(value, index))
+                .map_err(|err| {
+                    AnalyticsError::invalid(
+                        "provider_payload",
+                        format!("funnel steps could not be serialized as JSON: {err}"),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let funnel_breakdown = args.funnel_breakdown.as_ref().map(|breakdown| {
+        let mut value = json!({
+            "breakdown_dimension": { "name": breakdown.breakdown_dimension },
+        });
+        if let Some(limit) = breakdown.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        snake_to_camel_json(value)
+    });
+    let funnel_next_action = args.funnel_next_action.as_ref().map(|next_action| {
+        let mut value = json!({
+            "next_action_dimension": { "name": next_action.next_action_dimension },
+        });
+        if let Some(limit) = next_action.limit {
+            value["limit"] = json!(limit.to_string());
+        }
+        snake_to_camel_json(value)
+    });
+    let segments = args
+        .segments
+        .as_ref()
+        .map(|segments| Value::Array(segments.iter().cloned().map(snake_to_camel_json).collect()));
+    let dimension_filter = args
+        .dimension_filter
+        .as_ref()
+        .cloned()
+        .map(snake_to_camel_json);
+
+    Ok(json!({
+        "funnel_steps": funnel_steps,
+        "segments": segments,
+        "dimension_filter": dimension_filter,
+        "funnel_breakdown": funnel_breakdown,
+        "funnel_next_action": funnel_next_action,
+    }))
 }
 
 fn validate_provider_boundary_json_size(
@@ -7732,6 +7775,55 @@ mod tests {
         args.funnel_steps[0].event = None;
         let err = validate_funnel_report_inputs(&args)
             .expect_err("provider-boundary funnel JSON must be bounded");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn validate_funnel_report_caps_normalized_event_shorthand_payload() {
+        let mut args = valid_funnel_report_args();
+        let raw_payload = |args: &RunFunnelReportArgs| {
+            let funnel_steps = serde_json::to_value(&args.funnel_steps).expect("raw steps");
+            json!({
+                "funnel_steps": funnel_steps,
+                "segments": &args.segments,
+                "dimension_filter": &args.dimension_filter,
+                "funnel_breakdown": &args.funnel_breakdown,
+                "funnel_next_action": &args.funnel_next_action,
+            })
+        };
+        let raw_size = serde_json::to_vec(&raw_payload(&args))
+            .expect("raw payload JSON")
+            .len();
+        let normalized_size = serde_json::to_vec(
+            &normalized_funnel_provider_boundary_payload(&args).expect("normalized payload"),
+        )
+        .expect("normalized payload JSON")
+        .len();
+        let expansion = normalized_size.saturating_sub(raw_size);
+        assert!(
+            expansion > 1,
+            "event shorthand should expand at the provider boundary"
+        );
+
+        let event_len = MAX_PROVIDER_BOUNDARY_JSON_BYTES
+            .checked_sub(raw_size)
+            .expect("valid fixture should start below provider cap");
+        args.funnel_steps[0].event = Some("x".repeat(event_len));
+
+        let raw_size = serde_json::to_vec(&raw_payload(&args))
+            .expect("raw payload JSON")
+            .len();
+        let normalized_size = serde_json::to_vec(
+            &normalized_funnel_provider_boundary_payload(&args).expect("normalized payload"),
+        )
+        .expect("normalized payload JSON")
+        .len();
+        assert!(raw_size <= MAX_PROVIDER_BOUNDARY_JSON_BYTES);
+        assert!(normalized_size > MAX_PROVIDER_BOUNDARY_JSON_BYTES);
+
+        let err = validate_funnel_report_inputs(&args)
+            .expect_err("normalized provider-boundary payload must be capped");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("combined provider-boundary JSON"));
     }
