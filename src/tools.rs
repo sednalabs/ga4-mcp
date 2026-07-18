@@ -5590,13 +5590,23 @@ fn run_conversions_report_query_hash(
     args: &RunConversionsReportArgs,
 ) -> Result<String, AnalyticsError> {
     let property = args.property_id.to_resource_name()?;
+    let dimensions = args
+        .dimensions
+        .iter()
+        .map(|name| name.trim())
+        .collect::<Vec<_>>();
+    let metrics = args
+        .metrics
+        .iter()
+        .map(|name| name.trim())
+        .collect::<Vec<_>>();
     let currency_code = args.currency_code.as_deref().map(str::trim);
     let signature = snake_to_camel_json(json!({
         "tool": "run_conversions_report",
         "property": property,
         "date_ranges": &args.date_ranges,
-        "dimensions": &args.dimensions,
-        "metrics": &args.metrics,
+        "dimensions": dimensions,
+        "metrics": metrics,
         "conversion_spec": &args.conversion_spec,
         "dimension_filter": &args.dimension_filter,
         "metric_filter": &args.metric_filter,
@@ -7387,6 +7397,8 @@ mod tests {
     #[test]
     fn conversions_query_hash_matches_outbound_json_normalization_and_trimmed_currency() {
         let mut snake_case = valid_conversions_report_args();
+        snake_case.dimensions = vec![" campaignName ".to_string()];
+        snake_case.metrics = vec![" totalRevenueByConversionDate ".to_string()];
         snake_case.dimension_filter = Some(json!({
             "and_group": {
                 "expressions": [{
@@ -7401,6 +7413,8 @@ mod tests {
         snake_case.currency_code = Some(" USD ".to_string());
 
         let mut camel_case = valid_conversions_report_args();
+        camel_case.dimensions = vec!["campaignName".to_string()];
+        camel_case.metrics = vec!["totalRevenueByConversionDate".to_string()];
         camel_case.date_ranges = vec![json!({
             "startDate": "2026-04-01",
             "endDate": "2026-04-30",
