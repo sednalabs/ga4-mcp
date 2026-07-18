@@ -1688,11 +1688,12 @@ impl AnalyticsMcp {
                 {
                     return Ok(contract_error(err, started));
                 }
-                Ok(contract_success_ga_tabular(
+                Ok(contract_success_ga_tabular_with_local_cap(
                     data,
                     started,
                     "run_conversions_report",
                     response_options,
+                    Some(effective_limit),
                 ))
             }
             Err(err) => Ok(contract_error(err, started)),
@@ -6022,7 +6023,21 @@ fn contract_success_ga_tabular(
     report_kind: &'static str,
     options: TabularResponseOptions,
 ) -> CallToolResult {
-    let projection = project_ga_tabular_response(&data, report_kind);
+    contract_success_ga_tabular_with_local_cap(data, started, report_kind, options, None)
+}
+
+fn contract_success_ga_tabular_with_local_cap(
+    data: Value,
+    started: Instant,
+    report_kind: &'static str,
+    options: TabularResponseOptions,
+    local_response_cap: Option<u64>,
+) -> CallToolResult {
+    let mut projection = project_ga_tabular_response(&data, report_kind);
+    if let Some(local_response_cap) = local_response_cap {
+        let local_response_cap = usize::try_from(local_response_cap).unwrap_or(usize::MAX);
+        projection.rows.truncate(local_response_cap);
+    }
     contract_success_ga_projection(projection, started, options)
 }
 
@@ -8366,6 +8381,41 @@ mod tests {
         assert!(meta.truncated);
         assert_eq!(meta.output_mode, contract::OutputMode::Rows);
         assert_eq!(meta.columns.len(), 2);
+    }
+
+    #[test]
+    fn conversion_projection_applies_effective_local_response_cap() {
+        let response = json!({
+            "dimensionHeaders": [{ "name": "campaignName" }],
+            "metricHeaders": [{ "name": "allConversionsByConversionDate", "type": "TYPE_INTEGER" }],
+            "rows": [
+                { "dimensionValues": [{ "value": "a" }], "metricValues": [{ "value": "3" }] },
+                { "dimensionValues": [{ "value": "b" }], "metricValues": [{ "value": "2" }] },
+                { "dimensionValues": [{ "value": "c" }], "metricValues": [{ "value": "1" }] }
+            ],
+            "rowCount": 10,
+            "kind": "analyticsData#runConversionsReport"
+        });
+        let result = contract_success_ga_tabular_with_local_cap(
+            response,
+            Instant::now(),
+            "run_conversions_report",
+            TabularResponseOptions {
+                query_hash: "abcd".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                cursor_offset: 0,
+            },
+            Some(2),
+        );
+        let payload = result
+            .structured_content
+            .expect("conversion projection should return structured content");
+        assert_eq!(payload["data"].as_array().map(Vec::len), Some(2));
+        assert_eq!(payload["meta"]["row_count_total"], json!(10));
+        assert_eq!(payload["meta"]["row_count_returned"], json!(2));
+        assert!(payload["meta"]["truncated"].as_bool().unwrap_or(false));
     }
 
     #[test]
