@@ -18,6 +18,10 @@ scratchpad analysis tools. All responses use Contract V1 envelopes:
 
 ## Report Tools
 
+The table below describes the local `ga4-mcp` surface. Tool names listed here
+do not imply that the current upstream Google Analytics MCP exposes the same
+set; in particular, the conversion and funnel tools are Sedna additions.
+
 | Tool | Purpose |
 |---|---|
 | `run_report` | Run a GA Data API report. |
@@ -47,10 +51,9 @@ the MCP validates before making an upstream request.
 `run_funnel_report` accepts simple event steps such as
 `{"name":"Read","event":"page_view"}` or complete GA
 `filter_expression` objects. When `name` is omitted, Sedna's MCP-side
-normalization names steps `Step 1`, `Step 2`, and so on; this is an upstream-MCP
-convention, not a claim that the Google API documentation specifies that
-default. It returns `funnel_table` and `funnel_visualization` as separately
-projected subreports. `max_rows`,
+normalization names steps `Step 1`, `Step 2`, and so on; this is a Sedna
+`ga4-mcp` default. It returns `funnel_table` and `funnel_visualization` as
+separately projected subreports. `max_rows`,
 `output_mode`, `summary_only`, and `max_cell_chars` apply to both. Google does
 not return an exact total row count for these subreports, so metadata reports
 `row_count_total_known=false` and conservatively marks a subreport truncated

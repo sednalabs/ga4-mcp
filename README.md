@@ -16,12 +16,14 @@ This project keeps parity with the core read/report intent of the official Googl
 
 Upstream reference: <https://github.com/googleanalytics/google-analytics-mcp>
 
-As of 2026-07-18, the upstream server registers nine tools, including the
-v1alpha `run_funnel_report` and `run_conversions_report` surfaces. `ga4-mcp`
-keeps those official core tool names while preserving its stricter Contract V1
-response and validation semantics.
+The upstream repository is a reference for the core read/report intent of this
+server; this section does not promise that every `ga4-mcp` tool is present
+upstream. In particular, `run_funnel_report` and `run_conversions_report` are
+Sedna `ga4-mcp` additions backed by the Google Analytics Data API v1alpha, not
+claims about the current upstream tool inventory. They preserve the local
+server's stricter Contract V1 response and validation semantics.
 
-`ga4-mcp` keeps those core capabilities and adds:
+`ga4-mcp` keeps the upstream-aligned core capabilities and adds:
 
 - additional GA Admin/Data API coverage (pivot, batch, access reports, annotations, retention, sharing settings)
 - local request preflight helpers (`preview_report_request`, `check_report_compatibility`)

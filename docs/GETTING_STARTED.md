@@ -125,8 +125,8 @@ Start with low-cost discovery and validation:
 6. `preview_report_request` to validate and normalize a report payload without
    calling GA.
 7. `run_report` or `run_realtime_report` after the request shape is confirmed.
-8. `run_funnel_report` for user-journey progression, or
-   `run_conversions_report` for conversion, ROAS, and attribution questions.
+8. Sedna's `run_funnel_report` and `run_conversions_report` additions for
+   user-journey progression, conversion, ROAS, and attribution questions.
 
 The funnel and conversion tools use Google Analytics Data API v1alpha. Alpha
 contracts can change, and conversion reporting may not be enabled for every
