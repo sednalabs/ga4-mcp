@@ -18,12 +18,15 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 
 ## Verification Evidence
 
-Current PR evidence is provided by the hosted GitHub Actions runs for commit
-`3ca91af982efaee65263c553a65a3b1acf034be3`:
+Current PR evidence is provided by the hosted GitHub Actions run for commit
+`c813dd4572d94b0e4ec4010d7265adc65e36cddc`:
 
-- [Test And Tool Contract](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947145): pass. This run includes `cargo fmt --check`, `cargo test`, and the
-  `ga4-mcp` tool-inventory command.
-- [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140): pass.
+- [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29652538484): pass.
+
+The [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140)
+run is successful historical evidence for the previous commit
+`3ca91af982efaee65263c553a65a3b1acf034be3`; it is not exact-head coverage for
+the current PR.
 
 The tool schema snapshot was regenerated with the explicit binary target:
 

@@ -425,8 +425,8 @@ cargo fmt --all
 cargo check
 cargo test
 ./scripts/sql_policy_toolkit_conformance.sh
-cargo run -- --print-tools
-cargo run -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
+cargo run --bin ga4-mcp -- --print-tools
+cargo run --bin ga4-mcp -- --print-tool-schema > spec/tool_schema_snapshot.v1.json
 ```
 
 ### Live smoke verification (production-facing)
