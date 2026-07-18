@@ -231,6 +231,17 @@ struct ContractSummary {
     row_count_returned: Option<u64>,
     truncated: Option<bool>,
     next_cursor_present: Option<bool>,
+    subreports: Vec<ContractSubreportSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContractSubreportSummary {
+    subreport: String,
+    output_mode: Option<String>,
+    row_count_total: Option<u64>,
+    row_count_returned: Option<u64>,
+    truncated: Option<bool>,
+    next_cursor_present: Option<bool>,
 }
 
 fn emit_contract_observability(tool_name: &str, result: &CallToolResult) {
@@ -306,6 +317,43 @@ fn emit_contract_observability(tool_name: &str, result: &CallToolResult) {
         );
     }
 
+    for subreport in &summary.subreports {
+        emit_event(
+            Level::INFO,
+            "ga4_mcp.pagination.meta",
+            &context,
+            &[
+                safe_text("tool", tool_name),
+                safe_text("subreport", &subreport.subreport),
+                safe_text(
+                    "output_mode",
+                    subreport.output_mode.as_deref().unwrap_or("unknown"),
+                ),
+                safe_text(
+                    "row_count_total",
+                    subreport
+                        .row_count_total
+                        .map(|value| value.to_string())
+                        .as_deref()
+                        .unwrap_or("unknown"),
+                ),
+                safe_text(
+                    "row_count_returned",
+                    subreport
+                        .row_count_returned
+                        .map(|value| value.to_string())
+                        .as_deref()
+                        .unwrap_or("unknown"),
+                ),
+                safe_text("truncated", bool_label(subreport.truncated)),
+                safe_text(
+                    "next_cursor_present",
+                    bool_label(subreport.next_cursor_present),
+                ),
+            ],
+        );
+    }
+
     if summary.error_reason.as_deref() == Some("invalid_cursor") {
         emit_event(
             Level::WARN,
@@ -361,7 +409,61 @@ fn summarize_contract_payload(result: &CallToolResult) -> Option<ContractSummary
         next_cursor_present: meta
             .and_then(|value| value.get("next_cursor"))
             .map(|value| !value.is_null()),
+        subreports: summarize_subreport_pagination(meta),
     })
+}
+
+fn summarize_subreport_pagination(meta: Option<&Value>) -> Vec<ContractSubreportSummary> {
+    let Some(subreports) = meta
+        .and_then(|value| value.get("subreports"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+
+    let mut summaries = subreports
+        .iter()
+        .filter_map(|(label, value)| {
+            let object = value.as_object()?;
+            Some(ContractSubreportSummary {
+                subreport: safe_subreport_label(label),
+                output_mode: object
+                    .get("output_mode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                row_count_total: object.get("row_count_total").and_then(Value::as_u64),
+                row_count_returned: object.get("row_count_returned").and_then(Value::as_u64),
+                truncated: object.get("truncated").and_then(Value::as_bool),
+                // Funnel subreports do not support cursors. Emit an explicit
+                // false when the field is absent so operators can distinguish
+                // that contract from an unavailable/unknown value.
+                next_cursor_present: Some(
+                    object
+                        .get("next_cursor")
+                        .map(|value| !value.is_null())
+                        .unwrap_or(false),
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| left.subreport.cmp(&right.subreport));
+    summaries
+}
+
+fn safe_subreport_label(label: &str) -> String {
+    let mut safe = String::with_capacity(label.len().min(64));
+    for character in label.chars().take(64) {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+            safe.push(character);
+        } else {
+            safe.push('_');
+        }
+    }
+    if safe.is_empty() {
+        "unknown".to_string()
+    } else {
+        safe
+    }
 }
 
 fn bool_label(value: Option<bool>) -> &'static str {
@@ -436,6 +538,64 @@ mod tests {
         assert_eq!(summary.row_count_returned, Some(5));
         assert_eq!(summary.truncated, Some(true));
         assert_eq!(summary.next_cursor_present, Some(true));
+        assert!(summary.subreports.is_empty());
+    }
+
+    #[test]
+    fn summarize_contract_payload_extracts_nested_subreport_metadata() {
+        let result = CallToolResult::structured(json!({
+            "ok": true,
+            "data": {
+                "funnel_table": [],
+                "funnel_visualization": []
+            },
+            "meta": {
+                "output_mode": "rows",
+                "row_count_total_known": false,
+                "subreports": {
+                    "funnel_visualization": {
+                        "output_mode": "summary",
+                        "row_count_returned": 3,
+                        "truncated": false
+                    },
+                    "funnel_table": {
+                        "output_mode": "rows",
+                        "row_count_returned": 5,
+                        "truncated": true
+                    }
+                }
+            }
+        }));
+
+        let summary = summarize_contract_payload(&result).expect("summary should parse");
+        assert_eq!(
+            summary.subreports,
+            vec![
+                ContractSubreportSummary {
+                    subreport: "funnel_table".to_string(),
+                    output_mode: Some("rows".to_string()),
+                    row_count_total: None,
+                    row_count_returned: Some(5),
+                    truncated: Some(true),
+                    next_cursor_present: Some(false),
+                },
+                ContractSubreportSummary {
+                    subreport: "funnel_visualization".to_string(),
+                    output_mode: Some("summary".to_string()),
+                    row_count_total: None,
+                    row_count_returned: Some(3),
+                    truncated: Some(false),
+                    next_cursor_present: Some(false),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn safe_subreport_label_bounds_and_sanitizes_keys() {
+        assert_eq!(safe_subreport_label("funnel/table\n"), "funnel_table_");
+        assert_eq!(safe_subreport_label(""), "unknown");
+        assert_eq!(safe_subreport_label(&"x".repeat(80)).len(), 64);
     }
 
     #[test]

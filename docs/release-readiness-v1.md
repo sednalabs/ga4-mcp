@@ -18,15 +18,14 @@ Initial GA4 MCP rollout with Contract V1 full metadata and DuckDB scratchpad sur
 
 ## Verification Evidence
 
-Current PR evidence is provided by the hosted GitHub Actions run for commit
-`c813dd4572d94b0e4ec4010d7265adc65e36cddc`:
+The [PR checks page](https://github.com/sednalabs/ga4-mcp/pull/30/checks) is the
+authoritative source for final verification. The exact final head SHA and
+hosted run IDs are recorded in the release handoff and its Ops checkpoint;
+individual run links below are historical code-slice evidence and must not be
+read as the current PR head after later commits.
 
-- [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29652538484): pass.
-
-The [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140)
-run is successful historical evidence for the previous commit
-`3ca91af982efaee65263c553a65a3b1acf034be3`; it is not exact-head coverage for
-the current PR.
+- [Rust Validation](https://github.com/sednalabs/ga4-mcp/actions/runs/29652538484): pass for an earlier code slice.
+- [Rust Cobertura coverage](https://github.com/sednalabs/ga4-mcp/actions/runs/29645947140): pass for an earlier code slice.
 
 The tool schema snapshot was regenerated with the explicit binary target:
 
@@ -42,6 +41,9 @@ historical baseline evidence only, not current PR verification.
 ## Tool Inventory (from `spec/tool_schema_snapshot.v1.json`)
 
 - `get_account_summaries`
+- `ga4_get_started`
+- `ga4_auth_status`
+- `ga4_auth_login_command`
 - `get_account_data_sharing_settings`
 - `check_report_compatibility`
 - `get_custom_dimensions_and_metrics`

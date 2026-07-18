@@ -3414,7 +3414,16 @@ fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), Analy
             ));
         }
         match (&step.event, &step.filter_expression) {
-            (Some(event), None) if !event.trim().is_empty() => {}
+            (Some(event), None) if !event.trim().is_empty() => {
+                if event != event.trim() {
+                    return Err(AnalyticsError::invalid(
+                        "funnel_steps",
+                        format!(
+                            "funnel_steps[{idx}].event must not have leading or trailing whitespace"
+                        ),
+                    ));
+                }
+            }
             (None, Some(filter)) if filter.as_object().is_some_and(|object| !object.is_empty()) => {
             }
             (Some(_), Some(_)) => {
@@ -3502,6 +3511,12 @@ fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), Analy
                 "breakdown_dimension must not be empty",
             ));
         }
+        if breakdown.breakdown_dimension != breakdown.breakdown_dimension.trim() {
+            return Err(AnalyticsError::invalid(
+                "funnel_breakdown",
+                "breakdown_dimension must not have leading or trailing whitespace",
+            ));
+        }
         validate_optional_sublimit(
             "funnel_breakdown.limit",
             breakdown.limit,
@@ -3513,6 +3528,12 @@ fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), Analy
             return Err(AnalyticsError::invalid(
                 "funnel_next_action",
                 "next_action_dimension must not be empty",
+            ));
+        }
+        if next_action.next_action_dimension != next_action.next_action_dimension.trim() {
+            return Err(AnalyticsError::invalid(
+                "funnel_next_action",
+                "next_action_dimension must not have leading or trailing whitespace",
             ));
         }
         validate_optional_sublimit(
@@ -7306,6 +7327,58 @@ mod tests {
             .expect_err("breakdown limit above Google maximum must fail");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("between 1 and 15"));
+    }
+
+    #[test]
+    fn validate_funnel_report_rejects_edge_whitespace_but_preserves_internal_spaces() {
+        let mut event_args = valid_funnel_report_args();
+        event_args.funnel_steps[0].event = Some(" page view".to_string());
+        let err = validate_funnel_report_inputs(&event_args)
+            .expect_err("event shorthand with leading whitespace must fail");
+        assert!(
+            err.to_string()
+                .contains("event must not have leading or trailing whitespace")
+        );
+
+        let mut breakdown_args = valid_funnel_report_args();
+        breakdown_args
+            .funnel_breakdown
+            .as_mut()
+            .expect("breakdown")
+            .breakdown_dimension = " device category".to_string();
+        let err = validate_funnel_report_inputs(&breakdown_args)
+            .expect_err("breakdown dimension with leading whitespace must fail");
+        assert!(
+            err.to_string()
+                .contains("breakdown_dimension must not have leading or trailing whitespace")
+        );
+
+        let mut next_action_args = valid_funnel_report_args();
+        next_action_args
+            .funnel_next_action
+            .as_mut()
+            .expect("next action")
+            .next_action_dimension = "eventName ".to_string();
+        let err = validate_funnel_report_inputs(&next_action_args)
+            .expect_err("next-action dimension with trailing whitespace must fail");
+        assert!(
+            err.to_string()
+                .contains("next_action_dimension must not have leading or trailing whitespace")
+        );
+
+        let mut internal_space_args = valid_funnel_report_args();
+        internal_space_args.funnel_steps[0].event = Some("page view".to_string());
+        internal_space_args
+            .funnel_breakdown
+            .as_mut()
+            .expect("breakdown")
+            .breakdown_dimension = "device category".to_string();
+        internal_space_args
+            .funnel_next_action
+            .as_mut()
+            .expect("next action")
+            .next_action_dimension = "event name".to_string();
+        assert!(validate_funnel_report_inputs(&internal_space_args).is_ok());
     }
 
     #[test]
