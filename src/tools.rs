@@ -40,6 +40,7 @@ use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, Scratchpad
 use crate::server::AnalyticsMcp;
 
 const MAX_REPORT_LIMIT: u64 = 250_000;
+const MAX_FUNNEL_DURATION_SECONDS: u64 = 315_576_000_000;
 const MAX_FUNNEL_STEPS: usize = 10;
 const MAX_FUNNEL_SEGMENTS: usize = 4;
 const MAX_CONVERSION_ACTIONS: usize = 50;
@@ -1661,26 +1662,17 @@ impl AnalyticsMcp {
             }
         };
 
-        let mut conversion_spec = json!({
-            "conversion_actions": args.conversion_spec.conversion_actions,
-        });
-        if let Some(attribution_model) = args.conversion_spec.attribution_model {
-            conversion_spec["attribution_model"] = json!(attribution_model.as_str());
+        let request = build_conversions_report_request(&args, effective_limit, effective_offset);
+        if let Err(err) = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(
+                &args,
+                effective_limit,
+                effective_offset,
+            ),
+        ) {
+            return Ok(contract_error(err, started));
         }
-        let request = RunConversionsReportRequest {
-            property_id: args.property_id,
-            date_ranges: args.date_ranges,
-            dimensions: args.dimensions,
-            metrics: args.metrics,
-            conversion_spec,
-            dimension_filter: args.dimension_filter,
-            metric_filter: args.metric_filter,
-            order_bys: args.order_bys,
-            limit: Some(effective_limit),
-            offset: Some(effective_offset),
-            currency_code: args.currency_code,
-            return_property_quota: args.return_property_quota,
-        };
         let response_options = TabularResponseOptions {
             query_hash,
             output_mode: args.output_mode.unwrap_or(TabularOutputMode::Rows).into(),
@@ -3410,41 +3402,44 @@ fn validate_conversions_report_inputs(
             ));
         }
     }
-    let mut provider_payload = json!({
-        "date_ranges": args
-            .date_ranges
-            .iter()
-            .cloned()
-            .map(snake_to_camel_json)
-            .collect::<Vec<_>>(),
-        "dimensions": args
-            .dimensions
-            .iter()
-            .map(|name| json!({ "name": name.trim() }))
-            .collect::<Vec<_>>(),
-        "metrics": args
-            .metrics
-            .iter()
-            .map(|name| json!({ "name": name.trim() }))
-            .collect::<Vec<_>>(),
-        "conversion_spec": &args.conversion_spec,
-        "dimension_filter": &args.dimension_filter,
-        "metric_filter": &args.metric_filter,
-        "order_bys": &args.order_bys,
-        "currency_code": args.currency_code.as_deref().map(str::trim),
-        "return_property_quota": args.return_property_quota,
-    });
-    if let Some(limit) = args.limit {
-        provider_payload["limit"] = json!(limit.to_string());
-    }
-    if let Some(offset) = args.offset {
-        provider_payload["offset"] = json!(offset.to_string());
-    }
-    validate_provider_boundary_json_size(
-        "provider_payload",
-        &snake_to_camel_json(provider_payload),
-    )?;
     Ok(())
+}
+
+fn build_conversions_report_request(
+    args: &RunConversionsReportArgs,
+    effective_limit: u64,
+    effective_offset: u64,
+) -> RunConversionsReportRequest {
+    let mut conversion_spec = json!({
+        "conversion_actions": args.conversion_spec.conversion_actions,
+    });
+    if let Some(attribution_model) = args.conversion_spec.attribution_model {
+        conversion_spec["attribution_model"] = json!(attribution_model.as_str());
+    }
+    RunConversionsReportRequest {
+        property_id: args.property_id.clone(),
+        date_ranges: args.date_ranges.clone(),
+        dimensions: args.dimensions.clone(),
+        metrics: args.metrics.clone(),
+        conversion_spec,
+        dimension_filter: args.dimension_filter.clone(),
+        metric_filter: args.metric_filter.clone(),
+        order_bys: args.order_bys.clone(),
+        limit: Some(effective_limit),
+        offset: Some(effective_offset),
+        currency_code: args.currency_code.clone(),
+        return_property_quota: args.return_property_quota,
+    }
+}
+
+fn normalized_conversions_provider_boundary_payload(
+    args: &RunConversionsReportArgs,
+    effective_limit: u64,
+    effective_offset: u64,
+) -> Value {
+    Value::Object(build_run_conversions_report_payload(
+        build_conversions_report_request(args, effective_limit, effective_offset),
+    ))
 }
 
 fn validate_funnel_report_inputs(args: &RunFunnelReportArgs) -> Result<(), AnalyticsError> {
@@ -3687,12 +3682,20 @@ fn is_valid_funnel_duration(value: &str) -> bool {
     if seconds.is_empty() || !seconds.chars().all(|ch| ch.is_ascii_digit()) {
         return false;
     }
+    let Ok(seconds_value) = seconds.parse::<u64>() else {
+        return false;
+    };
+    if seconds_value > MAX_FUNNEL_DURATION_SECONDS {
+        return false;
+    }
     match (parts.next(), parts.next()) {
         (None, None) => true,
         (Some(fraction), None) => {
             !fraction.is_empty()
                 && fraction.len() <= 9
                 && fraction.chars().all(|ch| ch.is_ascii_digit())
+                && (seconds_value < MAX_FUNNEL_DURATION_SECONDS
+                    || fraction.chars().all(|ch| ch == '0'))
         }
         _ => false,
     }
@@ -7555,8 +7558,12 @@ mod tests {
                 "string_filter": { "value": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES) }
             }
         }));
-        let err = validate_conversions_report_inputs(&args)
-            .expect_err("provider-boundary conversion JSON must be bounded");
+        validate_conversions_report_inputs(&args).expect("semantic conversion validation");
+        let err = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(&args, 50, 0),
+        )
+        .expect_err("provider-boundary conversion JSON must be bounded");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("combined provider-boundary JSON"));
     }
@@ -7568,10 +7575,39 @@ mod tests {
             "start_date": "x".repeat(MAX_PROVIDER_BOUNDARY_JSON_BYTES),
             "end_date": "2026-04-30",
         })];
-        let err = validate_conversions_report_inputs(&args)
-            .expect_err("provider-boundary conversion date-range JSON must be bounded");
+        validate_conversions_report_inputs(&args).expect("semantic conversion validation");
+        let err = validate_provider_boundary_json_size(
+            "provider_payload",
+            &normalized_conversions_provider_boundary_payload(&args, 50, 0),
+        )
+        .expect_err("provider-boundary conversion date-range JSON must be bounded");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("combined provider-boundary JSON"));
+    }
+
+    #[test]
+    fn normalized_conversions_provider_payload_matches_outbound_shape_and_effective_window() {
+        let mut args = valid_conversions_report_args();
+        args.limit = Some(100);
+        args.max_rows = Some(25);
+        args.offset = Some(10);
+        args.cursor = Some("v1:hash:20".to_string());
+        let payload = normalized_conversions_provider_boundary_payload(&args, 25, 20);
+
+        assert_eq!(payload["dateRanges"][0]["startDate"], json!("2026-04-01"));
+        assert_eq!(payload["dimensions"][0]["name"], json!("campaignName"));
+        assert_eq!(
+            payload["conversionSpec"]["conversionActions"][0],
+            json!("conversionActions/1234")
+        );
+        assert_eq!(
+            payload["conversionSpec"]["attributionModel"],
+            json!("DATA_DRIVEN")
+        );
+        assert_eq!(payload["limit"], json!("25"));
+        assert_eq!(payload["offset"], json!("20"));
+        assert!(payload.get("dimensionFilter").is_none());
+        assert!(payload.get("metricFilter").is_none());
     }
 
     #[test]
@@ -7771,6 +7807,34 @@ mod tests {
             .expect_err("step duration must use protobuf duration syntax");
         assert_eq!(err.code(), "INVALID_PARAMS");
         assert!(err.to_string().contains("protobuf duration"));
+    }
+
+    #[test]
+    fn validate_funnel_report_enforces_google_duration_bounds() {
+        let valid_values = [
+            format!("{MAX_FUNNEL_DURATION_SECONDS}s"),
+            format!("{MAX_FUNNEL_DURATION_SECONDS}.000000000s"),
+        ];
+        for value in valid_values {
+            let mut args = valid_funnel_report_args();
+            args.funnel_steps[1].within_duration_from_prior_step = Some(value);
+            assert!(
+                validate_funnel_report_inputs(&args).is_ok(),
+                "maximum protobuf duration should be accepted"
+            );
+        }
+
+        for value in [
+            format!("{}s", MAX_FUNNEL_DURATION_SECONDS + 1),
+            format!("{MAX_FUNNEL_DURATION_SECONDS}.000000001s"),
+        ] {
+            let mut args = valid_funnel_report_args();
+            args.funnel_steps[1].within_duration_from_prior_step = Some(value);
+            let err = validate_funnel_report_inputs(&args)
+                .expect_err("duration above Google's protobuf bound must fail");
+            assert_eq!(err.code(), "INVALID_PARAMS");
+            assert!(err.to_string().contains("protobuf duration"));
+        }
     }
 
     #[test]
