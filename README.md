@@ -33,6 +33,20 @@ The server also includes:
 - profile-gated DuckDB scratchpad tools (`read_only` vs `scratchpad`)
 - streamable HTTP transport with host/IP/TLS guardrails and optional inbound OAuth resource-server mode
 
+## Hosted Linux Artifacts
+
+The `linux-artifact` GitHub Actions workflow builds and tests native Linux
+artifacts on GitHub-hosted x86_64 and aarch64 runners. Each architecture bundle
+contains `ga4-mcp`, `ga4-mcp-http`, `ga4-local-user-setup.sh`, and a
+`SHA256SUMS` manifest covering all three files.
+
+Download the bundle for the intended architecture from the workflow run and
+verify it before use:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
 ## Current Tool Surface
 
 ### Auth and setup helpers
