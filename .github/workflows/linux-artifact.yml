@@ -10,9 +10,17 @@ permissions:
   contents: read
 
 jobs:
-  build-linux-x86_64:
-    name: Build Linux x86_64 binaries
-    runs-on: ubuntu-24.04
+  build-linux:
+    name: Build Linux ${{ matrix.arch }} binaries
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -29,6 +37,8 @@ jobs:
       - name: Cache cargo artifacts
         # swatinem/rust-cache v2
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: linux-${{ matrix.arch }}
 
       - name: Format check
         shell: bash
@@ -73,7 +83,7 @@ jobs:
         # actions/upload-artifact v7
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ga4-mcp-linux-x86_64
+          name: ga4-mcp-linux-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
           retention-days: 1
