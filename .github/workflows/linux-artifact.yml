@@ -5,14 +5,22 @@ on:
     branches:
       - "tmp/ga4-linux-artifact-*"
   workflow_dispatch:
+    inputs:
+      architecture:
+        description: Native Linux artifact architecture
+        type: choice
+        default: x86_64
+        options:
+          - x86_64
+          - aarch64
 
 permissions:
   contents: read
 
 jobs:
-  build-linux-x86_64:
-    name: Build Linux x86_64 binaries
-    runs-on: ubuntu-24.04
+  build-linux:
+    name: Build Linux ${{ inputs.architecture || 'x86_64' }} binaries
+    runs-on: ${{ inputs.architecture == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -21,6 +29,11 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Verify native architecture
+        env:
+          EXPECTED_ARCHITECTURE: ${{ inputs.architecture || 'x86_64' }}
+        run: test "$(uname -m)" = "$EXPECTED_ARCHITECTURE"
 
       - name: Install Rust toolchain
         # dtolnay/rust-toolchain stable
@@ -73,7 +86,7 @@ jobs:
         # actions/upload-artifact v7
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ga4-mcp-linux-x86_64
+          name: ga4-mcp-linux-${{ inputs.architecture || 'x86_64' }}
           path: dist/
           if-no-files-found: error
           retention-days: 1

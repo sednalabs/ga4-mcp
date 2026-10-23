@@ -12,6 +12,16 @@ the default read-only tool profile.
 - Google Analytics Admin API and Google Analytics Data API enabled in the
   Google Cloud project used for OAuth or quota.
 
+## Native Linux artifacts
+
+The `linux-artifact` GitHub Actions workflow builds tested release binaries and
+checksums on a native GitHub-hosted Linux runner. Dispatch it with architecture
+`x86_64` (the default) or `aarch64` for ARM64. The selected runner must report the
+same native architecture before the build proceeds. Download the matching
+`ga4-mcp-linux-<architecture>` artifact from that exact successful run and verify
+`SHA256SUMS` before installation. Artifact retention remains one day. This does
+not supply Google credentials or authorize account access.
+
 ## Choose an Auth Mode
 
 All modes require the Google Analytics read-only scope:
