@@ -306,7 +306,8 @@ If you enable inbound OAuth (`GA4_MCP_AUTH_ENABLED=1`), auth config is fail-clos
 
 Notes:
 
-- Ingest tools auto-page upstream GA responses.
+- `scratchpad_ingest_report` auto-pages standard GA report responses.
+- `scratchpad_ingest_realtime_report` makes one bounded request because the GA Realtime API does not support offset pagination; its completion metadata identifies a truncated result.
 - `max_rows` on ingest controls upstream page size; `limit` caps total ingested rows.
 - `append=true` reuses an existing table without consuming another table slot, but schema/type compatibility is enforced.
 - `scratchpad_drop_table` reclaims both table slot and row quota immediately.

@@ -539,6 +539,7 @@ pub struct RunRealtimeReportArgs {
     pub order_bys: Option<Vec<Value>>,
     #[serde(default)]
     pub limit: Option<u64>,
+    /// Realtime API requests accept a result limit but do not support offset pagination.
     #[serde(default)]
     pub offset: Option<u64>,
     #[serde(default = "default_true")]
@@ -546,7 +547,7 @@ pub struct RunRealtimeReportArgs {
     /// Optional response row cap for Contract V1 tabular payloads.
     #[serde(default)]
     pub max_rows: Option<usize>,
-    /// Opaque pagination cursor from `meta.next_cursor`.
+    /// Realtime reports do not return a pagination cursor because the upstream API has no offset field.
     #[serde(default)]
     pub cursor: Option<String>,
     /// Tabular output shape for the response payload.
@@ -885,6 +886,7 @@ struct TabularResponseOptions {
     summary_only: bool,
     max_cell_chars: Option<usize>,
     cursor_offset: u64,
+    supports_pagination: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1426,6 +1428,7 @@ impl AnalyticsMcp {
             summary_only: args.summary_only,
             max_cell_chars: args.max_cell_chars,
             cursor_offset: effective_offset,
+            supports_pagination: true,
         };
 
         match self
@@ -1514,6 +1517,7 @@ impl AnalyticsMcp {
             summary_only: args.summary_only,
             max_cell_chars: args.max_cell_chars,
             cursor_offset: effective_offset,
+            supports_pagination: true,
         };
 
         match self
@@ -1604,6 +1608,7 @@ impl AnalyticsMcp {
             summary_only: args.summary_only,
             max_cell_chars: args.max_cell_chars,
             cursor_offset: effective_offset,
+            supports_pagination: true,
         };
 
         match self.client.run_report(request).await {
@@ -1692,6 +1697,7 @@ impl AnalyticsMcp {
             summary_only: args.summary_only,
             max_cell_chars: args.max_cell_chars,
             cursor_offset: effective_offset,
+            supports_pagination: true,
         };
 
         match self.client.run_conversions_report(request).await {
@@ -1859,13 +1865,16 @@ impl AnalyticsMcp {
     /// Run a GA4 realtime report request.
     #[tool(
         name = "run_realtime_report",
-        description = "Runs a Google Analytics realtime report using the Data API."
+        description = "Runs a Google Analytics realtime report using the Data API. Realtime results support a bounded row limit but not offset or cursor pagination."
     )]
     async fn run_realtime_report(
         &self,
         Parameters(args): Parameters<RunRealtimeReportArgs>,
     ) -> Result<CallToolResult, crate::McpError> {
         let started = Instant::now();
+        if let Err(err) = validate_realtime_cursor(args.cursor.as_deref()) {
+            return Ok(contract_error(err, started));
+        }
         if let Err(err) =
             validate_realtime_inputs(&args.dimensions, &args.metrics, args.limit, args.offset)
         {
@@ -1913,7 +1922,6 @@ impl AnalyticsMcp {
             metric_filter: args.metric_filter,
             order_bys: args.order_bys,
             limit: Some(effective_limit),
-            offset: Some(effective_offset),
             return_property_quota: args.return_property_quota,
         };
 
@@ -1923,6 +1931,7 @@ impl AnalyticsMcp {
             summary_only: args.summary_only,
             max_cell_chars: args.max_cell_chars,
             cursor_offset: effective_offset,
+            supports_pagination: false,
         };
 
         match self.client.run_realtime_report(request).await {
@@ -2008,6 +2017,7 @@ impl AnalyticsMcp {
             summary_only: args.summary_only,
             max_cell_chars: args.max_cell_chars,
             cursor_offset: effective_offset,
+            supports_pagination: true,
         };
 
         match self.client.run_pivot_report(request).await {
@@ -2119,6 +2129,7 @@ impl AnalyticsMcp {
                 summary_only: request_args.summary_only,
                 max_cell_chars: request_args.max_cell_chars,
                 cursor_offset: effective_offset,
+                supports_pagination: true,
             });
         }
 
@@ -2617,21 +2628,15 @@ impl AnalyticsMcp {
     /// Materialize GA realtime report output into a scratchpad DuckDB table.
     #[tool(
         name = "scratchpad_ingest_realtime_report",
-        description = "Runs a GA realtime report and ingests the returned rows into a normalized scratchpad DuckDB table."
+        description = "Runs one bounded GA realtime report request and ingests its returned rows into a normalized scratchpad DuckDB table. Realtime API offset pagination is not supported."
     )]
     async fn scratchpad_ingest_realtime_report(
         &self,
         Parameters(args): Parameters<ScratchpadIngestRealtimeArgs>,
     ) -> Result<CallToolResult, crate::McpError> {
         let started = Instant::now();
-        if args.realtime.cursor.is_some() {
-            return Ok(contract_error(
-                AnalyticsError::invalid(
-                    "cursor",
-                    "cursor is not supported for scratchpad_ingest_realtime_report; use offset/limit",
-                ),
-                started,
-            ));
+        if let Err(err) = validate_realtime_cursor(args.realtime.cursor.as_deref()) {
+            return Ok(contract_error(err, started));
         }
         if args.realtime.summary_only {
             return Ok(contract_error(
@@ -3343,7 +3348,23 @@ fn validate_realtime_inputs(
     offset: Option<u64>,
 ) -> Result<(), AnalyticsError> {
     validate_metric_lists(dimensions, metrics)?;
-    validate_limit_offset(limit, offset)
+    if offset.unwrap_or(0) > 0 {
+        return Err(AnalyticsError::invalid(
+            "offset",
+            "the Google Analytics Realtime API does not support offset pagination; request offset 0",
+        ));
+    }
+    validate_limit_offset(limit, Some(0))
+}
+
+fn validate_realtime_cursor(cursor: Option<&str>) -> Result<(), AnalyticsError> {
+    if cursor.is_some() {
+        return Err(AnalyticsError::invalid(
+            "cursor",
+            "the Google Analytics Realtime API does not support cursor pagination; run a new bounded report",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_report_inputs(
@@ -4283,99 +4304,41 @@ async fn collect_run_realtime_projection_for_ingest(
 ) -> Result<(GaTabularProjection, IngestPaginationStats), AnalyticsError> {
     let page_size = resolve_ingest_page_size(request_args.max_rows, request_args.limit);
     let requested_limit = request_args.limit;
-    let initial_offset = request_args.offset.unwrap_or(0);
-    let mut next_offset = initial_offset;
-    let mut remaining = requested_limit;
-    let mut pages_fetched = 0usize;
-    let mut collected_rows = Vec::new();
-    let mut columns: Option<Vec<contract::ColumnMeta>> = None;
-    let mut ga_meta: Option<Value> = None;
-    let mut row_count_total = 0usize;
-
-    loop {
-        if pages_fetched >= MAX_SCRATCHPAD_INGEST_PAGES {
-            return Err(AnalyticsError::scratchpad_limit(
-                "limit",
-                format!(
-                    "ingest requires more than {MAX_SCRATCHPAD_INGEST_PAGES} API pages; narrow dimensions/filters or set a lower limit"
-                ),
-            ));
-        }
-
-        let request_limit = match remaining {
-            Some(0) => {
-                break;
-            }
-            Some(value) => value.min(page_size),
-            None => page_size,
-        };
-        if request_limit == 0 {
-            break;
-        }
-
-        let request = RunRealtimeReportRequest {
-            property_id: request_args.property_id.clone(),
-            dimensions: request_args.dimensions.clone(),
-            metrics: request_args.metrics.clone(),
-            dimension_filter: request_args.dimension_filter.clone(),
-            metric_filter: request_args.metric_filter.clone(),
-            order_bys: request_args.order_bys.clone(),
-            limit: Some(request_limit),
-            offset: Some(next_offset),
-            return_property_quota: request_args.return_property_quota,
-        };
-        let data = server.client.run_realtime_report(request).await?;
-        let projection = project_ga_tabular_response(&data, "run_realtime_report");
-        pages_fetched = pages_fetched.saturating_add(1);
-        if columns.is_none() {
-            columns = Some(projection.columns.clone());
-        }
-        if ga_meta.is_none() {
-            ga_meta = Some(projection.ga_meta.clone());
-        }
-        row_count_total = row_count_total.max(projection.row_count_total);
-        let page_rows = projection.rows;
-        let row_count_returned = page_rows.len();
-
-        if collected_rows.len().saturating_add(row_count_returned) > MAX_SCRATCHPAD_INGEST_ROWS {
-            return Err(AnalyticsError::scratchpad_limit(
-                "rows",
-                format!(
-                    "ingest would exceed {MAX_SCRATCHPAD_INGEST_ROWS} rows; narrow dimensions/filters or set a lower limit"
-                ),
-            ));
-        }
-
-        collected_rows.extend(page_rows);
-        next_offset = next_offset.saturating_add(row_count_returned as u64);
-        if let Some(value) = remaining.as_mut() {
-            *value = value.saturating_sub(row_count_returned as u64);
-        }
-
-        let reached_upstream_end = (next_offset as usize) >= row_count_total;
-        let short_page = (row_count_returned as u64) < request_limit;
-        let exhausted_requested_limit = remaining == Some(0);
-        if row_count_returned == 0
-            || reached_upstream_end
-            || short_page
-            || exhausted_requested_limit
-        {
-            break;
-        }
+    let request_limit = requested_limit
+        .map(|value| value.min(page_size))
+        .unwrap_or(page_size);
+    let request = RunRealtimeReportRequest {
+        property_id: request_args.property_id.clone(),
+        dimensions: request_args.dimensions.clone(),
+        metrics: request_args.metrics.clone(),
+        dimension_filter: request_args.dimension_filter.clone(),
+        metric_filter: request_args.metric_filter.clone(),
+        order_bys: request_args.order_bys.clone(),
+        limit: Some(request_limit),
+        return_property_quota: request_args.return_property_quota,
+    };
+    let data = server.client.run_realtime_report(request).await?;
+    let projection = project_ga_tabular_response(&data, "run_realtime_report");
+    if projection.rows.len() > MAX_SCRATCHPAD_INGEST_ROWS {
+        return Err(AnalyticsError::scratchpad_limit(
+            "rows",
+            format!(
+                "ingest would exceed {MAX_SCRATCHPAD_INGEST_ROWS} rows; narrow dimensions/filters or set a lower limit"
+            ),
+        ));
     }
-
-    row_count_total = row_count_total.max(collected_rows.len());
-    let complete = remaining == Some(0) || (next_offset as usize) >= row_count_total;
+    let returned = projection.rows.len() as u64;
+    let complete = returned >= projection.row_count_total as u64;
     let pagination = IngestPaginationStats {
-        pages_fetched,
+        pages_fetched: 1,
         page_size,
-        initial_offset,
-        final_offset: next_offset,
+        initial_offset: 0,
+        final_offset: returned,
         requested_limit,
         complete,
     };
 
-    let mut ga_meta = ga_meta.unwrap_or_else(|| json!({}));
+    let mut ga_meta = projection.ga_meta.clone();
     if let Value::Object(ref mut map) = ga_meta {
         map.insert(
             "ingest_pagination".to_string(),
@@ -4392,9 +4355,9 @@ async fn collect_run_realtime_projection_for_ingest(
 
     Ok((
         GaTabularProjection {
-            rows: collected_rows,
-            row_count_total,
-            columns: columns.unwrap_or_default(),
+            rows: projection.rows,
+            row_count_total: projection.row_count_total,
+            columns: projection.columns,
             ga_meta,
         },
         pagination,
@@ -6366,11 +6329,13 @@ fn ga_projection_payload_and_meta(
         options.max_cell_chars,
     );
     tabular_meta.query_hash = Some(options.query_hash);
-    let next_offset = options
-        .cursor_offset
-        .saturating_add(tabular_meta.row_count_returned as u64);
-    tabular_meta.next_cursor =
-        if tabular_meta.row_count_returned > 0 && next_offset < projection.row_count_total as u64 {
+    if options.supports_pagination {
+        let next_offset = options
+            .cursor_offset
+            .saturating_add(tabular_meta.row_count_returned as u64);
+        tabular_meta.next_cursor = if tabular_meta.row_count_returned > 0
+            && next_offset < projection.row_count_total as u64
+        {
             Some(encode_cursor(
                 tabular_meta.query_hash.as_deref().unwrap_or_default(),
                 next_offset,
@@ -6378,6 +6343,17 @@ fn ga_projection_payload_and_meta(
         } else {
             None
         };
+    } else {
+        tabular_meta.next_cursor = None;
+        tabular_meta.query_hints = if tabular_meta.truncated {
+            Some(vec![
+                "Realtime reports do not support offset pagination; narrow the query or raise its limit"
+                    .to_string(),
+            ])
+        } else {
+            None
+        };
+    }
 
     let mut meta = serde_json::to_value(&tabular_meta).unwrap_or_else(|_| json!({}));
     if let Value::Object(ref mut map) = meta {
@@ -7568,6 +7544,33 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn validate_realtime_rejects_nonzero_offset() {
+        let err = validate_realtime_inputs(
+            &["country".to_string()],
+            &["activeUsers".to_string()],
+            Some(100),
+            Some(1),
+        )
+        .expect_err("Realtime API does not accept offset pagination");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(
+            err.to_string()
+                .contains("does not support offset pagination")
+        );
+    }
+
+    #[test]
+    fn validate_realtime_rejects_cursor_pagination() {
+        let err = validate_realtime_cursor(Some("v1:query:10"))
+            .expect_err("Realtime API does not accept cursor pagination");
+        assert_eq!(err.code(), "INVALID_PARAMS");
+        assert!(
+            err.to_string()
+                .contains("does not support cursor pagination")
+        );
+    }
+
     fn valid_conversions_report_args() -> RunConversionsReportArgs {
         RunConversionsReportArgs {
             property_id: PropertyId::Number(1234),
@@ -8487,6 +8490,39 @@ mod tests {
     }
 
     #[test]
+    fn realtime_projection_reports_truncation_without_a_false_pagination_cursor() {
+        let projection = GaTabularProjection {
+            rows: vec![Map::from_iter([(
+                "eventName".to_string(),
+                json!("page_view"),
+            )])],
+            row_count_total: 2,
+            columns: vec![contract::ColumnMeta::new("eventName")],
+            ga_meta: json!({}),
+        };
+        let (_payload, meta) = ga_projection_payload_and_meta(
+            projection,
+            TabularResponseOptions {
+                query_hash: "realtime-query".to_string(),
+                output_mode: contract::OutputMode::Rows,
+                summary_only: false,
+                max_cell_chars: None,
+                cursor_offset: 0,
+                supports_pagination: false,
+            },
+        );
+
+        assert_eq!(meta["truncated"], json!(true));
+        assert_eq!(meta["next_cursor"], Value::Null);
+        assert_eq!(
+            meta["query_hints"][0],
+            json!(
+                "Realtime reports do not support offset pagination; narrow the query or raise its limit"
+            )
+        );
+    }
+
+    #[test]
     fn conversion_projection_applies_effective_local_response_cap() {
         let response = json!({
             "dimensionHeaders": [{ "name": "campaignName" }],
@@ -8509,6 +8545,7 @@ mod tests {
                 summary_only: false,
                 max_cell_chars: None,
                 cursor_offset: 0,
+                supports_pagination: true,
             },
             Some(2),
         );
@@ -8607,6 +8644,7 @@ mod tests {
                 summary_only: false,
                 max_cell_chars: None,
                 cursor_offset: 2,
+                supports_pagination: true,
             },
         );
         assert_eq!(empty_meta.get("next_cursor"), Some(&Value::Null));
@@ -8625,6 +8663,7 @@ mod tests {
                 summary_only: false,
                 max_cell_chars: None,
                 cursor_offset: 1,
+                supports_pagination: true,
             },
         );
         assert_eq!(out_of_range_meta.get("next_cursor"), Some(&Value::Null));
