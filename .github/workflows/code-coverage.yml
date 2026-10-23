@@ -23,7 +23,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      code-quality: write
       pull-requests: read
     steps:
       - name: Checkout repository
@@ -52,14 +51,6 @@ jobs:
           mkdir -p coverage
           cargo llvm-cov --workspace --all-targets --all-features \
             --cobertura --output-path coverage/rust.xml
-
-      - name: Upload Rust coverage to GitHub Code Quality
-        # actions/upload-code-coverage v1
-        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3
-        with:
-          file: coverage/rust.xml
-          language: Rust
-          label: code-coverage/rust
 
       - name: Upload Cobertura report
         # actions/upload-artifact v7
