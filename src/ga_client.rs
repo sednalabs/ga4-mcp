@@ -187,7 +187,6 @@ pub struct RunRealtimeReportRequest {
     pub metric_filter: Option<Value>,
     pub order_bys: Option<Vec<Value>>,
     pub limit: Option<u64>,
-    pub offset: Option<u64>,
     pub return_property_quota: bool,
 }
 
@@ -539,44 +538,8 @@ impl AnalyticsApiClient {
         &self,
         request: RunRealtimeReportRequest,
     ) -> Result<Value, AnalyticsError> {
-        let property = request.property_id.to_resource_name()?;
-        let mut payload = Map::new();
-        payload.insert(
-            "dimensions".to_string(),
-            Value::Array(as_named_entries(&request.dimensions)),
-        );
-        payload.insert(
-            "metrics".to_string(),
-            Value::Array(as_named_entries(&request.metrics)),
-        );
-        payload.insert(
-            "returnPropertyQuota".to_string(),
-            Value::Bool(request.return_property_quota),
-        );
-        if let Some(filter) = request.dimension_filter {
-            payload.insert("dimensionFilter".to_string(), snake_to_camel_json(filter));
-        }
-        if let Some(filter) = request.metric_filter {
-            payload.insert("metricFilter".to_string(), snake_to_camel_json(filter));
-        }
-        if let Some(order_bys) = request.order_bys {
-            payload.insert(
-                "orderBys".to_string(),
-                Value::Array(order_bys.into_iter().map(snake_to_camel_json).collect()),
-            );
-        }
-        if let Some(limit) = request.limit {
-            payload.insert("limit".to_string(), Value::String(limit.to_string()));
-        }
-        if let Some(offset) = request.offset {
-            payload.insert("offset".to_string(), Value::String(offset.to_string()));
-        }
-
-        self.post_json(
-            &format!("{}/v1beta/{property}:runRealtimeReport", self.data_base_url),
-            Value::Object(payload),
-        )
-        .await
+        let (url, payload) = build_run_realtime_report_request(&self.data_base_url, request)?;
+        self.post_json(&url, payload).await
     }
 
     pub async fn run_pivot_report(
@@ -1545,6 +1508,46 @@ pub(crate) fn snake_to_camel_json(value: Value) -> Value {
     }
 }
 
+fn build_run_realtime_report_request(
+    data_base_url: &str,
+    request: RunRealtimeReportRequest,
+) -> Result<(String, Value), AnalyticsError> {
+    let property = request.property_id.to_resource_name()?;
+    let mut payload = Map::new();
+    payload.insert(
+        "dimensions".to_string(),
+        Value::Array(as_named_entries(&request.dimensions)),
+    );
+    payload.insert(
+        "metrics".to_string(),
+        Value::Array(as_named_entries(&request.metrics)),
+    );
+    payload.insert(
+        "returnPropertyQuota".to_string(),
+        Value::Bool(request.return_property_quota),
+    );
+    if let Some(filter) = request.dimension_filter {
+        payload.insert("dimensionFilter".to_string(), snake_to_camel_json(filter));
+    }
+    if let Some(filter) = request.metric_filter {
+        payload.insert("metricFilter".to_string(), snake_to_camel_json(filter));
+    }
+    if let Some(order_bys) = request.order_bys {
+        payload.insert(
+            "orderBys".to_string(),
+            Value::Array(order_bys.into_iter().map(snake_to_camel_json).collect()),
+        );
+    }
+    if let Some(limit) = request.limit {
+        payload.insert("limit".to_string(), Value::String(limit.to_string()));
+    }
+
+    Ok((
+        format!("{data_base_url}/v1beta/{property}:runRealtimeReport"),
+        Value::Object(payload),
+    ))
+}
+
 fn snake_key_to_camel(key: &str) -> String {
     if !key.contains('_') {
         return key.to_string();
@@ -1693,6 +1696,50 @@ mod tests {
                 .and_then(|v| v.get("andGroup"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn realtime_request_matches_google_schema_without_offset() {
+        let (url, payload) = build_run_realtime_report_request(
+            "https://analyticsdata.googleapis.com",
+            RunRealtimeReportRequest {
+                property_id: PropertyId::Number(1234),
+                dimensions: vec!["eventName".to_string()],
+                metrics: vec!["eventCount".to_string()],
+                dimension_filter: Some(json!({
+                    "filter": {
+                        "field_name": "eventName",
+                        "string_filter": { "match_type": "EXACT", "value": "page_view" }
+                    }
+                })),
+                metric_filter: None,
+                order_bys: None,
+                limit: Some(25),
+                return_property_quota: true,
+            },
+        )
+        .expect("provider request should build");
+
+        assert_eq!(
+            url,
+            "https://analyticsdata.googleapis.com/v1beta/properties/1234:runRealtimeReport"
+        );
+        assert_eq!(
+            payload,
+            json!({
+                "dimensions": [{ "name": "eventName" }],
+                "metrics": [{ "name": "eventCount" }],
+                "dimensionFilter": {
+                    "filter": {
+                        "fieldName": "eventName",
+                        "stringFilter": { "matchType": "EXACT", "value": "page_view" }
+                    }
+                },
+                "limit": "25",
+                "returnPropertyQuota": true
+            })
+        );
+        assert!(payload.get("offset").is_none());
     }
 
     #[test]

@@ -43,6 +43,12 @@ Report-like tools support tabular response controls where applicable:
 - `summary_only=true` to return metadata without row payload.
 - `max_cell_chars` to clip large cell values.
 
+`run_realtime_report` is the exception to cursor paging: Google's Realtime
+request schema supports `limit` but has no `offset` field. It returns one
+bounded result page, rejects non-zero offsets and cursors, and reports
+truncation without advertising a cursor that would repeat the same rows.
+Standard `run_report` pagination is unchanged.
+
 `run_conversions_report` uses the same tabular controls and cursor behavior as
 `run_report`. Its `conversion_spec.conversion_actions` accepts zero or more
 `conversionActions/<id>` resource names; an empty list means all conversions.
