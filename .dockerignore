@@ -1,0 +1,12 @@
+# Allowlist only public compilation inputs. In particular, no local tokens,
+# ADC credentials, .env files, internal notes, Git history or generated data
+# may enter the Docker build context (even the intermediate build stage).
+**
+!Cargo.toml
+!Cargo.lock
+!README.md
+!LICENSE
+!src/
+!src/**
+!spec/
+!spec/**
