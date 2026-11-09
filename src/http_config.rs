@@ -444,13 +444,7 @@ fn parse_allowed_cidrs(raw: &str, var_name: &str) -> Result<Vec<IpNet>> {
 }
 
 fn invalid_cidr_message(var_name: &str, item: &str, err: impl std::fmt::Display) -> String {
-    let mut message = String::from("invalid ");
-    message.push_str(var_name);
-    message.push_str(" CIDR ");
-    message.push_str(item);
-    message.push_str(": ");
-    message.push_str(&err.to_string());
-    message
+    format!("invalid {var_name} CIDR {item}: {err}")
 }
 
 fn env_optional_path(name: &str) -> Option<PathBuf> {
