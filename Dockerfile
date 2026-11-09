@@ -21,8 +21,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates libgcc-s1 libstdc++6 libgomp1 libatomic1 libssl3 \
     && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 ga4-mcp \
+    && useradd --uid 10001 --gid ga4-mcp --create-home --shell /usr/sbin/nologin ga4-mcp \
     && mkdir -p /home/ga4-mcp/.config \
-    && chown -R 10001:10001 /home/ga4-mcp
+    && chown -R ga4-mcp:ga4-mcp /home/ga4-mcp
 
 COPY --from=build /build/target/release/ga4-mcp /usr/local/bin/ga4-mcp
 COPY --from=build /build/target/release/ga4-mcp-http /usr/local/bin/ga4-mcp-http
