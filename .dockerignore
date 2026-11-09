@@ -10,3 +10,13 @@
 !src/**
 !spec/
 !spec/**
+
+# Deny accidental secret material even when nested under allowlisted source
+# folders. A source-tree secret must never be sent to the builder.
+**/.env
+**/.env.*
+**/*credentials*.json
+**/*service-account*.json
+**/*.pem
+**/*.key
+**/id_rsa*
