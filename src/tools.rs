@@ -7215,8 +7215,7 @@ mod tests {
         let default_args: RunRealtimeReportArgs =
             serde_json::from_value(request.clone()).expect("default request");
         let mut ranged_request = request;
-        ranged_request["minute_ranges"] =
-            json!([{"start_minutes_ago": 4, "end_minutes_ago": 0}]);
+        ranged_request["minute_ranges"] = json!([{"start_minutes_ago": 4, "end_minutes_ago": 0}]);
         let ranged_args: RunRealtimeReportArgs =
             serde_json::from_value(ranged_request).expect("ranged request");
         assert_ne!(
