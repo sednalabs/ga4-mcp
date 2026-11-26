@@ -265,3 +265,19 @@ fn tool_snapshot_exposes_tabular_request_controls_for_contract_v1() {
         );
     }
 }
+
+#[test]
+fn tool_snapshot_exposes_key_events_and_realtime_minute_ranges() {
+    let snapshot: Value = serde_json::from_str(include_str!(
+        "../spec/tool_schema_snapshot.v1.json"
+    ))
+    .expect("valid schema snapshot");
+    let keys = tool_input_property_names(&snapshot, "list_key_events");
+    for key in ["property_id", "page_size", "max_pages"] {
+        assert!(keys.iter().any(|name| name == key));
+    }
+    for tool in ["run_realtime_report", "scratchpad_ingest_realtime_report"] {
+        let keys = tool_input_property_names(&snapshot, tool);
+        assert!(keys.iter().any(|name| name == "minute_ranges"));
+    }
+}

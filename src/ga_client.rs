@@ -187,6 +187,7 @@ pub struct RunRealtimeReportRequest {
     pub metric_filter: Option<Value>,
     pub order_bys: Option<Vec<Value>>,
     pub limit: Option<u64>,
+    pub minute_ranges: Option<Vec<Value>>,
     pub return_property_quota: bool,
 }
 
@@ -428,6 +429,26 @@ impl AnalyticsApiClient {
         .map(|(items, meta)| {
             json!({
                 "google_ads_links": items,
+                "meta": meta,
+            })
+        })
+    }
+
+    pub async fn list_key_events(
+        &self,
+        property_id: &PropertyId,
+        pagination: PaginationOptions,
+    ) -> Result<Value, AnalyticsError> {
+        let property = property_id.to_resource_name()?;
+        self.collect_paginated(
+            &format!("{}/v1beta/{property}/keyEvents", self.admin_base_url),
+            "keyEvents",
+            pagination,
+        )
+        .await
+        .map(|(items, meta)| {
+            json!({
+                "key_events": items,
                 "meta": meta,
             })
         })
@@ -1508,6 +1529,81 @@ pub(crate) fn snake_to_camel_json(value: Value) -> Value {
     }
 }
 
+// Normalize the provider's optional ranges before constructing any HTTP request.
+// Property-specific eligibility for minutes 30–59 is left to Google.
+fn normalize_realtime_minute_ranges(ranges: Vec<Value>) -> Result<Vec<Value>, AnalyticsError> {
+    if ranges.len() > 2 {
+        return Err(AnalyticsError::invalid(
+            "minute_ranges",
+            "at most two minute ranges are allowed",
+        ));
+    }
+    ranges
+        .into_iter()
+        .map(|range| {
+            let object = range.as_object().ok_or_else(|| {
+                AnalyticsError::invalid("minute_ranges", "each minute range must be an object")
+            })?;
+            let mut normalized = Map::new();
+            for (key, value) in object {
+                let provider_key = match key.as_str() {
+                    "start_minutes_ago" | "startMinutesAgo" => "startMinutesAgo",
+                    "end_minutes_ago" | "endMinutesAgo" => "endMinutesAgo",
+                    "name" => "name",
+                    _ => {
+                        return Err(AnalyticsError::invalid(
+                            "minute_ranges",
+                            "unknown minute range field",
+                        ));
+                    }
+                };
+                if normalized
+                    .insert(provider_key.to_string(), value.clone())
+                    .is_some()
+                {
+                    return Err(AnalyticsError::invalid(
+                        "minute_ranges",
+                        "duplicate minute range field",
+                    ));
+                }
+            }
+            let minute = |key: &str, default: u64| -> Result<u64, AnalyticsError> {
+                match normalized.get(key) {
+                    None => Ok(default),
+                    Some(value) => value.as_u64().filter(|v| *v <= 59).ok_or_else(|| {
+                        AnalyticsError::invalid(
+                            "minute_ranges",
+                            "minute offsets must be integers between 0 and 59",
+                        )
+                    }),
+                }
+            };
+            if minute("startMinutesAgo", 29)? < minute("endMinutesAgo", 0)? {
+                return Err(AnalyticsError::invalid(
+                    "minute_ranges",
+                    "start_minutes_ago must be greater than or equal to end_minutes_ago",
+                ));
+            }
+            if let Some(name) = normalized.get("name") {
+                let name = name.as_str().ok_or_else(|| {
+                    AnalyticsError::invalid("minute_ranges", "range name must be a string")
+                })?;
+                if name.trim().is_empty()
+                    || name.len() > 256
+                    || name.starts_with("date_range_")
+                    || name.starts_with("RESERVED_")
+                {
+                    return Err(AnalyticsError::invalid(
+                        "minute_ranges",
+                        "range name must be nonblank, at most 256 bytes and not reserved",
+                    ));
+                }
+            }
+            Ok(Value::Object(normalized))
+        })
+        .collect()
+}
+
 fn build_run_realtime_report_request(
     data_base_url: &str,
     request: RunRealtimeReportRequest,
@@ -1537,6 +1633,12 @@ fn build_run_realtime_report_request(
             "orderBys".to_string(),
             Value::Array(order_bys.into_iter().map(snake_to_camel_json).collect()),
         );
+    }
+    if let Some(ranges) = request.minute_ranges {
+        let ranges = normalize_realtime_minute_ranges(ranges)?;
+        if !ranges.is_empty() {
+            payload.insert("minuteRanges".to_string(), Value::Array(ranges));
+        }
     }
     if let Some(limit) = request.limit {
         payload.insert("limit".to_string(), Value::String(limit.to_string()));
@@ -1699,6 +1801,58 @@ mod tests {
     }
 
     #[test]
+    fn realtime_minute_ranges_normalize_and_reject_invalid_values() {
+        let ranges = normalize_realtime_minute_ranges(vec![
+            json!({"name": "recent", "start_minutes_ago": 9, "end_minutes_ago": 0}),
+            json!({"startMinutesAgo": 59, "endMinutesAgo": 30}),
+        ])
+        .expect("valid ranges");
+        assert_eq!(
+            ranges,
+            vec![
+                json!({"name": "recent", "startMinutesAgo": 9, "endMinutesAgo": 0}),
+                json!({"startMinutesAgo": 59, "endMinutesAgo": 30}),
+            ]
+        );
+        for invalid in [
+            vec![json!({}), json!({}), json!({})],
+            vec![json!(null)],
+            vec![json!({"start_minutes_ago": -1})],
+            vec![json!({"start_minutes_ago": 60})],
+            vec![json!({"start_minutes_ago": 0, "end_minutes_ago": 1})],
+            vec![json!({"start_minutes_ago": 10, "startMinutesAgo": 10})],
+            vec![json!({"name": "date_range_0"})],
+            vec![json!({"unknown": true})],
+        ] {
+            assert!(normalize_realtime_minute_ranges(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn realtime_minute_ranges_are_sent_to_provider() {
+        let (_, payload) = build_run_realtime_report_request(
+            "https://analyticsdata.googleapis.com",
+            RunRealtimeReportRequest {
+                property_id: PropertyId::Number(1234),
+                dimensions: vec!["country".to_string()],
+                metrics: vec!["activeUsers".to_string()],
+                dimension_filter: None,
+                metric_filter: None,
+                order_bys: None,
+                limit: Some(10),
+                minute_ranges: Some(vec![json!({"start_minutes_ago": 4, "end_minutes_ago": 0})]),
+                return_property_quota: true,
+            },
+        )
+        .expect("valid request");
+        assert_eq!(
+            payload["minuteRanges"],
+            json!([{"startMinutesAgo": 4, "endMinutesAgo": 0}])
+        );
+        assert!(payload.get("offset").is_none());
+    }
+
+    #[test]
     fn realtime_request_matches_google_schema_without_offset() {
         let (url, payload) = build_run_realtime_report_request(
             "https://analyticsdata.googleapis.com",
@@ -1715,6 +1869,7 @@ mod tests {
                 metric_filter: None,
                 order_bys: None,
                 limit: Some(25),
+                minute_ranges: None,
                 return_property_quota: true,
             },
         )

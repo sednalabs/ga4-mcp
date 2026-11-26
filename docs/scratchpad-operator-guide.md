@@ -168,6 +168,7 @@ Notes:
 - `date_ranges` entries must be objects containing non-empty `start_date`/`startDate` and `end_date`/`endDate` strings.
 - `dimension_filter` supports object, JSON-string object, and shorthand `field==value`.
 - Shorthand values with spaces must be quoted, for example `sessionDefaultChannelGroup=="Paid Other"`.
+- Realtime ingest accepts the same optional `minute_ranges` as `run_realtime_report`.
 - Ingest auto-pages upstream report responses; `max_rows` controls page size and `limit` caps total ingested rows.
 - Ingest responses now include `source.pagination` metadata so truncation/completion is explicit.
 - Set `append=true` to ingest additional rows into an existing scratchpad table. Append mode requires the incoming schema to match the existing table exactly (column names/order) and remain type-compatible with existing DuckDB column types.
