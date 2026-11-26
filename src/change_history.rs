@@ -1,9 +1,9 @@
 //! Bounded GA Admin configuration audit requests and secret-safe response projection.
 
-use chrono::DateTime;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::error::AnalyticsError;
 use crate::ga_client::{AccountId, PropertyId};
@@ -128,7 +128,7 @@ impl ChangeHistoryArgs {
                     if time.len() > 64 {
                         return Err(AnalyticsError::invalid(field, "invalid RFC3339 timestamp"));
                     }
-                    DateTime::parse_from_rfc3339(time)
+                    OffsetDateTime::parse(time, &Rfc3339)
                         .map_err(|_| AnalyticsError::invalid(field, "invalid RFC3339 timestamp"))
                 })
                 .transpose()
