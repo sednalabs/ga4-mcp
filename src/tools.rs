@@ -1331,6 +1331,32 @@ impl AnalyticsMcp {
         }
     }
 
+    /// Discover configured BigQuery export links for a GA4 property.
+    #[tool(
+        name = "list_bigquery_links",
+        description = "Lists BigQuery export links for a GA4 property, including linked project, location and export settings. Does not query BigQuery."
+    )]
+    async fn list_bigquery_links(
+        &self,
+        Parameters(args): Parameters<PropertyListArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        match self
+            .client
+            .list_bigquery_links(
+                &args.property_id,
+                PaginationOptions {
+                    page_size: args.page_size,
+                    max_pages: args.max_pages,
+                },
+            )
+            .await
+        {
+            Ok(data) => Ok(contract_success(data, started)),
+            Err(err) => Ok(contract_error(err, started)),
+        }
+    }
+
     /// List reporting data annotations for a property.
     #[tool(
         name = "list_property_annotations",

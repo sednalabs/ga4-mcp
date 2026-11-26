@@ -265,3 +265,14 @@ fn tool_snapshot_exposes_tabular_request_controls_for_contract_v1() {
         );
     }
 }
+
+#[test]
+fn bigquery_link_discovery_snapshot_has_bounded_list_controls() {
+    let snapshot: Value =
+        serde_json::from_str(include_str!("../spec/tool_schema_snapshot.v1.json"))
+            .expect("valid schema snapshot");
+    let keys = tool_input_property_names(&snapshot, "list_bigquery_links");
+    for key in ["property_id", "page_size", "max_pages"] {
+        assert!(keys.iter().any(|name| name == key));
+    }
+}
