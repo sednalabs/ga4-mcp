@@ -69,7 +69,11 @@ fn validate_enum_filter(
     values: &[String],
     allowed: &[&str],
 ) -> Result<(), AnalyticsError> {
-    if values.len() > 32 || values.iter().any(|value| !allowed.contains(&value.as_str())) {
+    if values.len() > 32
+        || values
+            .iter()
+            .any(|value| !allowed.contains(&value.as_str()))
+    {
         return Err(AnalyticsError::invalid(
             field,
             "invalid or excessive enumeration filters",
@@ -102,7 +106,9 @@ impl ChangeHistoryArgs {
                 || emails.iter().any(|email| {
                     email.is_empty()
                         || email.len() > 254
-                        || email.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+                        || email
+                            .chars()
+                            .any(|ch| ch.is_whitespace() || ch.is_control())
                         || !email.contains('@')
                 })
             {
@@ -148,11 +154,18 @@ impl ChangeHistoryArgs {
             ));
         }
         if !(1..=10).contains(&self.max_pages.unwrap_or(1)) {
-            return Err(AnalyticsError::invalid("max_pages", "must be between 1 and 10"));
+            return Err(AnalyticsError::invalid(
+                "max_pages",
+                "must be between 1 and 10",
+            ));
         }
         if let Some(token) = &self.page_token {
-            if token.trim().is_empty() || token.len() > 8192 || token.chars().any(char::is_control) {
-                return Err(AnalyticsError::invalid("page_token", "invalid continuation token"));
+            if token.trim().is_empty() || token.len() > 8192 || token.chars().any(char::is_control)
+            {
+                return Err(AnalyticsError::invalid(
+                    "page_token",
+                    "invalid continuation token",
+                ));
             }
         }
         Ok((account, body))
@@ -176,13 +189,66 @@ fn scalar_fields(value: &Value, fields: &[&str]) -> Map<String, Value> {
 fn safe_snapshot(snapshot: &Value) -> Value {
     let mut result = Map::new();
     for (resource, fields) in [
-        ("account", &["name", "displayName", "regionCode", "gmpOrganization"][..]),
-        ("property", &["name", "displayName", "timeZone", "currencyCode", "industryCategory", "serviceLevel", "propertyType", "parent", "account"][..]),
-        ("dataRetentionSettings", &["name", "eventDataRetention", "userDataRetention", "resetUserDataOnNewActivity"][..]),
-        ("conversionEvent", &["name", "eventName", "countingMethod", "custom", "deletable"][..]),
-        ("customDimension", &["name", "parameterName", "displayName", "scope", "disallowAdsPersonalization"][..]),
-        ("customMetric", &["name", "parameterName", "displayName", "scope", "measurementUnit"][..]),
-        ("googleAdsLink", &["name", "customerId", "adsPersonalizationEnabled", "canManageClients"][..]),
+        (
+            "account",
+            &["name", "displayName", "regionCode", "gmpOrganization"][..],
+        ),
+        (
+            "property",
+            &[
+                "name",
+                "displayName",
+                "timeZone",
+                "currencyCode",
+                "industryCategory",
+                "serviceLevel",
+                "propertyType",
+                "parent",
+                "account",
+            ][..],
+        ),
+        (
+            "dataRetentionSettings",
+            &[
+                "name",
+                "eventDataRetention",
+                "userDataRetention",
+                "resetUserDataOnNewActivity",
+            ][..],
+        ),
+        (
+            "conversionEvent",
+            &["name", "eventName", "countingMethod", "custom", "deletable"][..],
+        ),
+        (
+            "customDimension",
+            &[
+                "name",
+                "parameterName",
+                "displayName",
+                "scope",
+                "disallowAdsPersonalization",
+            ][..],
+        ),
+        (
+            "customMetric",
+            &[
+                "name",
+                "parameterName",
+                "displayName",
+                "scope",
+                "measurementUnit",
+            ][..],
+        ),
+        (
+            "googleAdsLink",
+            &[
+                "name",
+                "customerId",
+                "adsPersonalizationEnabled",
+                "canManageClients",
+            ][..],
+        ),
         ("firebaseLink", &["name", "project"][..]),
         ("dataStream", &["name", "displayName", "type"][..]),
     ] {
@@ -297,9 +363,12 @@ mod tests {
         let default = project_event(&event, &args(json!({"account_id":1})));
         assert!(default.get("userActorEmail").is_none());
         assert!(default["changes"][0].get("resourceAfterChange").is_none());
-        let explicit = project_event(&event, &args(json!({
-            "account_id":1,"include_actor_email":true,"include_resource_snapshots":true
-        })));
+        let explicit = project_event(
+            &event,
+            &args(json!({
+                "account_id":1,"include_actor_email":true,"include_resource_snapshots":true
+            })),
+        );
         assert_eq!(explicit["userActorEmail"], "person@example.com");
         assert_eq!(explicit["changes"][0]["resourceBeforeChange"], json!({}));
         assert_eq!(

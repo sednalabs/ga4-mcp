@@ -398,7 +398,10 @@ impl AnalyticsApiClient {
         let page_size = self.normalized_page_size(Some(args.page_size.unwrap_or(50)));
         let max_pages = self.normalized_max_pages(Some(args.max_pages.unwrap_or(1)));
         body.insert("pageSize".to_string(), json!(page_size));
-        let url = format!("{}/v1beta/{account}:searchChangeHistoryEvents", self.admin_base_url);
+        let url = format!(
+            "{}/v1beta/{account}:searchChangeHistoryEvents",
+            self.admin_base_url
+        );
         let mut next = args.page_token.clone();
         let mut seen = HashSet::new();
         let mut events = Vec::new();
