@@ -24,6 +24,7 @@ use crate::auth_ux::{
     auth_login_cli_command, google_provider_auth_config, local_credential_material_detected,
     login_command_for_scope_with_cloudsdk, quota_project_command_with_cloudsdk,
 };
+use crate::change_history::ChangeHistoryArgs;
 use crate::config::{
     DEFAULT_ANALYTICS_SCOPE, UpstreamTokenSource, conventional_adc_credentials_path,
     server_adc_credentials_path, server_cloudsdk_config_dir,
@@ -1261,6 +1262,22 @@ impl AnalyticsMcp {
         let started = Instant::now();
         match self.client.get_property_details(&args.property_id).await {
             Ok(data) => Ok(contract_success(sort_object(data), started)),
+            Err(err) => Ok(contract_error(err, started)),
+        }
+    }
+
+    /// Search account configuration history using the elevated audit profile.
+    #[tool(
+        name = "search_change_history_events",
+        description = "Search bounded GA configuration change history. Requires the audit profile and analytics.edit; secret-bearing snapshots are excluded."
+    )]
+    async fn search_change_history_events(
+        &self,
+        Parameters(args): Parameters<ChangeHistoryArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        match self.client.search_change_history_events(&args).await {
+            Ok(data) => Ok(contract_success(data, started)),
             Err(err) => Ok(contract_error(err, started)),
         }
     }
@@ -7089,7 +7106,9 @@ fn auth_next_steps(
 
 fn scope_allows_analytics_read(scope: &str) -> bool {
     scope.split([',', ' ', '\n', '\t']).any(|item| {
-        item == DEFAULT_ANALYTICS_SCOPE || item == "https://www.googleapis.com/auth/analytics"
+        item == DEFAULT_ANALYTICS_SCOPE
+            || item == crate::config::ANALYTICS_EDIT_SCOPE
+            || item == "https://www.googleapis.com/auth/analytics"
     })
 }
 

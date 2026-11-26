@@ -92,3 +92,13 @@ Keep OAuth client JSON files and ADC files outside the repository.
 
 See [../SECURITY.md](../SECURITY.md) for how to report suspected security
 issues.
+
+## Elevated audit profile
+
+The `audit` profile requires an explicit `analytics.edit` scope for the
+configuration-history API. It does not authorize GA mutations or scratchpad
+operations. Use a separate credential and deployment when practical. Live MCP
+tool discovery and dispatch enforce the profile; the developer schema snapshot
+remains the full registered catalogue. The audit tool does not return raw
+provider snapshots: actor email is opt-in and scalar snapshot fields are
+allowlisted. Treat even projected audit data as sensitive.

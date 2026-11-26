@@ -99,7 +99,12 @@ impl ServerHandler for AnalyticsMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
-        let tools = self.tool_router.list_all();
+        let tools = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .filter(|tool| self.is_tool_allowed(tool.name.as_ref()))
+            .collect();
         std::future::ready(Ok(ListToolsResult {
             meta: None,
             tools,

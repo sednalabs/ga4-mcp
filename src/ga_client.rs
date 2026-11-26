@@ -2,7 +2,7 @@
 //!
 //! Thin adapter around Google Analytics Admin/Data REST endpoints.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::future::Future;
@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::sync::{OnceCell, RwLock};
 
+use crate::change_history::{ChangeHistoryArgs, project_event};
 use crate::config::{
     Settings, UpstreamTokenSource, conventional_adc_credentials_path,
     conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
@@ -381,6 +382,85 @@ impl AnalyticsApiClient {
         let property = property_id.to_resource_name()?;
         self.get_json(&format!("{}/v1beta/{property}", self.admin_base_url), &[])
             .await
+    }
+
+    pub(crate) async fn search_change_history_events(
+        &self,
+        args: &ChangeHistoryArgs,
+    ) -> Result<Value, AnalyticsError> {
+        if self.analytics_scope() != crate::config::ANALYTICS_EDIT_SCOPE {
+            return Err(AnalyticsError::policy_denied(
+                "read_only",
+                "search_change_history_events",
+            ));
+        }
+        let (account, mut body) = args.validated_request()?;
+        let page_size = self.normalized_page_size(Some(args.page_size.unwrap_or(50)));
+        let max_pages = self.normalized_max_pages(Some(args.max_pages.unwrap_or(1)));
+        body.insert("pageSize".to_string(), json!(page_size));
+        let url = format!("{}/v1beta/{account}:searchChangeHistoryEvents", self.admin_base_url);
+        let mut next = args.page_token.clone();
+        let mut seen = HashSet::new();
+        let mut events = Vec::new();
+        let mut pages = 0;
+        while pages < max_pages {
+            if let Some(token) = &next {
+                if !seen.insert(token.clone()) {
+                    return Err(AnalyticsError::Internal(
+                        "upstream repeated a change-history pagination token".to_string(),
+                    ));
+                }
+                body.insert("pageToken".to_string(), json!(token));
+            } else {
+                body.remove("pageToken");
+            }
+            let response = self
+                .post_json(&url, Value::Object(body.clone()))
+                .await
+                .map_err(|err| match err {
+                    AnalyticsError::UpstreamApi { status, .. } => AnalyticsError::UpstreamApi {
+                        status,
+                        message: "change-history request rejected by Google".to_string(),
+                    },
+                    other => other,
+                })?;
+            if !response.is_object() {
+                return Err(AnalyticsError::Internal(
+                    "invalid upstream change-history response".to_string(),
+                ));
+            }
+            if let Some(rows) = response.get("changeHistoryEvents") {
+                let rows = rows.as_array().ok_or_else(|| {
+                    AnalyticsError::Internal("invalid upstream change-history rows".to_string())
+                })?;
+                if rows.len() > page_size as usize {
+                    return Err(AnalyticsError::Internal(
+                        "upstream change-history page exceeded requested size".to_string(),
+                    ));
+                }
+                events.extend(rows.iter().map(|event| project_event(event, args)));
+            }
+            pages += 1;
+            next = response
+                .get("nextPageToken")
+                .and_then(Value::as_str)
+                .filter(|token| !token.trim().is_empty())
+                .map(str::to_string);
+            if next.is_none() {
+                break;
+            }
+        }
+        Ok(json!({
+            "change_history_events": events,
+            "meta": {
+                "pages_fetched": pages,
+                "page_size": page_size,
+                "truncated": next.is_some(),
+                "next_page_token": next,
+                "actor_emails_included": args.include_actor_email,
+                "resource_snapshots_included": args.include_resource_snapshots
+            }
+        }))
     }
 
     pub async fn get_account_data_sharing_settings(

@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 pub const DEFAULT_ANALYTICS_SCOPE: &str = "https://www.googleapis.com/auth/analytics.readonly";
+pub const ANALYTICS_EDIT_SCOPE: &str = "https://www.googleapis.com/auth/analytics.edit";
 const DEFAULT_ADMIN_BASE_URL: &str = "https://analyticsadmin.googleapis.com";
 const DEFAULT_DATA_BASE_URL: &str = "https://analyticsdata.googleapis.com";
 const DEFAULT_HTTP_TIMEOUT_MS: u64 = 15_000;
@@ -29,6 +30,7 @@ const DEFAULT_SCRATCHPAD_MAX_SQL_BYTES: usize = 65_536;
 pub enum CapabilityProfile {
     ReadOnly,
     Scratchpad,
+    Audit,
 }
 
 impl CapabilityProfile {
@@ -36,14 +38,18 @@ impl CapabilityProfile {
         match self {
             Self::ReadOnly => "read_only",
             Self::Scratchpad => "scratchpad",
+            Self::Audit => "audit",
         }
     }
 
     pub fn allows_tool(self, tool_name: &str) -> bool {
-        match self {
-            Self::ReadOnly => !tool_name.starts_with("scratchpad_"),
-            Self::Scratchpad => true,
+        if tool_name == "search_change_history_events" {
+            return self == Self::Audit;
         }
+        if tool_name.starts_with("scratchpad_") {
+            return self == Self::Scratchpad;
+        }
+        true
     }
 }
 
@@ -396,6 +402,14 @@ impl Settings {
             return Err(anyhow!("analytics scope must not be empty"));
         }
 
+        if cli.capability_profile == CapabilityProfile::Audit
+            && analytics_scope != ANALYTICS_EDIT_SCOPE
+        {
+            return Err(anyhow!(
+                "audit profile requires explicit GOOGLE_ANALYTICS_MCP_SCOPE={ANALYTICS_EDIT_SCOPE}"
+            ));
+        }
+
         if cli.http_timeout_ms == 0 {
             return Err(anyhow!("http timeout must be greater than zero"));
         }
@@ -684,6 +698,21 @@ mod tests {
         assert!(CapabilityProfile::ReadOnly.allows_tool("run_conversions_report"));
         assert!(!CapabilityProfile::ReadOnly.allows_tool("scratchpad_query"));
         assert!(CapabilityProfile::Scratchpad.allows_tool("scratchpad_query"));
+    }
+
+    #[test]
+    fn audit_profile_requires_explicit_edit_scope_and_is_separate() {
+        let mut cli = sample_cli();
+        cli.capability_profile = CapabilityProfile::Audit;
+        assert!(Settings::from_cli(cli.clone()).is_err());
+        cli.analytics_scope = ANALYTICS_EDIT_SCOPE.to_string();
+        assert!(Settings::from_cli(cli).is_ok());
+        for profile in [CapabilityProfile::ReadOnly, CapabilityProfile::Scratchpad] {
+            assert!(!profile.allows_tool("search_change_history_events"));
+        }
+        assert!(CapabilityProfile::Audit.allows_tool("search_change_history_events"));
+        assert!(CapabilityProfile::Audit.allows_tool("run_report"));
+        assert!(!CapabilityProfile::Audit.allows_tool("scratchpad_query"));
     }
 
     #[test]

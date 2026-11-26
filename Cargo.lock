@@ -1050,6 +1050,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-server",
+ "chrono",
  "clap",
  "duckdb",
  "gcp_auth",

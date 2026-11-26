@@ -11,6 +11,7 @@ readme = "README.md"
 anyhow = "1.0.103"
 axum = "0.8.8"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+chrono = { version = "0.4.44", default-features = false, features = ["std"] }
 clap = { version = "4.5.60", features = ["derive", "env"] }
 duckdb = { version = "1.4.4", default-features = false, features = ["bundled"] }
 gcp_auth = "0.12.6"

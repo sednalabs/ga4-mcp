@@ -140,3 +140,15 @@ Clients should branch on `ok` first. When `ok=false`, inspect
 `error.reason`, `error.code`, and `error.status_code` if present. Authentication
 and upstream Google failures are reported through the same Contract V1 shape as
 validation and policy failures.
+
+## Elevated configuration audit
+
+`search_change_history_events` requires capability profile `audit` and explicit
+`analytics.edit` scope, even though the operation is read-only. Google also
+checks the caller's account permissions. Supports account/property, resource,
+action, actor and RFC3339 time filters. Request one to ten pages (default one),
+each at most 200 events (default 50); use the returned continuation token only
+with the same filters. Actor emails and allowlisted configuration snapshots are
+omitted by default. Secret-bearing resources and unrecognised fields are never
+included in snapshots. The API exposes only Google's supported change history,
+not necessarily the complete UI audit log.
