@@ -40,12 +40,24 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
         server.capability_profile(),
         server.accepts_upstream_request_tokens(),
     )?;
+    if server.upstream_token_source() != server.client.upstream_token_source()
+        || server.upstream_token_header() != server.client.upstream_token_header()
+    {
+        return Err(anyhow!(
+            "HTTP request dispatch and Google API client token configuration must agree"
+        ));
+    }
+    settings.validate_stateless_profile(
+        server.capability_profile(),
+        server.upstream_token_source(),
+        server.upstream_token_header(),
+    )?;
     let server_factory = server.clone();
     let mcp_service: StreamableHttpService<AnalyticsMcp, LocalSessionManager> =
         StreamableHttpService::new(
             move || Ok(server_factory.clone()),
             Default::default(),
-            StreamableHttpServerConfig::default(),
+            streamable_http_config(&settings),
         );
 
     let guard_state = GuardState {
@@ -133,10 +145,18 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
     Ok(())
 }
 
+fn streamable_http_config(settings: &HttpSettings) -> StreamableHttpServerConfig {
+    StreamableHttpServerConfig::default()
+        .with_allowed_hosts(settings.allowed_hosts.iter().cloned())
+        .with_stateful_mode(!settings.stateless_http)
+        .with_json_response(settings.stateless_http)
+}
+
 async fn health(State(state): State<GuardState>) -> impl IntoResponse {
     Json(json!({
         "status": "ok",
         "transport": "streamable_http",
+        "stateless_http": state.settings.stateless_http,
         "bind_addr": state.settings.bind_addr.to_string(),
         "cidr_allowlist_entries": state.settings.allowed_cidrs.len(),
         "host_allowlist_entries": state.settings.allowed_hosts.len(),

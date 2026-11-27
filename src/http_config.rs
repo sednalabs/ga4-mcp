@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use ipnet::IpNet;
 use mcp_toolkit_auth::{AuthConfig, AuthMode, AuthSecurityProfile, ClientAuthMethod};
 
-use crate::config::CapabilityProfile;
+use crate::config::{CapabilityProfile, UpstreamTokenSource};
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:9420";
 const DEFAULT_ALLOWED_HOSTS: &str = "localhost,127.0.0.1,::1";
@@ -27,6 +27,7 @@ pub struct HttpSettings {
     pub tls_cert_path: Option<PathBuf>,
     pub tls_key_path: Option<PathBuf>,
     pub auth: HttpAuthSettings,
+    pub stateless_http: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +177,7 @@ impl HttpSettings {
         }
         let auth = HttpAuthSettings::from_env()?;
         validate_public_exposure_auth_posture(allow_non_loopback, &auth)?;
+        let stateless_http = env_flag("GA4_MCP_STATELESS_HTTP", false)?;
 
         Ok(Self {
             bind_addr,
@@ -186,6 +188,7 @@ impl HttpSettings {
             tls_cert_path,
             tls_key_path,
             auth,
+            stateless_http,
         })
     }
 
@@ -209,6 +212,21 @@ impl HttpSettings {
         self.allowed_cidrs.iter().any(|cidr| cidr.contains(&ip))
     }
 
+    pub fn validate_stateless_profile(
+        &self,
+        profile: CapabilityProfile,
+        upstream_source: UpstreamTokenSource,
+        upstream_header: &str,
+    ) -> Result<()> {
+        validate_stateless_http_posture(
+            self.stateless_http,
+            profile,
+            upstream_source,
+            self.auth.enabled,
+            upstream_header,
+        )
+    }
+
     pub fn tls_files(&self) -> Option<(&std::path::Path, &std::path::Path)> {
         match (self.tls_cert_path.as_deref(), self.tls_key_path.as_deref()) {
             (Some(cert), Some(key)) => Some((cert, key)),
@@ -230,6 +248,34 @@ fn validate_scratchpad_http_posture(
     if !loopback_only || inbound_auth_enabled || accepts_request_tokens || !allow_single_user {
         return Err(anyhow!(
             "HTTP scratchpad sessions are not principal-isolated; use stdio or explicitly opt in to a trusted single-user loopback HTTP service with GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP=1, inbound auth disabled, and upstream token source config"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stateless_http_posture(
+    enabled: bool,
+    profile: CapabilityProfile,
+    upstream_source: UpstreamTokenSource,
+    inbound_auth_enabled: bool,
+    upstream_header: &str,
+) -> Result<()> {
+    if !enabled {
+        return Ok(());
+    }
+    if profile != CapabilityProfile::ReadOnly {
+        return Err(anyhow!("stateless HTTP requires the read_only profile"));
+    }
+    if upstream_source != UpstreamTokenSource::RequestHeader {
+        return Err(anyhow!(
+            "stateless HTTP requires upstream token source request_header; server credential fallback is forbidden"
+        ));
+    }
+    if upstream_header.eq_ignore_ascii_case("proxy-authorization")
+        || (inbound_auth_enabled && upstream_header.eq_ignore_ascii_case("authorization"))
+    {
+        return Err(anyhow!(
+            "stateless HTTP requires a distinct upstream Google token header when inbound MCP OAuth is enabled"
         ));
     }
     Ok(())
@@ -542,6 +588,39 @@ mod tests {
                             )
                             .is_ok(),
                             loopback && !inbound_auth && !request_tokens && opt_in
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stateless_mode_rejects_stateful_profiles_and_credential_fallback() {
+        for profile in [CapabilityProfile::ReadOnly, CapabilityProfile::Scratchpad] {
+            for source in [
+                UpstreamTokenSource::Config,
+                UpstreamTokenSource::RequestHeader,
+                UpstreamTokenSource::RequestHeaderOrConfig,
+            ] {
+                for auth in [false, true] {
+                    for header in [
+                        "authorization",
+                        "x-ga4-google-authorization",
+                        "proxy-authorization",
+                    ] {
+                        let valid = profile == CapabilityProfile::ReadOnly
+                            && source == UpstreamTokenSource::RequestHeader
+                            && header != "proxy-authorization"
+                            && (!auth || header != "authorization");
+                        assert_eq!(
+                            validate_stateless_http_posture(true, profile, source, auth, header)
+                                .is_ok(),
+                            valid
+                        );
+                        assert!(
+                            validate_stateless_http_posture(false, profile, source, auth, header)
+                                .is_ok()
                         );
                     }
                 }
