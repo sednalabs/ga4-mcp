@@ -140,3 +140,16 @@ Clients should branch on `ok` first. When `ok=false`, inspect
 `error.reason`, `error.code`, and `error.status_code` if present. Authentication
 and upstream Google failures are reported through the same Contract V1 shape as
 validation and policy failures.
+
+## BigQuery export discovery
+
+Use `list_bigquery_links` with a property ID to inspect the configured export
+project (Google returns a project number), dataset location, daily and
+streaming export settings, selected streams, and excluded events. The GA Admin
+v1alpha endpoint accepts the existing `analytics.readonly` scope. Pagination
+is bounded by the same server limits as other Admin list tools. Discovery
+does not verify that an export dataset or table exists, establish BigQuery IAM
+permissions, read event records, or start a billable BigQuery job. Resolve the
+project number and verify the expected `analytics_<property_id>` dataset in the
+linked project and location before any event-export query. Export data and
+GA Data API aggregate reports have different semantics.

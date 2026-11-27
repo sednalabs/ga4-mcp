@@ -1331,6 +1331,32 @@ impl AnalyticsMcp {
         }
     }
 
+    /// Discover configured BigQuery export links for a GA4 property.
+    #[tool(
+        name = "list_bigquery_links",
+        description = "Lists BigQuery export links for a GA4 property, including linked project, location and export settings. Does not query BigQuery."
+    )]
+    async fn list_bigquery_links(
+        &self,
+        Parameters(args): Parameters<PropertyListArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        match self
+            .client
+            .list_bigquery_links(
+                &args.property_id,
+                PaginationOptions {
+                    page_size: args.page_size,
+                    max_pages: args.max_pages,
+                },
+            )
+            .await
+        {
+            Ok(data) => Ok(contract_success(data, started)),
+            Err(err) => Ok(contract_error(err, started)),
+        }
+    }
+
     /// List reporting data annotations for a property.
     #[tool(
         name = "list_property_annotations",
@@ -5401,7 +5427,7 @@ fn execute_duckdb_query_rows(
             })?;
             projected.insert(
                 column_names[idx].clone(),
-                duck_value_to_json(DuckValue::from(value)),
+                duck_value_to_json(DuckValue::from(value))?,
             );
         }
         projected_rows.push(projected);
@@ -5509,8 +5535,8 @@ fn duckdb_type_to_logical_type(data_type: &DuckDataType) -> &'static str {
     }
 }
 
-fn duck_value_to_json(value: DuckValue) -> Value {
-    match value {
+fn duck_value_to_json(value: DuckValue) -> Result<Value, AnalyticsError> {
+    Ok(match value {
         DuckValue::Null => Value::Null,
         DuckValue::Boolean(raw) => Value::Bool(raw),
         DuckValue::TinyInt(raw) => json!(raw),
@@ -5518,6 +5544,7 @@ fn duck_value_to_json(value: DuckValue) -> Value {
         DuckValue::Int(raw) => json!(raw),
         DuckValue::BigInt(raw) => json!(raw),
         DuckValue::HugeInt(raw) => Value::String(raw.to_string()),
+        DuckValue::UHugeInt(raw) => Value::String(raw.to_string()),
         DuckValue::UTinyInt(raw) => json!(raw),
         DuckValue::USmallInt(raw) => json!(raw),
         DuckValue::UInt(raw) => json!(raw),
@@ -5544,26 +5571,31 @@ fn duck_value_to_json(value: DuckValue) -> Value {
             "nanos": nanos
         }),
         DuckValue::List(raw) | DuckValue::Array(raw) => {
-            Value::Array(raw.into_iter().map(duck_value_to_json).collect())
+            Value::Array(raw.into_iter().map(duck_value_to_json).collect::<Result<_, _>>()?)
         }
         DuckValue::Struct(raw) => Value::Object(
             raw.iter()
-                .map(|(key, value)| (key.clone(), duck_value_to_json(value.clone())))
-                .collect(),
+                .map(|(key, value)| Ok((key.clone(), duck_value_to_json(value.clone())?)))
+                .collect::<Result<_, AnalyticsError>>()?,
         ),
         DuckValue::Map(raw) => Value::Array(
             raw.iter()
                 .map(|(key, value)| {
-                    json!({
-                        "key": duck_value_to_json(key.clone()),
-                        "value": duck_value_to_json(value.clone()),
-                    })
+                    Ok(json!({
+                        "key": duck_value_to_json(key.clone())?,
+                        "value": duck_value_to_json(value.clone())?,
+                    }))
                 })
-                .collect(),
+                .collect::<Result<_, AnalyticsError>>()?,
         ),
-        DuckValue::Union(raw) => duck_value_to_json(*raw),
+        DuckValue::Union(raw) => duck_value_to_json(*raw)?,
         DuckValue::Enum(raw) => Value::String(raw),
-    }
+        _ => {
+            return Err(AnalyticsError::ScratchpadEngine(
+                "unsupported DuckDB result value type".to_string(),
+            ));
+        }
+    })
 }
 
 fn duck_value_to_usize(value: DuckValue) -> usize {
@@ -5573,6 +5605,7 @@ fn duck_value_to_usize(value: DuckValue) -> usize {
         DuckValue::Int(raw) => raw.max(0) as usize,
         DuckValue::BigInt(raw) => raw.max(0) as usize,
         DuckValue::HugeInt(raw) => usize::try_from(raw).unwrap_or(usize::MAX),
+        DuckValue::UHugeInt(raw) => usize::try_from(raw).unwrap_or(usize::MAX),
         DuckValue::UTinyInt(raw) => raw as usize,
         DuckValue::USmallInt(raw) => raw as usize,
         DuckValue::UInt(raw) => raw as usize,
@@ -9054,10 +9087,17 @@ mod tests {
                 DuckValue::List(vec![DuckValue::Int(12), DuckValue::Double(1.25)]),
             ),
         ]));
-        let json = duck_value_to_json(value);
+        let json = duck_value_to_json(value).expect("supported nested value");
         assert_eq!(json["country"], json!("US"));
         assert_eq!(json["metrics"][0], json!(12));
         assert_eq!(json["metrics"][1], json!(1.25));
+    }
+
+    #[test]
+    fn duck_value_to_json_preserves_unsigned_128_bit_precision() {
+        let value = duck_value_to_json(DuckValue::UHugeInt(u128::MAX))
+            .expect("unsigned huge integer");
+        assert_eq!(value, Value::String(u128::MAX.to_string()));
     }
 
     #[test]

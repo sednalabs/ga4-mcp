@@ -22,7 +22,7 @@ mcp-toolkit-auth = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = 
 mcp-toolkit-observability = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-observability", features = ["tracing-bridge"] }
 mcp-toolkit-policy-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-policy-core" }
 mcp-toolkit-policy-runtime = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-policy-runtime" }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "http2", "query", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "http2", "query", "rustls"] }
 rmcp = { version = "=3.9.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
 rustls = { version = "0.23.46", features = ["ring"] }
 schemars = "1.2.3"
