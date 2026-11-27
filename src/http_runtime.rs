@@ -42,6 +42,11 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
             "the BigQuery export profile is currently restricted to trusted local stdio"
         ));
     }
+    if server.capability_profile() == crate::config::CapabilityProfile::Mutation {
+        return Err(anyhow!(
+            "the mutation capability profile is restricted to trusted local stdio"
+        ));
+    }
     settings.validate_scratchpad_profile(
         server.capability_profile(),
         server.accepts_upstream_request_tokens(),
