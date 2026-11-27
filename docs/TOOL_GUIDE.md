@@ -179,3 +179,11 @@ scope, not a broader mixed-scope configuration. Provider rejection messages
 are replaced with status-specific guidance to avoid reflecting actor filters
 or sensitive upstream values. An unexpectedly oversized provider page fails
 closed rather than silently dropping audit events or breaching the row bound.
+
+## Bounded event-export reports (opt-in BigQuery profile)
+
+Use `query_bigquery_export` in a trusted local stdio process with the `bigquery` capability profile, configured credentials and the exact scopes `https://www.googleapis.com/auth/analytics.readonly https://www.googleapis.com/auth/bigquery.readonly`. The operator sets `GA4_MCP_BIGQUERY_EXPORT_PROJECT`, `GA4_MCP_BIGQUERY_EXPORT_PROJECT_NUMBER`, `GA4_MCP_BIGQUERY_BILLING_PROJECT`, `GA4_MCP_BIGQUERY_LOCATION` and a positive `GA4_MCP_BIGQUERY_MAX_BYTES` (up to 1 TiB). The project ID/number mapping must be verified by the operator. Google IAM must permit reading the linked dataset and creating query jobs in the configured billing project. No arbitrary user-provided project, dataset or SQL is accepted.
+
+The report kinds are daily_events, daily_sessions (observed daily distinct user/session pairs), event_transitions (observed adjacent events within sessions; same-timestamp ordering is approximate), first_user_acquisition (first-user medium, not session or modeled attribution), and item_categories (nested item records and purchase quantities). Daily export tables only; inclusive dates capped at 31 days. Results are aggregate and groups under five records are suppressed, but that is not an anonymity guarantee. Do not export data with identifiers embedded in custom labels. These are observed event-export measurements, not modeled GA Data API metrics or consent/threshold-adjusted estimates.
+
+Dry-run is the default; pass `maximum_bytes_billed` to limit execution. Paid execution requires both operator `GA4_MCP_BIGQUERY_ALLOW_EXECUTION=true` and caller `execute=true`, after the dry run and under the same provider-enforced byte cap. No live query is needed for tests. The request has a best-effort 30-second job timeout, finite polling/page limits, and a returned job reference. The read-only scope cannot invoke jobs.cancel; inspect incomplete jobs externally, and never blindly retry an ambiguous paid submission. Daily exports may be incomplete or absent.

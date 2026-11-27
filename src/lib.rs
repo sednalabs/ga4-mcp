@@ -17,6 +17,7 @@
 //! * `https://github.com/googleanalytics/google-analytics-mcp`
 
 pub mod auth_ux;
+mod bigquery;
 mod change_history;
 pub mod config;
 pub mod contract;
