@@ -24,10 +24,10 @@ jobs:
         run: cargo fmt --check
 
       - name: Unit and integration tests
-        run: cargo test
+        run: cargo test --locked
 
       - name: Print tool inventory
         run: |
           set -euo pipefail
-          cargo run --bin ga4-mcp -- --print-tools > /tmp/tools.json
+          cargo run --locked --bin ga4-mcp -- --print-tools > /tmp/tools.json
           test -s /tmp/tools.json

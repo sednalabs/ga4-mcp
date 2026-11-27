@@ -306,3 +306,33 @@ impl AnalyticsError {
         }
     }
 }
+
+impl From<mcp_toolkit_scratchpad::ScratchpadError> for AnalyticsError {
+    fn from(error: mcp_toolkit_scratchpad::ScratchpadError) -> Self {
+        use mcp_toolkit_scratchpad::ScratchpadError;
+        match error {
+            ScratchpadError::InvalidArgument { field, message } => {
+                Self::InvalidArgument { field, message }
+            }
+            ScratchpadError::ScratchpadEngine(message) => Self::ScratchpadEngine(message),
+            ScratchpadError::ScratchpadLimitExceeded { field, message } => {
+                Self::ScratchpadLimitExceeded { field, message }
+            }
+            ScratchpadError::ScratchpadSqlRejected {
+                policy_code,
+                message,
+            } => Self::ScratchpadSqlRejected {
+                policy_code,
+                message,
+            },
+            ScratchpadError::ScratchpadQueryTimeout { timeout_ms } => {
+                Self::ScratchpadQueryTimeout { timeout_ms }
+            }
+            ScratchpadError::ScratchpadQueryCancelled => Self::ScratchpadQueryCancelled,
+            ScratchpadError::ScratchpadSessionNotFound { session_id } => {
+                Self::ScratchpadSessionNotFound { session_id }
+            }
+            ScratchpadError::Internal(message) => Self::Internal(message),
+        }
+    }
+}

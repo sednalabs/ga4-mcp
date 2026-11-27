@@ -17,9 +17,10 @@ use axum_server::tls_rustls::RustlsConfig;
 use mcp_toolkit_auth::surface::{AuthSurfaceConfig, AuthSurfaceLayer, IssuerEntry};
 use mcp_toolkit_auth::{Authenticator, discover_oidc_metadata};
 use mcp_toolkit_http::host::{HostValidationError, parse_host_header, validate_host_header};
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+use mcp_toolkit_http::streamable::{
+    LocalStreamableHttpServiceConfig, build_local_streamable_http_service,
 };
+use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use serde_json::json;
 
 use crate::http_config::HttpSettings;
@@ -53,12 +54,14 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
         server.upstream_token_header(),
     )?;
     let server_factory = server.clone();
-    let mcp_service: StreamableHttpService<AnalyticsMcp, LocalSessionManager> =
-        StreamableHttpService::new(
-            move || Ok(server_factory.clone()),
-            Default::default(),
-            streamable_http_config(&settings),
-        );
+    let runtime = build_local_streamable_http_service(
+        move || Ok(server_factory.clone()),
+        LocalStreamableHttpServiceConfig {
+            server_config: streamable_http_config(&settings),
+            ..Default::default()
+        },
+    );
+    let mcp_service = runtime.service;
 
     let guard_state = GuardState {
         settings: settings.clone(),
@@ -148,7 +151,7 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
 fn streamable_http_config(settings: &HttpSettings) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
         .with_allowed_hosts(settings.allowed_hosts.iter().cloned())
-        .with_stateful_mode(!settings.stateless_http)
+        .with_legacy_session_mode(!settings.stateless_http)
         .with_json_response(settings.stateless_http)
 }
 

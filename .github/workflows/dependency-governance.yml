@@ -6,6 +6,11 @@ on:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - "deny.toml"
+      - ".cargo/advisory-exceptions.toml"
+      - ".cargo/audit.toml"
+      - "osv-scanner.toml"
+      - "scripts/advisory_exception_check.py"
+      - "scripts/test_advisory_exception_check.py"
       - "scripts/dependency_governance_check.sh"
       - ".github/workflows/dependency-governance.yml"
   push:
@@ -15,6 +20,11 @@ on:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - "deny.toml"
+      - ".cargo/advisory-exceptions.toml"
+      - ".cargo/audit.toml"
+      - "osv-scanner.toml"
+      - "scripts/advisory_exception_check.py"
+      - "scripts/test_advisory_exception_check.py"
       - "scripts/dependency_governance_check.sh"
       - ".github/workflows/dependency-governance.yml"
   workflow_dispatch:
