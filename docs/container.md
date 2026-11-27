@@ -47,3 +47,21 @@ The focused `container-smoke` GitHub workflow checks build, presence of
 both binaries, non-root runtime, and unauthenticated tool enumeration on the
 exact PR candidate. Successful CI is required before acceptance; a source
 review alone is not evidence that the image actually builds.
+
+## Opt-in stateless read-only HTTP
+
+Set `GA4_MCP_STATELESS_HTTP=1`, capability profile `read_only`, and
+`GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header`. The pinned rmcp
+2.1.0 server then disables MCP transport sessions and sends JSON responses
+for requests. Clients must send their own Google token on every API call.
+If inbound MCP OAuth is enabled, use a distinct configured Google-token
+header (for example `x-ga4-google-authorization`) rather than forwarding the
+MCP bearer token to Google. There is no server credential fallback.
+
+The default remains stateful HTTP. Stateless mode rejects scratchpad and other
+non-read-only profiles at startup. It does not share DuckDB state, transport
+sessions or OAuth authorisation state between replicas. Continue to enforce
+native TLS, allowed hosts/CIDRs and inbound auth for shared deployments;
+loopback must not be exposed through an untrusted reverse proxy. Replicas must
+use consistent configuration and credential boundaries. Two-replica live
+qualification is required before claiming production horizontal scaling.
