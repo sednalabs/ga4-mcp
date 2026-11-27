@@ -220,7 +220,9 @@ impl HostedScratchpadVerifier {
             .client
             .quota_project()
             .filter(|project| !project.trim().is_empty())
-            .ok_or_else(|| anyhow!("hosted scratchpad requires an operator-configured quota project"))?;
+            .ok_or_else(|| {
+                anyhow!("hosted scratchpad requires an operator-configured quota project")
+            })?;
         let quota_project = reqwest::header::HeaderValue::from_str(quota_project)
             .map_err(|_| anyhow!("invalid hosted scratchpad quota project"))?;
         let limit = match std::env::var("GA4_MCP_HOSTED_MAX_SESSIONS_PER_PRINCIPAL") {
