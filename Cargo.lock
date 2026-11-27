@@ -1137,6 +1137,7 @@ dependencies = [
  "duckdb",
  "gcp_auth",
  "ipnet",
+ "jsonwebtoken",
  "mcp-toolkit-auth",
  "mcp-toolkit-core",
  "mcp-toolkit-http",
