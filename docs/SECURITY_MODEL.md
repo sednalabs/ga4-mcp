@@ -169,6 +169,10 @@ still validates the effective request credential and account permissions.
 Do not widen the deployment's grant to unrelated scopes for convenience.
 Provider errors retain status-level diagnostics, not raw response bodies.
 
+## BigQuery event-export boundary
+
+The dedicated `bigquery` capability is currently local stdio only with configured credentials, official API origins, exact read-only scopes, operator-defined export project ID/number, billing project, region and byte limit. Before any dry run or execution, the same token must establish the configured GA property link and matching dataset identity/location. The only query templates are fixed aggregate SELECTs over daily tables; no arbitrary query or raw user identifiers. Provider scalar responses, pages and bytes are bounded. Execution is disabled by default and requires explicit caller opt-in plus operator enablement, a successful dry run and provider-enforced maximum bytes billed. A read-only credential cannot remotely cancel a job; timeout is best effort. Do not use these tools on exports with PII in custom event, medium or item labels. IAM and tenant-scoped credentials remain the operator's responsibility.
+
 ## Guarded configuration creations
 
 The optional `mutation` profile permits three create-only operations: reporting

@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 pub const DEFAULT_ANALYTICS_SCOPE: &str = "https://www.googleapis.com/auth/analytics.readonly";
+pub const BIGQUERY_EXPORT_SCOPE: &str = "https://www.googleapis.com/auth/analytics.readonly https://www.googleapis.com/auth/bigquery.readonly";
 pub const ANALYTICS_EDIT_SCOPE: &str = "https://www.googleapis.com/auth/analytics.edit";
 const DEFAULT_ADMIN_BASE_URL: &str = "https://analyticsadmin.googleapis.com";
 const DEFAULT_DATA_BASE_URL: &str = "https://analyticsdata.googleapis.com";
@@ -31,6 +32,7 @@ pub enum CapabilityProfile {
     ReadOnly,
     Scratchpad,
     Audit,
+    BigQuery,
     Mutation,
 }
 
@@ -40,11 +42,15 @@ impl CapabilityProfile {
             Self::ReadOnly => "read_only",
             Self::Scratchpad => "scratchpad",
             Self::Audit => "audit",
+            Self::BigQuery => "bigquery",
             Self::Mutation => "mutation",
         }
     }
 
     pub fn allows_tool(self, tool_name: &str) -> bool {
+        if tool_name == "query_bigquery_export" {
+            return self == Self::BigQuery;
+        }
         if matches!(
             tool_name,
             "create_reporting_data_annotation" | "create_custom_dimension" | "create_key_event"
@@ -418,6 +424,17 @@ impl Settings {
             ));
         }
 
+        if cli.capability_profile == CapabilityProfile::BigQuery
+            && (analytics_scope != BIGQUERY_EXPORT_SCOPE
+                || cli.upstream_token_source != UpstreamTokenSource::Config
+                || cli.admin_base_url.trim_end_matches('/') != DEFAULT_ADMIN_BASE_URL
+                || cli.data_base_url.trim_end_matches('/') != DEFAULT_DATA_BASE_URL)
+        {
+            return Err(anyhow!(
+                "bigquery profile requires the exact analytics.readonly and bigquery.readonly scopes, configured credentials and official Google API origins"
+            ));
+        }
+
         if cli.capability_profile == CapabilityProfile::Mutation
             && (analytics_scope != ANALYTICS_EDIT_SCOPE
                 || cli.upstream_token_source != UpstreamTokenSource::Config
@@ -759,12 +776,14 @@ mod tests {
                 CapabilityProfile::ReadOnly,
                 CapabilityProfile::Scratchpad,
                 CapabilityProfile::Audit,
+                CapabilityProfile::BigQuery,
             ] {
                 assert!(!profile.allows_tool(name));
             }
             assert!(CapabilityProfile::Mutation.allows_tool(name));
         }
         assert!(!CapabilityProfile::Mutation.allows_tool("scratchpad_query"));
+        assert!(!CapabilityProfile::Mutation.allows_tool("query_bigquery_export"));
         assert!(!CapabilityProfile::Mutation.allows_tool("search_change_history_events"));
     }
 

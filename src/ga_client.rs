@@ -257,6 +257,7 @@ pub struct RunAccessReportRequest {
 #[derive(Clone)]
 pub struct AnalyticsApiClient {
     http: Client,
+    bigquery: Option<crate::bigquery::BigQueryExportClient>,
     mutation_http: Option<Client>,
     auth_mode: UpstreamAuthMode,
     token_source: UpstreamTokenSource,
@@ -297,6 +298,15 @@ impl AnalyticsApiClient {
             .build()
             .map_err(AnalyticsError::Transport)?;
 
+        let bigquery = if settings.capability_profile == crate::config::CapabilityProfile::BigQuery
+        {
+            Some(crate::bigquery::BigQueryExportClient::from_env(
+                settings.http_timeout,
+            )?)
+        } else {
+            None
+        };
+
         let mutation_http =
             if settings.capability_profile == crate::config::CapabilityProfile::Mutation {
                 Some(
@@ -320,6 +330,7 @@ impl AnalyticsApiClient {
 
         Ok(Self {
             http,
+            bigquery,
             mutation_http,
             auth_mode,
             token_source: settings.upstream_token_source,
@@ -565,6 +576,26 @@ impl AnalyticsApiClient {
                 "meta": meta,
             })
         })
+    }
+
+    pub(crate) async fn query_bigquery_export(
+        &self,
+        args: crate::bigquery::ExportQueryArgs,
+    ) -> Result<Value, AnalyticsError> {
+        let client = self
+            .bigquery
+            .as_ref()
+            .filter(|_| {
+                self.analytics_scope() == crate::config::BIGQUERY_EXPORT_SCOPE
+                    && self.token_source == UpstreamTokenSource::Config
+                    && self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com"
+            })
+            .ok_or_else(|| {
+                AnalyticsError::policy_denied("bigquery_disabled", "query_bigquery_export")
+            })?;
+        let plan = client.plan(args)?;
+        let token = self.access_token().await?;
+        client.query(plan, &token).await
     }
 
     pub async fn list_bigquery_links(
@@ -1067,7 +1098,11 @@ impl AnalyticsApiClient {
             ));
         };
 
-        let scopes = vec![self.analytics_scope.as_ref().to_string()];
+        let scopes = self
+            .analytics_scope
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
         let adc = match google_authorized_user_adc_from_file(path, scopes) {
             Ok(adc) => adc,
             Err(err) if google_adc_file_missing(&err) => return Ok(None),
@@ -1119,7 +1154,8 @@ impl AnalyticsApiClient {
         match &self.auth_mode {
             UpstreamAuthMode::Adc => {
                 let provider = self.token_provider().await?;
-                let token = provider.token(&[self.analytics_scope.as_ref()]).await?;
+                let scopes: Vec<&str> = self.analytics_scope.split_whitespace().collect();
+                let token = provider.token(&scopes).await?;
                 Ok(token.as_str().to_string())
             }
             UpstreamAuthMode::AuthorizedUserAdcFile(path) => {

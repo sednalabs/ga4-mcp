@@ -1019,6 +1019,75 @@
       "name": "preview_report_request"
     },
     {
+      "description": "Dry-run or execute a bounded predefined GA4 BigQuery daily-export report. Requires the local BigQuery profile. No arbitrary SQL or raw user identifiers.",
+      "inputSchema": {
+        "$defs": {
+          "PropertyId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "end_date": {
+            "description": "Last daily export date, YYYY-MM-DD (inclusive; at most 31 days).",
+            "type": "string"
+          },
+          "execute": {
+            "default": false,
+            "description": "Execute after a successful dry run only when explicitly enabled by the operator.",
+            "type": "boolean"
+          },
+          "max_rows": {
+            "default": null,
+            "description": "Result cap from 1 through 500 (default 100).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maximum_bytes_billed": {
+            "description": "Caller-selected positive upper bound on bytes billed (also capped by the operator).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "property_id": {
+            "$ref": "#/$defs/PropertyId",
+            "description": "The Google Analytics property id as integer or \"properties/<id>\"."
+          },
+          "report_kind": {
+            "description": "daily_events, daily_sessions, event_transitions, first_user_acquisition, or item_categories.",
+            "type": "string"
+          },
+          "start_date": {
+            "description": "First daily export date, YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id",
+          "report_kind",
+          "start_date",
+          "end_date",
+          "maximum_bytes_billed"
+        ],
+        "type": "object"
+      },
+      "name": "query_bigquery_export"
+    },
+    {
       "description": "Runs a Google Analytics Admin API access report for an account.",
       "inputSchema": {
         "$defs": {
