@@ -254,11 +254,16 @@ pub struct RunAccessReportRequest {
     pub time_zone: Option<String>,
 }
 
+#[cfg(test)]
+pub(crate) type MutationFixtureRequests = Arc<std::sync::Mutex<Vec<reqwest::Request>>>;
+
 #[derive(Clone)]
 pub struct AnalyticsApiClient {
     http: Client,
     bigquery: Option<crate::bigquery::BigQueryExportClient>,
     mutation_http: Option<Client>,
+    #[cfg(test)]
+    mutation_fixture_requests: Option<MutationFixtureRequests>,
     auth_mode: UpstreamAuthMode,
     token_source: UpstreamTokenSource,
     token_header: Arc<str>,
@@ -333,6 +338,8 @@ impl AnalyticsApiClient {
             http,
             bigquery,
             mutation_http,
+            #[cfg(test)]
+            mutation_fixture_requests: None,
             auth_mode,
             token_source: settings.upstream_token_source,
             token_header: settings.upstream_token_header.clone().into(),
@@ -962,6 +969,12 @@ impl AnalyticsApiClient {
         self.send_json(request).await
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_mutation_fixture(&mut self, requests: MutationFixtureRequests) {
+        assert!(self.mutation_http.is_some());
+        self.mutation_fixture_requests = Some(requests);
+    }
+
     pub(crate) async fn apply_approved_mutation(
         &self,
         approved: crate::mutations::ApprovedMutation,
@@ -976,6 +989,23 @@ impl AnalyticsApiClient {
                     && self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com"
             })
             .ok_or_else(|| AnalyticsError::policy_denied("mutation_disabled", &plan.tool))?;
+        // Unit-test-only dispatch replaces credential resolution and network I/O,
+        // after the same capability, scope and fixed-origin checks as production.
+        #[cfg(test)]
+        if let Some(requests) = &self.mutation_fixture_requests {
+            return dispatch_mutation(
+                client,
+                &plan,
+                "fixture-only",
+                self.quota_project.as_deref(),
+                |builder| {
+                    requests.lock().unwrap().push(builder.build().unwrap());
+                    let name = format!("{}/{}/456", plan.parent, plan.collection);
+                    std::future::ready(Ok(json!({"name":name})))
+                },
+            )
+            .await;
+        }
         let token = self.access_token().await?;
         dispatch_mutation(
             client,
