@@ -327,6 +327,15 @@ Fix:
 
 - Set `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header` (or `request_header_or_config`).
 
+## Scratchpad HTTP trust boundary
+
+Scratchpad sessions are not yet isolated by authenticated principal. Use stdio
+for scratchpad workflows, or a dedicated single-user loopback HTTP process with
+`GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config`, inbound auth disabled,
+and `GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP=1`. Never share or proxy
+that loopback scratchpad endpoint to other users. Other HTTP scratchpad
+configurations fail at startup; the read-only profile is unaffected.
+
 ## Opt-in stateless read-only HTTP
 
 Set `GA4_MCP_STATELESS_HTTP=1`, capability profile `read_only`, and

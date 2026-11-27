@@ -21,6 +21,7 @@ const DEFAULT_ALLOWED_CIDRS: &str = "127.0.0.1/32,::1/128";
 pub struct HttpSettings {
     pub bind_addr: SocketAddr,
     pub allow_non_loopback: bool,
+    pub allow_local_single_user_scratchpad_http: bool,
     pub allowed_hosts: HashSet<String>,
     pub allowed_cidrs: Vec<IpNet>,
     pub tls_cert_path: Option<PathBuf>,
@@ -136,6 +137,8 @@ impl HttpSettings {
             .parse::<SocketAddr>()
             .map_err(|err| anyhow!("invalid GA4_MCP_BIND_ADDR: {err}"))?;
         let allow_non_loopback = env_flag("GA4_MCP_ALLOW_NON_LOOPBACK", false)?;
+        let allow_local_single_user_scratchpad_http =
+            env_flag("GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP", false)?;
         if !allow_non_loopback && !bind_addr.ip().is_loopback() {
             return Err(anyhow!(
                 "non-loopback bind denied; set GA4_MCP_ALLOW_NON_LOOPBACK=1 to override"
@@ -179,6 +182,7 @@ impl HttpSettings {
         Ok(Self {
             bind_addr,
             allow_non_loopback,
+            allow_local_single_user_scratchpad_http,
             allowed_hosts,
             allowed_cidrs,
             tls_cert_path,
@@ -186,6 +190,22 @@ impl HttpSettings {
             auth,
             stateless_http,
         })
+    }
+
+    /// HTTP scratchpad sessions are process-global until principal isolation is implemented.
+    /// Require explicit acknowledgement of the single-user local trust boundary.
+    pub fn validate_scratchpad_profile(
+        &self,
+        profile: CapabilityProfile,
+        accepts_request_tokens: bool,
+    ) -> Result<()> {
+        validate_scratchpad_http_posture(
+            profile,
+            self.bind_addr.ip().is_loopback() && !self.allow_non_loopback,
+            self.auth.enabled,
+            accepts_request_tokens,
+            self.allow_local_single_user_scratchpad_http,
+        )
     }
 
     pub fn client_ip_allowed(&self, ip: std::net::IpAddr) -> bool {
@@ -213,6 +233,24 @@ impl HttpSettings {
             _ => None,
         }
     }
+}
+
+fn validate_scratchpad_http_posture(
+    profile: CapabilityProfile,
+    loopback_only: bool,
+    inbound_auth_enabled: bool,
+    accepts_request_tokens: bool,
+    allow_single_user: bool,
+) -> Result<()> {
+    if profile != CapabilityProfile::Scratchpad {
+        return Ok(());
+    }
+    if !loopback_only || inbound_auth_enabled || accepts_request_tokens || !allow_single_user {
+        return Err(anyhow!(
+            "HTTP scratchpad sessions are not principal-isolated; use stdio or explicitly opt in to a trusted single-user loopback HTTP service with GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP=1, inbound auth disabled, and upstream token source config"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_stateless_http_posture(
@@ -522,6 +560,39 @@ mod tests {
         config.required_scopes = vec!["ga4:read".to_string()];
         config.actor_claim = "sub".to_string();
         config
+    }
+
+    #[test]
+    fn scratchpad_http_requires_explicit_single_user_local_posture() {
+        for loopback in [false, true] {
+            for inbound_auth in [false, true] {
+                for request_tokens in [false, true] {
+                    for opt_in in [false, true] {
+                        assert!(
+                            validate_scratchpad_http_posture(
+                                CapabilityProfile::ReadOnly,
+                                loopback,
+                                inbound_auth,
+                                request_tokens,
+                                opt_in,
+                            )
+                            .is_ok()
+                        );
+                        assert_eq!(
+                            validate_scratchpad_http_posture(
+                                CapabilityProfile::Scratchpad,
+                                loopback,
+                                inbound_auth,
+                                request_tokens,
+                                opt_in,
+                            )
+                            .is_ok(),
+                            loopback && !inbound_auth && !request_tokens && opt_in
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
