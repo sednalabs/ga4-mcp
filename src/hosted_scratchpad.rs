@@ -164,6 +164,8 @@ pub(crate) struct HostedScratchpadVerifier {
     client: Client,
     quota_project: reqwest::header::HeaderValue,
     max_sessions_per_principal: usize,
+    #[cfg(test)]
+    dispatch_fixture: bool,
 }
 
 impl HostedScratchpadVerifier {
@@ -247,6 +249,8 @@ impl HostedScratchpadVerifier {
             client,
             quota_project,
             max_sessions_per_principal: limit,
+            #[cfg(test)]
+            dispatch_fixture: false,
         }))
     }
 
@@ -299,6 +303,12 @@ impl HostedScratchpadVerifier {
         &self,
         token: &str,
     ) -> Result<(String, BTreeSet<String>), AnalyticsError> {
+        #[cfg(test)]
+        if self.dispatch_fixture {
+            return self
+                .verify_google_with(token, tests::dispatch_provider_fixture)
+                .await;
+        }
         self.verify_google_with(token, bounded_json).await
     }
 
@@ -535,6 +545,7 @@ mod tests {
                 .unwrap(),
             quota_project: reqwest::header::HeaderValue::from_static("operator-fixture"),
             max_sessions_per_principal: 4,
+            dispatch_fixture: false,
         };
         let (subject, props) = verifier
             .verify_google_with("fixture-a", fixture)
@@ -599,5 +610,314 @@ mod tests {
             )
             .unwrap();
         assert_eq!(same.list_tables("same", 10).unwrap().len(), 1);
+    }
+
+    // Only compiled in the test binary. The normal provider adapter has no
+    // injectable destination or transport; the fixture inspects the real HTTPS
+    // request without ever sending it.
+    pub(super) async fn dispatch_provider_fixture(
+        request: RequestBuilder,
+    ) -> Result<Value, AnalyticsError> {
+        let request = request.build().map_err(|_| denied())?;
+        assert_eq!(request.url().scheme(), "https");
+        let subject = match request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+        {
+            Some("Bearer fixture-google-a" | "Bearer fixture-google-a-rotated") => "google-a",
+            Some("Bearer fixture-google-b") => "google-b",
+            _ => return Err(denied()),
+        };
+        match request.url().host_str() {
+            Some("openidconnect.googleapis.com") => {
+                assert_eq!(request.url().path(), "/v1/userinfo");
+                assert!(!request.headers().contains_key("x-goog-user-project"));
+                Ok(json!({"sub": subject}))
+            }
+            Some("analyticsadmin.googleapis.com") => {
+                assert_eq!(request.url().path(), "/v1beta/accountSummaries");
+                assert_eq!(
+                    request.headers().get("x-goog-user-project").unwrap(),
+                    "operator-fixture"
+                );
+                Ok(json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/42"}]}]}))
+            }
+            _ => panic!("unexpected fixture origin"),
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_http_dispatch_isolates_verified_principals_and_rejects_limit_changes() {
+        use axum::{Json, Router, middleware, routing::get};
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use mcp_toolkit_auth::{
+            AuthConfig,
+            surface::{AuthSurfaceConfig, AuthSurfaceLayer, IssuerEntry},
+        };
+        use mcp_toolkit_http::streamable::{
+            LocalStreamableHttpServiceConfig, build_local_streamable_http_service,
+        };
+        use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        const ISSUER: &str = "https://issuer.fixture.test";
+        const RESOURCE: &str = "https://resource.fixture.test/mcp";
+        // Public, non-production ES256 test fixture from toolkit internal_tests.rs.
+        // It is unrelated to any real service or credential.
+        const FIXTURE_KEY: &str = concat!(
+            "-----BEGIN PRIVATE KEY-----\n",
+            "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt\n",
+            "kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n",
+            "950IxEzvw/x5BMENRMrXLBJhqzO9Bm+Q6JbqA21YQmd1Kt4RzLJR1W+\n",
+            "-----END PRIVATE KEY-----\n"
+        );
+        fn signed_token(subject: &str, scopes: &str) -> String {
+            let exp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 300;
+            let mut header = Header::new(Algorithm::ES256);
+            header.kid = Some("fixture-ec-key".to_owned());
+            encode(
+                &header,
+                &json!({"exp":exp,"iss":ISSUER,"aud":RESOURCE,"sub":subject,"scope":scopes}),
+                &EncodingKey::from_ec_pem(FIXTURE_KEY.as_bytes()).unwrap(),
+            )
+            .unwrap()
+        }
+
+        let jwks = Router::new().route(
+            "/jwks",
+            get(|| async {
+                Json(json!({"keys":[{
+                    "kty":"EC","crv":"P-256",
+                    "x":"w7JAoU_gJbZJvV-zCOvU9yFJq0FNC_edCMRM78P8eQQ",
+                    "y":"wQg1EytcsEmGrM70Gb53oluoDbVhCZ3Uq3hHMslHVb4",
+                    "kid":"fixture-ec-key","alg":"ES256","use":"sig"
+                }]}))
+            }),
+        );
+        let jwks_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let jwks_url = format!("http://{}/jwks", jwks_listener.local_addr().unwrap());
+        let jwks_task = tokio::spawn(async move { axum::serve(jwks_listener, jwks).await.unwrap() });
+        let authenticator = Arc::new(
+            Authenticator::new(AuthConfig {
+                mode: AuthMode::Jwks,
+                strict_oauth: true,
+                issuer: Some(ISSUER.to_owned()),
+                audience: Some(RESOURCE.to_owned()),
+                jwks_url: Some(jwks_url.clone()),
+                required_scopes: vec!["analytics:read".to_owned()],
+                jti_ttl_s: 0.0,
+                jti_cache_size: 0,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let mut surface = AuthSurfaceConfig::single_issuer(
+            "https://resource.fixture.test".to_owned(),
+            IssuerEntry {
+                resource_path: "/mcp".to_owned(),
+                issuer: ISSUER.to_owned(),
+                authorization_endpoint: format!("{ISSUER}/authorize"),
+                token_endpoint: format!("{ISSUER}/token"),
+                registration_endpoint: None,
+                jwks_uri: Some(jwks_url),
+                introspection_endpoint: None,
+                device_authorization_endpoint: None,
+                grant_types_supported: None,
+                client_id_metadata_document_supported: None,
+                token_endpoint_auth_methods_supported: None,
+                code_challenge_methods_supported: None,
+                realm: "fixture".to_owned(),
+                scopes_supported: vec!["analytics:read".to_owned()],
+                allowed_client_ids: HashSet::new(),
+                authenticator: authenticator.clone(),
+                resource_url_override: Some(RESOURCE.to_owned()),
+            },
+        );
+        // Loopback JWKS fixture only. Production startup still requires TLS.
+        surface.allow_insecure_http = true;
+        let auth_layer = AuthSurfaceLayer::from_config(surface).unwrap();
+
+        let settings = crate::config::Settings {
+            analytics_scope: crate::config::DEFAULT_ANALYTICS_SCOPE.to_owned(),
+            admin_base_url: "https://analyticsadmin.googleapis.com".to_owned(),
+            data_base_url: "https://analyticsdata.googleapis.com".to_owned(),
+            http_timeout: Duration::from_secs(2),
+            max_page_size: 100,
+            max_pages: 2,
+            user_agent: "ga4-hosted-dispatch-fixture".to_owned(),
+            oauth_client_secret_json: None,
+            oauth_refresh_token: None,
+            upstream_token_source: UpstreamTokenSource::RequestHeader,
+            upstream_token_header: "x-google-token".to_owned(),
+            quota_project: Some("operator-fixture".to_owned()),
+            shared_adc: true,
+            scratchpad_session_ttl: Duration::from_secs(60),
+            scratchpad_max_sessions: 2,
+            scratchpad_max_tables_per_session: 4,
+            scratchpad_max_rows_per_session: 100,
+            scratchpad_max_memory_mb: 128,
+            scratchpad_query_timeout: Duration::from_secs(2),
+            scratchpad_max_sql_bytes: 4096,
+            capability_profile: CapabilityProfile::Scratchpad,
+            print_tools: false,
+            print_tool_schema: false,
+            command: None,
+        };
+        let client = Arc::new(
+            crate::ga_client::AnalyticsApiClient::from_settings(&settings)
+                .await
+                .unwrap(),
+        );
+        let engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
+        let root = Arc::new(
+            ScratchpadSessionManager::new(
+                engine,
+                ScratchpadSessionConfig::new(Duration::from_secs(60), 2, 4, 100, 128),
+            )
+            .unwrap(),
+        );
+        let mut server = AnalyticsMcp::new(
+            client,
+            root.clone(),
+            CapabilityProfile::Scratchpad,
+            UpstreamTokenSource::RequestHeader,
+            "x-google-token".to_owned(),
+        );
+        server.hosted_scratchpad = Some(Arc::new(HostedScratchpadVerifier {
+            client: Client::builder()
+                .https_only(true)
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            quota_project: reqwest::header::HeaderValue::from_static("operator-fixture"),
+            max_sessions_per_principal: 1,
+            dispatch_fixture: true,
+        }));
+        let runtime = build_local_streamable_http_service(
+            move || Ok(server.clone()),
+            LocalStreamableHttpServiceConfig {
+                server_config: StreamableHttpServerConfig::default()
+                    .with_allowed_hosts(["127.0.0.1".to_owned()])
+                    .with_legacy_session_mode(false)
+                    .with_json_response(true),
+                ..Default::default()
+            },
+        );
+        let app = Router::new()
+            .nest_service("/mcp", runtime.service)
+            .layer(middleware::from_fn_with_state(
+                HostedAuthGuard::new(authenticator, "x-google-token".to_owned()),
+                verify_hosted_mcp_request,
+            ))
+            .layer(auth_layer);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        let call = |token: String, google: &'static str, tool: &'static str, args: Value| {
+            http.post(&endpoint)
+                .bearer_auth(token)
+                .header("x-google-token", google)
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-protocol-version", "2026-07-28")
+                .header("mcp-method", "tools/call")
+                .header("mcp-name", tool)
+                .json(&json!({
+                    "jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":tool,"arguments":args,"_meta":{
+                        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                        "io.modelcontextprotocol/clientInfo":{"name":"fixture","version":"1"},
+                        "io.modelcontextprotocol/clientCapabilities":{}
+                    }}
+                }))
+        };
+        async fn payload(request: RequestBuilder) -> Value {
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!response.headers().contains_key("mcp-session-id"));
+            let envelope: Value = response.json().await.unwrap();
+            assert!(envelope.get("error").is_none(), "{envelope}");
+            let payload = &envelope["result"]["structuredContent"];
+            assert!(payload["ok"].is_boolean(), "{envelope}");
+            payload.clone()
+        }
+
+        let a = signed_token("mcp-a", "analytics:read");
+        let b = signed_token("mcp-b", "analytics:read");
+        let session = json!({"session_id":"same"});
+        let (a_open, b_open) = tokio::join!(
+            payload(call(a.clone(), "fixture-google-a", "scratchpad_open_session", session.clone())),
+            payload(call(b.clone(), "fixture-google-b", "scratchpad_open_session", session.clone()))
+        );
+        assert_eq!(a_open["ok"], true);
+        assert_eq!(b_open["ok"], true);
+
+        let properties = BTreeSet::from(["properties/42".to_owned()]);
+        for (mcp_subject, google_subject, google_token, sql) in [
+            ("mcp-a", "google-a", "fixture-google-a", "CREATE TABLE private_data AS SELECT 'only-a' AS marker"),
+            ("mcp-b", "google-b", "fixture-google-b", "CREATE TABLE private_data AS SELECT 'only-b' AS marker"),
+        ] {
+            let principal = serde_json::to_string(&(ISSUER, mcp_subject)).unwrap();
+            let view = root
+                .for_scope(bound_scope(&principal, google_subject, google_token, &properties).unwrap(), 1)
+                .unwrap();
+            view.open_connection("same").unwrap().execute_batch(sql).unwrap();
+        }
+        let query = json!({"session_id":"same","sql":"SELECT marker FROM private_data"});
+        let (a_query, b_query) = tokio::join!(
+            payload(call(a.clone(), "fixture-google-a", "scratchpad_query", query.clone())),
+            payload(call(b.clone(), "fixture-google-b", "scratchpad_query", query.clone()))
+        );
+        assert_eq!(a_query["ok"], true);
+        assert_eq!(b_query["ok"], true);
+        assert!(a_query["data"].to_string().contains("only-a"));
+        assert!(!a_query["data"].to_string().contains("only-b"));
+        assert!(b_query["data"].to_string().contains("only-b"));
+        assert!(!b_query["data"].to_string().contains("only-a"));
+
+        for (token, google) in [
+            (a.clone(), "fixture-google-a-rotated"),
+            (a.clone(), "fixture-google-b"),
+            (b.clone(), "fixture-google-a"),
+        ] {
+            let listing = payload(call(token, google, "scratchpad_list_sessions", json!({}))).await;
+            assert_eq!(listing["ok"], true);
+            assert_eq!(listing["data"]["returned"], 0);
+        }
+
+        let limit = payload(call(a.clone(), "fixture-google-a", "scratchpad_set_runtime_limits", json!({"max_sessions":99}))).await;
+        assert_eq!(limit["ok"], false);
+        assert_eq!(root.max_sessions_limit(), 2);
+        let extra = payload(call(a.clone(), "fixture-google-a", "scratchpad_open_session", json!({"session_id":"extra"}))).await;
+        assert_eq!(extra["ok"], false);
+
+        let dropped = payload(call(a.clone(), "fixture-google-a", "scratchpad_drop_table", json!({"session_id":"same","table_name":"private_data"}))).await;
+        assert_eq!(dropped["ok"], true);
+        let still_b = payload(call(b.clone(), "fixture-google-b", "scratchpad_query", query)).await;
+        assert_eq!(still_b["ok"], true);
+        assert!(still_b["data"].to_string().contains("only-b"));
+
+        let invalid = call(signed_token("mcp-a", "wrong:scope"), "fixture-google-a", "scratchpad_list_sessions", json!({})).send().await.unwrap();
+        assert!(matches!(invalid.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN));
+        let duplicate = call(a.clone(), "fixture-google-a", "scratchpad_list_sessions", json!({})).header("x-google-token", "fixture-google-b").send().await.unwrap();
+        assert_eq!(duplicate.status(), StatusCode::UNAUTHORIZED);
+        let invalid_google = payload(call(a.clone(), "fixture-google-invalid", "scratchpad_list_sessions", json!({}))).await;
+        assert_eq!(invalid_google["ok"], false);
+        let legacy = call(a, "fixture-google-a", "scratchpad_list_sessions", json!({})).header("mcp-session-id", "not-authority").send().await.unwrap();
+        assert_eq!(legacy.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        task.abort();
+        jwks_task.abort();
     }
 }
