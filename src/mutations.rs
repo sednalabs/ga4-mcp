@@ -544,4 +544,184 @@ mod tests {
             json!({"eventName":"purchase","countingMethod":"ONCE_PER_EVENT"})
         );
     }
+    // Exercise the actual RMCP line transport and tool router. The client is
+    // deliberately constructed with a non-Google Admin origin after CLI
+    // validation, so even an approved request must stop at the provider gate
+    // before credential resolution or network I/O. Separate provider fixtures
+    // exercise the exact POST and readback request shapes.
+    #[tokio::test]
+    async fn modern_stdio_approval_is_required_bound_and_single_use() {
+        use crate::config::{Cli, Settings};
+        use crate::ga_client::AnalyticsApiClient;
+        use crate::scratchpad::{
+            DuckDbEngine, ScratchpadSessionConfig, ScratchpadSessionManager, SharedScratchpadEngine,
+        };
+        use clap::Parser;
+        use std::sync::Arc;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut settings = Settings::from_cli(Cli::parse_from([
+            "ga4-mcp",
+            "--capability-profile",
+            "mutation",
+            "--analytics-scope",
+            ANALYTICS_EDIT_SCOPE,
+            "--upstream-token-source",
+            "config",
+        ]))
+        .unwrap();
+        settings.admin_base_url = "https://fixture.invalid".to_string();
+        let client = Arc::new(AnalyticsApiClient::from_settings(&settings).await.unwrap());
+        let engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
+        let sessions = Arc::new(
+            ScratchpadSessionManager::new(
+                engine,
+                ScratchpadSessionConfig::new(Duration::from_secs(60), 2, 2, 100, 128),
+            )
+            .unwrap(),
+        );
+        let server = AnalyticsMcp::new(
+            client,
+            sessions,
+            CapabilityProfile::Mutation,
+            UpstreamTokenSource::Config,
+            "authorization".to_string(),
+        );
+
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let service = rmcp::serve_server(server, server_io).await.unwrap();
+            service.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+
+        async fn exchange(
+            read: &mut BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+            write: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+            id: u64,
+            params: Value,
+        ) -> Value {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": params
+            });
+            write
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+            write.flush().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(read.read_line(&mut line).await.unwrap(), 0);
+                    let message: Value = serde_json::from_str(&line).unwrap();
+                    if message["id"] == json!(id) {
+                        assert!(message.get("error").is_none(), "{message}");
+                        return message["result"].clone();
+                    }
+                }
+            })
+            .await
+            .expect("bounded MCP response")
+        }
+
+        fn params(event: &str, supports_approval: bool) -> Value {
+            let capabilities = if supports_approval {
+                json!({"elicitation":{"form":{}}})
+            } else {
+                json!({})
+            };
+            json!({
+                "name": "create_key_event",
+                "arguments": {
+                    "property_id": 123,
+                    "event_name": event,
+                    "counting_method": "ONCE_PER_EVENT"
+                },
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {"name":"approval-fixture","version":"1"},
+                    "io.modelcontextprotocol/clientCapabilities": capabilities
+                }
+            })
+        }
+
+        fn continuation(event: &str, state: &str, approved: bool) -> Value {
+            let mut request = params(event, true);
+            request["requestState"] = json!(state);
+            request["inputResponses"] = json!({
+                "approve_ga4_create": {"action":"accept","content":{"approved":approved}}
+            });
+            request
+        }
+
+        fn assert_denied(result: &Value, profile: &str) {
+            assert_eq!(result["structuredContent"]["ok"], false, "{result}");
+            assert_eq!(
+                result["structuredContent"]["error"]["code"],
+                "POLICY_DENIED",
+                "{result}"
+            );
+            assert!(
+                result["structuredContent"]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(profile),
+                "{result}"
+            );
+        }
+
+        fn approval_state(result: &Value) -> &str {
+            assert_eq!(result["resultType"], "input_required", "{result}");
+            let prompt = &result["inputRequests"]["approve_ga4_create"];
+            assert_eq!(prompt["method"], "elicitation/create");
+            let message = prompt["params"]["message"].as_str().unwrap();
+            assert!(message.contains("properties/123"));
+            assert!(message.contains("purchase"));
+            assert!(message.contains("ONCE_PER_EVENT"));
+            result["requestState"].as_str().expect("opaque approval state")
+        }
+
+        let unsupported = exchange(&mut read, &mut write, 1, params("purchase", false)).await;
+        assert_denied(&unsupported, "mutation_client_approval_required");
+
+        let mut unsolicited = params("purchase", true);
+        unsolicited["inputResponses"] = json!({
+            "approve_ga4_create": {"action":"accept","content":{"approved":true}}
+        });
+        let denied = exchange(&mut read, &mut write, 2, unsolicited).await;
+        assert_denied(&denied, "mutation_approval_required");
+
+        let first = exchange(&mut read, &mut write, 3, params("purchase", true)).await;
+        let state = approval_state(&first);
+        let tampered = exchange(&mut read, &mut write, 4, continuation("other", state, true)).await;
+        assert_denied(&tampered, "mutation_approval_required");
+        let consumed = exchange(&mut read, &mut write, 5, continuation("purchase", state, true)).await;
+        assert_denied(&consumed, "mutation_approval_required");
+
+        let second = exchange(&mut read, &mut write, 6, params("purchase", true)).await;
+        let state = approval_state(&second);
+        let declined = exchange(&mut read, &mut write, 7, continuation("purchase", state, false)).await;
+        assert_denied(&declined, "mutation_approval_required");
+
+        let third = exchange(&mut read, &mut write, 8, params("purchase", true)).await;
+        let state = approval_state(&third);
+        let accepted = exchange(&mut read, &mut write, 9, continuation("purchase", state, true)).await;
+        // Only a correctly approved call can reach the independent origin gate.
+        assert_denied(&accepted, "mutation_disabled");
+        let replay = exchange(&mut read, &mut write, 10, continuation("purchase", state, true)).await;
+        assert_denied(&replay, "mutation_approval_required");
+
+        drop(write);
+        drop(read);
+        tokio::time::timeout(Duration::from_secs(10), server_task)
+            .await
+            .expect("MCP service terminates")
+            .unwrap();
+    }
+
 }
