@@ -405,6 +405,10 @@ impl BigQueryExportClient {
                 .json(&self.request_body(&plan, true)),
         )
         .await?;
+        check_query_page(&dry)?;
+        if has_query_warnings(&dry)? {
+            return Err(job_failure("BigQuery dry run returned diagnostics; execution was not started"));
+        }
         let estimate = dry
             .get("totalBytesProcessed")
             .and_then(Value::as_str)
@@ -428,6 +432,7 @@ impl BigQueryExportClient {
                 .json(&self.request_body(&plan, false)),
         )
         .await?;
+        check_query_page(&page)?;
         let job = page.get("jobReference").ok_or_else(bad_provider)?.clone();
         let job_id = job
             .get("jobId")
@@ -447,12 +452,27 @@ impl BigQueryExportClient {
         let mut complete = false;
         let mut truncated = false;
         let mut fetched = 0;
+        let mut verified = false;
+        let mut warnings = false;
         for i in 0..MAX_PAGES {
+            check_query_page(&page)?;
+            warnings |= has_query_warnings(&page)?;
             complete = page
                 .get("jobComplete")
                 .and_then(Value::as_bool)
                 .ok_or_else(bad_provider)?;
             if complete {
+                if !verified {
+                    let status = response(
+                        self.http
+                            .get(format!("{BQ}/projects/{}/jobs/{job_id}", self.billing_project))
+                            .bearer_auth(token)
+                            .query(&[("location", self.location.as_str())]),
+                    )
+                    .await?;
+                    verify_completed_job(&status, &job)?;
+                    verified = true;
+                }
                 append_rows(&page, &plan, &mut rows)?;
                 fetched += 1;
             }
@@ -477,18 +497,15 @@ impl BigQueryExportClient {
             if let Some(next) = &next {
                 req = req.query(&[("pageToken", next)]);
             }
-            page = match response(req).await {
-                Ok(value) => value,
-                Err(_) => {
-                    truncated = complete;
-                    output["result_fetch_interrupted"] = json!(true);
-                    break;
-                }
-            };
+            // A failed getQueryResults request is not an empty successful report.
+            // Propagate the sanitized error; never submit a replacement job.
+            page = response(req).await?;
         }
         output["executed"] = json!(true);
         output["job_reference"] = job;
         output["job_complete"] = json!(complete);
+        output["job_status_verified"] = json!(verified);
+        output["provider_diagnostics_present"] = json!(warnings);
         output["truncated"] = json!(truncated);
         output["pages_fetched"] = json!(fetched);
         output["rows"] = json!(rows);
@@ -497,6 +514,60 @@ impl BigQueryExportClient {
             json!("read-only scope cannot cancel jobs; 30-second job timeout is best effort");
         Ok(output)
     }
+}
+
+fn job_failure(message: &'static str) -> AnalyticsError {
+    AnalyticsError::UpstreamApi {
+        status: 400,
+        message: message.to_string(),
+    }
+}
+
+// QueryResponse and GetQueryResultsResponse expose errors[] (which can include
+// warnings). A fatal errorResult, if supplied, always fails closed. Do not echo
+// provider messages: they may contain sensitive query or resource details.
+fn check_query_page(page: &Value) -> Result<(), AnalyticsError> {
+    if !page.is_object() {
+        return Err(bad_provider());
+    }
+    if page.get("errorResult").is_some_and(|value| !value.is_null())
+        || page.pointer("/status/errorResult").is_some_and(|value| !value.is_null())
+    {
+        return Err(job_failure("BigQuery job failed; inspect the job before retrying"));
+    }
+    Ok(())
+}
+
+fn has_query_warnings(page: &Value) -> Result<bool, AnalyticsError> {
+    match page.get("errors") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Array(errors)) => Ok(!errors.is_empty()),
+        _ => Err(bad_provider()),
+    }
+}
+
+// jobs.get is authoritative for terminal failure (status.errorResult), while
+// errors[] in query-result responses is not by itself a terminal verdict.
+fn verify_completed_job(status: &Value, expected: &Value) -> Result<(), AnalyticsError> {
+    let actual = status.get("jobReference").ok_or_else(bad_provider)?;
+    for key in ["jobId", "projectId"] {
+        if actual.get(key).and_then(Value::as_str)
+            != expected.get(key).and_then(Value::as_str)
+        {
+            return Err(bad_provider());
+        }
+    }
+    if !actual.get("location").and_then(Value::as_str).is_some_and(|location| {
+        expected.get("location").and_then(Value::as_str)
+            .is_some_and(|expected| location.eq_ignore_ascii_case(expected))
+    }) {
+        return Err(bad_provider());
+    }
+    check_query_page(status)?;
+    if status.pointer("/status/state").and_then(Value::as_str) != Some("DONE") {
+        return Err(bad_provider());
+    }
+    Ok(())
 }
 
 fn bounded_page_token(page: &Value) -> Result<Option<String>, AnalyticsError> {
@@ -625,6 +696,8 @@ mod tests {
             assert_eq!(dry["dryRun"], true);
             assert_eq!(run["dryRun"], false);
             assert_eq!(run["maximumBytesBilled"], "100000");
+            assert_eq!(run["jobTimeoutMs"], "30000");
+            assert_eq!(run["timeoutMs"], 5000);
             assert_eq!(dry["queryParameters"], run["queryParameters"]);
         }
     }
@@ -642,6 +715,30 @@ mod tests {
         assert!(client.plan(a).is_err());
         assert!(parse_date("start_date", "2026-02-29").is_err());
         assert!(!valid_project("a-b`evil"));
+    }
+
+    #[test]
+    fn distinguishes_terminal_job_errors_from_query_diagnostics() {
+        let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+        let fatal = json!({"jobComplete":true,"errorResult":{"message":"sensitive fixture"}});
+        let error = check_query_page(&fatal).unwrap_err();
+        assert_eq!(error.code(), "UPSTREAM_REJECTED");
+        assert!(!error.to_string().contains("sensitive fixture"));
+        let warning = json!({"jobComplete":true,"errors":[{"reason":"warning"}]});
+        assert!(check_query_page(&warning).is_ok());
+        assert!(has_query_warnings(&warning).unwrap());
+        assert!(has_query_warnings(&json!({"errors":{}})).is_err());
+        let done = json!({"jobReference":reference,"status":{"state":"DONE"}});
+        assert!(verify_completed_job(&done, &reference).is_ok());
+        let failed = json!({"jobReference":reference,"status":{"state":"DONE","errorResult":{"reason":"stopped","message":"private details"}}});
+        assert_eq!(
+            verify_completed_job(&failed, &reference).unwrap_err().code(),
+            "UPSTREAM_REJECTED"
+        );
+        let running = json!({"jobReference":reference,"status":{"state":"RUNNING"}});
+        assert!(verify_completed_job(&running, &reference).is_err());
+        let mismatched = json!({"jobReference":{"jobId":"other","projectId":"billing-fixture","location":"US"},"status":{"state":"DONE"}});
+        assert!(verify_completed_job(&mismatched, &reference).is_err());
     }
 
     #[test]
