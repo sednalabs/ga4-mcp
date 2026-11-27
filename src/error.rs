@@ -41,6 +41,11 @@ pub enum AnalyticsError {
     #[error("upstream API request failed with status {status}: {message}")]
     UpstreamApi { status: u16, message: String },
 
+    #[error(
+        "BigQuery execution not confirmed; inspect the billing project before any new submission"
+    )]
+    BigQueryExecutionUnconfirmed { status: Option<u16> },
+
     #[error("GA4 mutation outcome not confirmed; inspect the resource before any new submission")]
     MutationOutcomeUnknown { status: Option<u16> },
 
@@ -89,6 +94,7 @@ impl AnalyticsError {
             Self::UpstreamJson(_) => "UPSTREAM_RESPONSE_PARSE_ERROR",
             Self::UpstreamApi { status, .. } if *status >= 500 => "UPSTREAM_UNAVAILABLE",
             Self::UpstreamApi { .. } => "UPSTREAM_REJECTED",
+            Self::BigQueryExecutionUnconfirmed { .. } => "BIGQUERY_EXECUTION_UNCONFIRMED",
             Self::MutationOutcomeUnknown { .. } => "MUTATION_OUTCOME_UNKNOWN",
             Self::ScratchpadEngine(_) => "SCRATCHPAD_ENGINE_ERROR",
             Self::ScratchpadLimitExceeded { .. } => "SCRATCHPAD_LIMIT_EXCEEDED",
@@ -113,6 +119,7 @@ impl AnalyticsError {
             Self::UpstreamJson(_) => "upstream_response_invalid",
             Self::UpstreamApi { status, .. } if *status >= 500 => "upstream_unavailable",
             Self::UpstreamApi { .. } => "upstream_rejected",
+            Self::BigQueryExecutionUnconfirmed { .. } => "bigquery_execution_unconfirmed",
             Self::MutationOutcomeUnknown { .. } => "mutation_outcome_unknown",
             Self::ScratchpadLimitExceeded { .. } => "scratchpad_limit_exceeded",
             Self::ScratchpadEngine(_) => "scratchpad_engine_error",
@@ -128,6 +135,7 @@ impl AnalyticsError {
     pub fn status_code(&self) -> Option<u16> {
         match self {
             Self::UpstreamApi { status, .. } => Some(*status),
+            Self::BigQueryExecutionUnconfirmed { status } => *status,
             Self::MutationOutcomeUnknown { status } => *status,
             _ => None,
         }
@@ -143,7 +151,9 @@ impl AnalyticsError {
             | Self::MalformedRequestAccessToken { .. } => "auth",
             Self::Transport(_) => "transport",
             Self::UpstreamJson(_) => "upstream_parse",
-            Self::UpstreamApi { .. } | Self::MutationOutcomeUnknown { .. } => "upstream_api",
+            Self::UpstreamApi { .. } => "upstream_api",
+            Self::BigQueryExecutionUnconfirmed { .. } => "upstream_api",
+            Self::MutationOutcomeUnknown { .. } => "upstream_api",
             Self::ScratchpadLimitExceeded { .. } => "scratchpad",
             Self::ScratchpadEngine(_) => "scratchpad",
             Self::ScratchpadSqlRejected { .. } => "scratchpad",
@@ -157,10 +167,13 @@ impl AnalyticsError {
 
     pub fn engine_code(&self) -> Option<String> {
         match self {
-            Self::UpstreamApi { status, .. }
-            | Self::MutationOutcomeUnknown {
-                status: Some(status),
-            } => Some(format!("http_{status}")),
+            Self::UpstreamApi { status, .. } => Some(format!("http_{status}")),
+            Self::MutationOutcomeUnknown { status } => {
+                status.map(|status| format!("http_{status}"))
+            }
+            Self::BigQueryExecutionUnconfirmed { status } => {
+                status.map(|status| format!("http_{status}"))
+            }
             Self::ScratchpadEngine(_) => Some("duckdb".to_string()),
             Self::ScratchpadSqlRejected { policy_code, .. } => {
                 Some(policy_code.as_str().to_string())
@@ -171,9 +184,10 @@ impl AnalyticsError {
 
     pub fn detail(&self) -> Option<String> {
         match self {
-            Self::MutationOutcomeUnknown { .. } => Some("retry_safe=false".to_string()),
             Self::InvalidArgument { field, .. } => Some(format!("field={field}")),
             Self::InvalidCursor(message) => Some(message.clone()),
+            Self::BigQueryExecutionUnconfirmed { .. } => Some("retry_safe=false".to_string()),
+            Self::MutationOutcomeUnknown { .. } => Some("retry_safe=false".to_string()),
             Self::ScratchpadLimitExceeded { field, .. } => Some(format!("field={field}")),
             Self::ScratchpadQueryTimeout { timeout_ms } => Some(format!("timeout_ms={timeout_ms}")),
             Self::ScratchpadSessionNotFound { session_id } => {
@@ -206,13 +220,16 @@ impl AnalyticsError {
             Self::MalformedRequestAccessToken { .. } => Some(
                 "Send a valid OAuth access token header. For Authorization header use: Bearer <token>.",
             ),
+            Self::MutationOutcomeUnknown { .. } => Some(
+                "Do not automatically resubmit. Inspect and reconcile the resource before any separately approved submission.",
+            ),
+            Self::BigQueryExecutionUnconfirmed { .. } => Some(
+                "Do not automatically resubmit. A submitted job may still run or have incurred cost; inspect the billing project and reconcile before a new execution.",
+            ),
             Self::Transport(_) => Some("Check network connectivity and upstream API availability."),
             Self::UpstreamJson(_) => {
                 Some("Retry later; upstream payload may be transiently malformed.")
             }
-            Self::MutationOutcomeUnknown { .. } => Some(
-                "Do not automatically resubmit. Inspect and reconcile the resource before any separately approved submission.",
-            ),
             Self::UpstreamApi { status, .. } if *status == 403 => {
                 Some("Verify property access and OAuth scope permissions.")
             }
