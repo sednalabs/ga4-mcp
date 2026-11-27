@@ -339,6 +339,11 @@ impl AnalyticsApiClient {
         self.token_header.as_ref()
     }
 
+    pub(crate) fn uses_official_google_origins(&self) -> bool {
+        self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com"
+            && self.data_base_url.as_ref() == "https://analyticsdata.googleapis.com"
+    }
+
     pub fn quota_project_configured(&self) -> bool {
         self.quota_project.is_some()
     }
@@ -1201,7 +1206,7 @@ fn validate_oauth_token_uri(token_uri: &str) -> Result<(), AnalyticsError> {
     Ok(())
 }
 
-fn parse_request_token_header_value(
+pub(crate) fn parse_request_token_header_value(
     raw_value: Option<&str>,
     header_name: &str,
 ) -> Result<Option<String>, AnalyticsError> {

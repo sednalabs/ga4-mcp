@@ -153,3 +153,27 @@ native TLS, allowed hosts/CIDRs and inbound auth for shared deployments;
 loopback must not be exposed through an untrusted reverse proxy. Replicas must
 use consistent configuration and credential boundaries. Two-replica live
 qualification is required before claiming production horizontal scaling.
+
+## Opt-in hosted scratchpad request isolation
+
+The default #45 containment remains unchanged. An explicitly enabled
+`GA4_MCP_ENABLE_HOSTED_SCRATCHPAD=true` deployment requires the scratchpad
+profile, native TLS, strict JWKS verification with issuer, audience and
+required scopes, an HTTPS MCP resource URL, request-only Google tokens in a
+separate header, official upstream origins and a maximum 900-second idle TTL.
+It forces stateless POST routing and disallows legacy MCP session IDs, global
+runtime-limit mutation and server credential fallback. The operator controls
+`GA4_MCP_HOSTED_MAX_SESSIONS_PER_PRINCIPAL` (default at most four).
+
+Each scratchpad dispatch consumes a one-use request-bound MCP identity witness
+and verifies the Google access token using Google's HTTPS OIDC UserInfo and
+GA Admin account summaries (requires OpenID/profile and Analytics read access).
+The complete bounded property set, verified Google subject and digest of the
+current Google credential define a scoped toolkit manager; no raw tokens or
+identities are stored in paths or emitted in diagnostics. Ingest is restricted
+to a property in that snapshot. Switching Google accounts, rotating tokens or
+changing the accessible-property set creates a different namespace; existing
+sessions are not silently inherited. Cached results are not proof of live
+metric-level permissions: use short TTLs, and do not expose the mode where
+stricter per-field revocation is required. The mode remains opt-in and requires
+end-to-end two-principal HTTP/auth/Google mock qualification before production use.

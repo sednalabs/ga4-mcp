@@ -36,11 +36,14 @@ struct GuardState {
 ///
 /// # Errors
 /// Returns an error when binding or HTTP serving fails.
-pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Result<()> {
-    settings.validate_scratchpad_profile(
-        server.capability_profile(),
-        server.accepts_upstream_request_tokens(),
-    )?;
+pub async fn run_http_server(mut server: AnalyticsMcp, mut settings: HttpSettings) -> Result<()> {
+    let hosted = crate::hosted_scratchpad::HostedScratchpadVerifier::from_env(&settings, &server)?;
+    if hosted.is_none() {
+        settings.validate_scratchpad_profile(
+            server.capability_profile(),
+            server.accepts_upstream_request_tokens(),
+        )?;
+    }
     if server.upstream_token_source() != server.client.upstream_token_source()
         || server.upstream_token_header() != server.client.upstream_token_header()
     {
@@ -48,11 +51,19 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
             "HTTP request dispatch and Google API client token configuration must agree"
         ));
     }
-    settings.validate_stateless_profile(
-        server.capability_profile(),
-        server.upstream_token_source(),
-        server.upstream_token_header(),
-    )?;
+    if let Some(verifier) = hosted {
+        // The scoped mode intentionally excludes legacy transport sessions:
+        // an MCP session identifier is not proof of principal ownership.
+        settings.stateless_http = true;
+        server.hosted_scratchpad = Some(Arc::new(verifier));
+    } else {
+        settings.validate_stateless_profile(
+            server.capability_profile(),
+            server.upstream_token_source(),
+            server.upstream_token_header(),
+        )?;
+    }
+    let auth_layer = build_auth_surface_layer(&settings).await?;
     let server_factory = server.clone();
     let runtime = build_local_streamable_http_service(
         move || Ok(server_factory.clone()),
@@ -67,9 +78,24 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
         settings: settings.clone(),
         allow_mcp_auth_headers: server.accepts_upstream_request_tokens(),
     };
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/health", get(health))
-        .nest_service("/mcp", mcp_service)
+        .nest_service("/mcp", mcp_service);
+    let router = if server.hosted_scratchpad.is_some() {
+        let (_, authenticator) = auth_layer
+            .as_ref()
+            .ok_or_else(|| anyhow!("hosted scratchpad requires authenticated HTTP"))?;
+        router.layer(middleware::from_fn_with_state(
+            crate::hosted_scratchpad::HostedAuthGuard::new(
+                authenticator.clone(),
+                server.upstream_token_header().to_string(),
+            ),
+            crate::hosted_scratchpad::verify_hosted_mcp_request,
+        ))
+    } else {
+        router
+    };
+    let mut router = router
         .layer(middleware::from_fn_with_state(
             guard_state.clone(),
             inbound_auth_guard,
@@ -83,7 +109,7 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
             client_ip_guard,
         ))
         .with_state(guard_state.clone());
-    if let Some(auth_layer) = build_auth_surface_layer(&settings).await? {
+    if let Some((auth_layer, _)) = auth_layer {
         router = router.layer(auth_layer);
     }
     router = router.layer(middleware::from_fn_with_state(
@@ -446,7 +472,9 @@ fn auth_surface_allow_insecure_http(config: &AuthSurfaceConfig) -> bool {
     })
 }
 
-async fn build_auth_surface_layer(settings: &HttpSettings) -> Result<Option<AuthSurfaceLayer>> {
+async fn build_auth_surface_layer(
+    settings: &HttpSettings,
+) -> Result<Option<(AuthSurfaceLayer, Arc<Authenticator>)>> {
     if !settings.auth.enabled {
         return Ok(None);
     }
@@ -566,7 +594,7 @@ async fn build_auth_surface_layer(settings: &HttpSettings) -> Result<Option<Auth
         realm: settings.auth.realm.clone(),
         scopes_supported: settings.auth.scopes_supported.clone(),
         allowed_client_ids: settings.auth.allowed_client_ids.iter().cloned().collect(),
-        authenticator: auth,
+        authenticator: auth.clone(),
         resource_url_override: settings.auth.resource_url.clone(),
     };
 
@@ -574,7 +602,7 @@ async fn build_auth_surface_layer(settings: &HttpSettings) -> Result<Option<Auth
     surface.allow_insecure_http = auth_surface_allow_insecure_http(&surface);
     let layer = AuthSurfaceLayer::from_config(surface)
         .map_err(|err| anyhow!("invalid auth surface config: {err}"))?;
-    Ok(Some(layer))
+    Ok(Some((layer, auth)))
 }
 
 fn request_targets_mcp(path: &str) -> bool {
