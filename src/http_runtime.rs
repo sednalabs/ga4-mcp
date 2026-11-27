@@ -40,10 +40,17 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
         server.capability_profile(),
         server.accepts_upstream_request_tokens(),
     )?;
+    if server.upstream_token_source() != server.client.upstream_token_source()
+        || server.upstream_token_header() != server.client.upstream_token_header()
+    {
+        return Err(anyhow!(
+            "HTTP request dispatch and Google API client token configuration must agree"
+        ));
+    }
     settings.validate_stateless_profile(
         server.capability_profile(),
-        server.client.upstream_token_source(),
-        server.client.upstream_token_header(),
+        server.upstream_token_source(),
+        server.upstream_token_header(),
     )?;
     let server_factory = server.clone();
     let mcp_service: StreamableHttpService<AnalyticsMcp, LocalSessionManager> =
