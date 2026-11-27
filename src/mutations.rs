@@ -545,13 +545,7 @@ mod tests {
         );
     }
 
-    // Exercise the actual RMCP line transport and tool router. The client is
-    // deliberately constructed without a mutation transport and with a
-    // non-Google Admin origin after CLI validation, so even an approved
-    // request must stop before credential resolution or network I/O. Separate provider fixtures
-    // exercise the exact POST and readback request shapes.
-    #[tokio::test]
-    async fn modern_stdio_approval_is_required_bound_and_single_use() {
+    async fn offline_mutation_server() -> AnalyticsMcp {
         use crate::config::{Cli, Settings};
         use crate::ga_client::AnalyticsApiClient;
         use crate::scratchpad::{
@@ -559,7 +553,6 @@ mod tests {
         };
         use clap::Parser;
         use std::sync::Arc;
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut settings = Settings::from_cli(Cli::parse_from([
@@ -583,14 +576,25 @@ mod tests {
             )
             .unwrap(),
         );
-        let server = AnalyticsMcp::new(
+        AnalyticsMcp::new(
             client,
             sessions,
             CapabilityProfile::Mutation,
             UpstreamTokenSource::Config,
             "authorization".to_string(),
-        );
+        )
+    }
 
+    // Exercise the actual RMCP line transport and tool router. The client is
+    // deliberately constructed without a mutation transport and with a
+    // non-Google Admin origin after CLI validation, so even an approved
+    // request must stop before credential resolution or network I/O. Separate provider fixtures
+    // exercise the exact POST and readback request shapes.
+    #[tokio::test]
+    async fn modern_stdio_approval_is_required_bound_and_single_use() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let server = offline_mutation_server().await;
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
             let service = rmcp::serve_server(server, server_io).await.unwrap();
@@ -748,6 +752,129 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), server_task)
             .await
             .expect("MCP service terminates")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn legacy_stdio_approval_requires_a_fresh_server_prompt() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let server = offline_mutation_server().await;
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let service = rmcp::serve_server(server, server_io).await.unwrap();
+            service.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+
+        async fn send(write: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, message: Value) {
+            write
+                .write_all(format!("{message}\n").as_bytes())
+                .await
+                .unwrap();
+            write.flush().await.unwrap();
+        }
+
+        async fn receive(read: &mut BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>) -> Value {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let mut line = String::new();
+                assert_ne!(read.read_line(&mut line).await.unwrap(), 0);
+                serde_json::from_str(&line).unwrap()
+            })
+            .await
+            .expect("bounded legacy MCP response")
+        }
+
+        send(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize",
+                "params":{
+                    "protocolVersion":"2025-11-25",
+                    "capabilities":{"elicitation":{"form":{}}},
+                    "clientInfo":{"name":"legacy-approval-fixture","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let initialized = receive(&mut read).await;
+        assert_eq!(initialized["id"], 1);
+        assert!(initialized.get("error").is_none(), "{initialized}");
+        assert_ne!(initialized["result"]["protocolVersion"], "2026-07-28");
+        send(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+
+        for (id, event, answer, expected) in [
+            (
+                2,
+                "purchase",
+                json!({"action":"decline"}),
+                "mutation_approval_required",
+            ),
+            (
+                3,
+                "purchase",
+                json!({"action":"accept","content":{"approved":false}}),
+                "mutation_approval_required",
+            ),
+            (
+                4,
+                "purchase",
+                json!({"action":"accept","content":{"approved":true}}),
+                "mutation_disabled",
+            ),
+            (
+                5,
+                "other",
+                json!({"action":"cancel"}),
+                "mutation_approval_required",
+            ),
+        ] {
+            send(
+                &mut write,
+                json!({
+                    "jsonrpc":"2.0","id":id,"method":"tools/call",
+                    "params":{"name":"create_key_event","arguments":{
+                        "property_id":123,"event_name":event,
+                        "counting_method":"ONCE_PER_EVENT"
+                    }}
+                }),
+            )
+            .await;
+
+            let prompt = receive(&mut read).await;
+            assert_eq!(prompt["method"], "elicitation/create", "{prompt}");
+            assert!(prompt.get("id").is_some(), "{prompt}");
+            let message = prompt["params"]["message"].as_str().unwrap();
+            assert!(message.contains("properties/123"));
+            assert!(message.contains(event));
+            assert!(message.contains("ONCE_PER_EVENT"));
+            send(
+                &mut write,
+                json!({"jsonrpc":"2.0","id":prompt["id"],"result":answer}),
+            )
+            .await;
+
+            let result = receive(&mut read).await;
+            assert_eq!(result["id"], id, "{result}");
+            assert_eq!(
+                result["result"]["structuredContent"]["ok"], false,
+                "{result}"
+            );
+            let error = &result["result"]["structuredContent"]["error"];
+            assert_eq!(error["code"], "POLICY_DENIED", "{result}");
+            assert!(error["message"].as_str().unwrap().contains(expected), "{result}");
+        }
+
+        drop(write);
+        drop(read);
+        tokio::time::timeout(Duration::from_secs(10), server_task)
+            .await
+            .expect("legacy MCP service terminates")
             .unwrap();
     }
 }
