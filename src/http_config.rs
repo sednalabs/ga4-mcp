@@ -533,17 +533,23 @@ mod tests {
                 UpstreamTokenSource::RequestHeaderOrConfig,
             ] {
                 for auth in [false, true] {
-                    for header in ["authorization", "x-ga4-google-authorization", "proxy-authorization"] {
+                    for header in [
+                        "authorization",
+                        "x-ga4-google-authorization",
+                        "proxy-authorization",
+                    ] {
                         let valid = profile == CapabilityProfile::ReadOnly
                             && source == UpstreamTokenSource::RequestHeader
                             && header != "proxy-authorization"
                             && (!auth || header != "authorization");
                         assert_eq!(
-                            validate_stateless_http_posture(true, profile, source, auth, header).is_ok(),
+                            validate_stateless_http_posture(true, profile, source, auth, header)
+                                .is_ok(),
                             valid
                         );
                         assert!(
-                            validate_stateless_http_posture(false, profile, source, auth, header).is_ok()
+                            validate_stateless_http_posture(false, profile, source, auth, header)
+                                .is_ok()
                         );
                     }
                 }
