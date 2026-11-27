@@ -463,7 +463,9 @@ mod tests {
                 Some("Bearer fixture-a") if !query.contains_key("pageToken") => {
                     json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/42"}]}],"nextPageToken":"next"})
                 }
-                Some("Bearer fixture-a") if query.get("pageToken").map(String::as_str) == Some("next") => {
+                Some("Bearer fixture-a")
+                    if query.get("pageToken").map(String::as_str) == Some("next") =>
+                {
                     json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/43"}]}]})
                 }
                 Some("Bearer fixture-b") => {
