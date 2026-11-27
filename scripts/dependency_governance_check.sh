@@ -33,6 +33,10 @@ for cmd in cargo cargo-deny cargo-audit cargo-outdated; do
   fi
 done
 
+echo "[preflight] exact maintenance exception scope and expiry"
+run_cmd python3 scripts/advisory_exception_check.py
+run_cmd python3 -m unittest discover -s scripts -p test_advisory_exception_check.py
+
 echo "[1/3] cargo deny (advisories + licenses + bans + sources)"
 run_cmd cargo deny check advisories licenses bans sources
 

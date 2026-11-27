@@ -52,7 +52,7 @@ review alone is not evidence that the image actually builds.
 
 Set `GA4_MCP_STATELESS_HTTP=1`, capability profile `read_only`, and
 `GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header`. The pinned rmcp
-2.1.0 server then disables MCP transport sessions and sends JSON responses
+3.9.0 server then disables MCP transport sessions and sends JSON responses
 for requests. Clients must send their own Google token on every API call.
 If inbound MCP OAuth is enabled, use a distinct configured Google-token
 header (for example `x-ga4-google-authorization`) rather than forwarding the

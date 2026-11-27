@@ -10,44 +10,7 @@ use mcp_toolkit_policy_runtime::{
     sql_restricted_policy_authority,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScratchpadSqlPolicyCode {
-    EmptySql,
-    UnterminatedToken,
-    MultipleStatements,
-    NotReadOnlyPrefix,
-    ForbiddenKeyword,
-    ForbiddenFunction,
-    ExplainNotReadOnly,
-    ClassifierUnavailable,
-    SqlTooLarge,
-    DuckDbForbiddenKeyword,
-    DuckDbForbiddenFunction,
-}
-
-impl ScratchpadSqlPolicyCode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::EmptySql => "EMPTY_SQL",
-            Self::UnterminatedToken => "UNTERMINATED_TOKEN",
-            Self::MultipleStatements => "MULTIPLE_STATEMENTS",
-            Self::NotReadOnlyPrefix => "NOT_READ_ONLY_PREFIX",
-            Self::ForbiddenKeyword => "FORBIDDEN_KEYWORD",
-            Self::ForbiddenFunction => "FORBIDDEN_FUNCTION",
-            Self::ExplainNotReadOnly => "EXPLAIN_NOT_READ_ONLY",
-            Self::ClassifierUnavailable => "CLASSIFIER_UNAVAILABLE",
-            Self::SqlTooLarge => "SQL_TOO_LARGE",
-            Self::DuckDbForbiddenKeyword => "DUCKDB_FORBIDDEN_KEYWORD",
-            Self::DuckDbForbiddenFunction => "DUCKDB_FORBIDDEN_FUNCTION",
-        }
-    }
-}
-
-impl std::fmt::Display for ScratchpadSqlPolicyCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
+pub use mcp_toolkit_scratchpad::ScratchpadSqlPolicyCode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScratchpadSqlPolicyError {
