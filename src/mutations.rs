@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 use mcp_toolkit_core::guarded_action::{GuardedActionPosture, GuardedActionRuntimeMode};
 use mcp_toolkit_core::scoped_cursor::{CursorLimits, CursorScope, ScopedCursorStore};
-use rmcp::model::{CallToolResponse, ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction, InputRequest, InputRequiredResult, InputRequests, InputResponses, ProtocolVersion};
+use rmcp::model::{
+    CallToolResponse, ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction,
+    InputRequest, InputRequests, InputRequiredResult, InputResponses, ProtocolVersion,
+};
 use rmcp::service::{RequestContext, RoleServer};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -105,33 +108,60 @@ fn invalid(field: &'static str, message: &'static str) -> AnalyticsError {
     AnalyticsError::invalid(field, message)
 }
 
-fn validate_text(field: &'static str, text: &str, max: usize, required: bool) -> Result<(), AnalyticsError> {
-    if (required && text.trim().is_empty()) || text.chars().count() > max || text.chars().any(char::is_control) {
+fn validate_text(
+    field: &'static str,
+    text: &str,
+    max: usize,
+    required: bool,
+) -> Result<(), AnalyticsError> {
+    if (required && text.trim().is_empty())
+        || text.chars().count() > max
+        || text.chars().any(char::is_control)
+    {
         return Err(invalid(field, "invalid or excessive text"));
     }
     Ok(())
 }
 
 fn validate_identifier(field: &'static str, text: &str, max: usize) -> Result<(), AnalyticsError> {
-    if text.is_empty() || text.len() > max || !text.as_bytes()[0].is_ascii_alphabetic() ||
-        !text.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    if text.is_empty()
+        || text.len() > max
+        || !text.as_bytes()[0].is_ascii_alphabetic()
+        || !text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err(invalid(field, "expected a bounded ASCII identifier beginning with a letter"));
+        return Err(invalid(
+            field,
+            "expected a bounded ASCII identifier beginning with a letter",
+        ));
     }
     Ok(())
 }
 
 fn parse_date(field: &'static str, text: &str) -> Result<Date, AnalyticsError> {
     let bytes = text.as_bytes();
-    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-'
-        || !bytes.iter().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
     {
         return Err(invalid(field, "expected YYYY-MM-DD"));
     }
-    let year = text[..4].parse::<i32>().map_err(|_| invalid(field, "invalid year"))?;
-    let month = text[5..7].parse::<u8>().ok().and_then(|m| Month::try_from(m).ok())
+    let year = text[..4]
+        .parse::<i32>()
+        .map_err(|_| invalid(field, "invalid year"))?;
+    let month = text[5..7]
+        .parse::<u8>()
+        .ok()
+        .and_then(|m| Month::try_from(m).ok())
         .ok_or_else(|| invalid(field, "invalid month"))?;
-    let day = text[8..].parse::<u8>().map_err(|_| invalid(field, "invalid day"))?;
+    let day = text[8..]
+        .parse::<u8>()
+        .map_err(|_| invalid(field, "invalid day"))?;
     if !(1..=9999).contains(&year) {
         return Err(invalid(field, "invalid year"));
     }
@@ -161,7 +191,8 @@ impl AnnotationArgs {
             if end < start {
                 return Err(invalid("end_date", "end date precedes start date"));
             }
-            body["annotationDateRange"] = json!({"startDate":date_json(start), "endDate":date_json(end)});
+            body["annotationDateRange"] =
+                json!({"startDate":date_json(start), "endDate":date_json(end)});
         } else {
             body["annotationDate"] = date_json(start);
         }
@@ -184,16 +215,29 @@ impl CustomDimensionArgs {
         };
         validate_identifier("parameter_name", &self.parameter_name, max)?;
         validate_text("display_name", &self.display_name, 82, true)?;
-        if !self.display_name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
-            || !self.display_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b' ' || byte == b'_')
+        if !self
+            .display_name
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            || !self
+                .display_name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b' ' || byte == b'_')
         {
-            return Err(invalid("display_name", "expected letters, digits, spaces or underscores, beginning with a letter"));
+            return Err(invalid(
+                "display_name",
+                "expected letters, digits, spaces or underscores, beginning with a letter",
+            ));
         }
         if let Some(description) = &self.description {
             validate_text("description", description, 150, false)?;
         }
         if self.disallow_ads_personalization.is_some() && self.scope != "USER" {
-            return Err(invalid("disallow_ads_personalization", "only supported for USER dimensions"));
+            return Err(invalid(
+                "disallow_ads_personalization",
+                "only supported for USER dimensions",
+            ));
         }
         let mut body = json!({"parameterName": self.parameter_name, "displayName": self.display_name, "scope": self.scope});
         if let Some(value) = self.description {
@@ -218,13 +262,23 @@ impl KeyEventArgs {
         if !["ONCE_PER_EVENT", "ONCE_PER_SESSION"].contains(&self.counting_method.as_str()) {
             return Err(invalid("counting_method", "unsupported counting method"));
         }
-        let mut body = json!({"eventName": self.event_name, "countingMethod": self.counting_method});
+        let mut body =
+            json!({"eventName": self.event_name, "countingMethod": self.counting_method});
         match (self.default_numeric_value, self.default_currency_code) {
             (None, None) => {}
-            (Some(value), Some(currency)) if value.is_finite() && currency.len() == 3 && currency.bytes().all(|b| b.is_ascii_uppercase()) => {
+            (Some(value), Some(currency))
+                if value.is_finite()
+                    && currency.len() == 3
+                    && currency.bytes().all(|b| b.is_ascii_uppercase()) =>
+            {
                 body["defaultValue"] = json!({"numericValue": value, "currencyCode": currency});
             }
-            _ => return Err(invalid("default_numeric_value", "supply a finite value and a three-letter uppercase currency code together")),
+            _ => {
+                return Err(invalid(
+                    "default_numeric_value",
+                    "supply a finite value and a three-letter uppercase currency code together",
+                ));
+            }
         }
         Ok(MutationPlan {
             tool: "create_key_event".into(),
@@ -253,8 +307,15 @@ fn approved_response(responses: Option<&InputResponses>) -> bool {
         .filter(|responses| responses.len() == 1)
         .and_then(|responses| responses.get(APPROVAL_KEY))
         .and_then(|value| serde_json::from_value::<ElicitResult>(value.clone()).ok())
-        .is_some_and(|result| result.action == ElicitationAction::Accept
-            && result.content.as_ref().and_then(|content| content.get("approved")).and_then(Value::as_bool) == Some(true))
+        .is_some_and(|result| {
+            result.action == ElicitationAction::Accept
+                && result
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.get("approved"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+        })
 }
 
 fn consume_approval(
@@ -263,11 +324,16 @@ fn consume_approval(
     state: &str,
     responses: Option<&InputResponses>,
 ) -> Result<ApprovedMutation, AnalyticsError> {
-    let expected = serde_json::to_value(&plan).map_err(|_| AnalyticsError::Internal("approval serialization failed".to_string()))?;
-    let stored = store.consume(state, &scope(&plan)?)
+    let expected = serde_json::to_value(&plan)
+        .map_err(|_| AnalyticsError::Internal("approval serialization failed".to_string()))?;
+    let stored = store
+        .consume(state, &scope(&plan)?)
         .map_err(|_| AnalyticsError::policy_denied("mutation_approval_required", &plan.tool))?;
     if stored != expected || !approved_response(responses) {
-        return Err(AnalyticsError::policy_denied("mutation_approval_required", &plan.tool));
+        return Err(AnalyticsError::policy_denied(
+            "mutation_approval_required",
+            &plan.tool,
+        ));
     }
     Ok(ApprovedMutation(plan))
 }
@@ -300,35 +366,61 @@ async fn execute_inner(
     } else {
         GuardedActionRuntimeMode::ReadOnly
     };
-    runtime.assert_allowed(&plan.tool, GuardedActionPosture::guarded_apply())
-        .map_err(|_| AnalyticsError::policy_denied(server.capability_profile().as_str(), &plan.tool))?;
-    if context.extensions.get::<axum::http::request::Parts>().is_some()
+    runtime
+        .assert_allowed(&plan.tool, GuardedActionPosture::guarded_apply())
+        .map_err(|_| {
+            AnalyticsError::policy_denied(server.capability_profile().as_str(), &plan.tool)
+        })?;
+    if context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .is_some()
         || server.upstream_token_source() != UpstreamTokenSource::Config
         || server.client.upstream_token_source() != UpstreamTokenSource::Config
         || server.client.analytics_scope() != ANALYTICS_EDIT_SCOPE
         || context.ct.is_cancelled()
     {
-        return Err(AnalyticsError::policy_denied("mutation_local_stdio_only", &plan.tool));
+        return Err(AnalyticsError::policy_denied(
+            "mutation_local_stdio_only",
+            &plan.tool,
+        ));
     }
-    if !context.client_capabilities().is_some_and(|capabilities| capabilities.elicitation.is_some()) {
-        return Err(AnalyticsError::policy_denied("mutation_client_approval_required", &plan.tool));
+    if !context
+        .client_capabilities()
+        .is_some_and(|capabilities| capabilities.elicitation.is_some())
+    {
+        return Err(AnalyticsError::policy_denied(
+            "mutation_client_approval_required",
+            &plan.tool,
+        ));
     }
     let message = format!(
         "Approve the following one-time creation in Google Analytics? This changes live configuration. Property: {}. Tool: {}. Exact payload: {}",
         plan.parent, plan.tool, plan.body
     );
-    let modern = context.protocol_version().is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
+    let modern = context
+        .protocol_version()
+        .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
     let approved = if modern {
         if let Some(state) = state {
             consume_approval(&server.mutation_approvals, plan, &state, responses.as_ref())?
         } else {
             if responses.is_some() {
-                return Err(AnalyticsError::policy_denied("mutation_approval_required", &plan.tool));
+                return Err(AnalyticsError::policy_denied(
+                    "mutation_approval_required",
+                    &plan.tool,
+                ));
             }
             let token = uuid::Uuid::new_v4().to_string();
-            let payload = serde_json::to_value(&plan).map_err(|_| AnalyticsError::Internal("approval serialization failed".to_string()))?;
-            server.mutation_approvals.insert(&token, scope(&plan)?, payload)
-                .map_err(|_| AnalyticsError::Internal("approval capacity unavailable".to_string()))?;
+            let payload = serde_json::to_value(&plan).map_err(|_| {
+                AnalyticsError::Internal("approval serialization failed".to_string())
+            })?;
+            server
+                .mutation_approvals
+                .insert(&token, scope(&plan)?, payload)
+                .map_err(|_| {
+                    AnalyticsError::Internal("approval capacity unavailable".to_string())
+                })?;
             let mut requests = InputRequests::new();
             requests.insert(APPROVAL_KEY.to_string(), InputRequest::Elicitation(ElicitRequest::new(
                 ElicitRequestParams::FormElicitationParams {
@@ -342,16 +434,26 @@ async fn execute_inner(
         }
     } else {
         if state.is_some() || responses.is_some() {
-            return Err(AnalyticsError::policy_denied("mutation_approval_required", &plan.tool));
+            return Err(AnalyticsError::policy_denied(
+                "mutation_approval_required",
+                &plan.tool,
+            ));
         }
-        let approval = tokio::time::timeout(APPROVAL_TTL, context.peer.elicit::<UserApproval>(message)).await;
+        let approval =
+            tokio::time::timeout(APPROVAL_TTL, context.peer.elicit::<UserApproval>(message)).await;
         if !matches!(approval, Ok(Ok(Some(UserApproval { approved: true })))) {
-            return Err(AnalyticsError::policy_denied("mutation_approval_required", &plan.tool));
+            return Err(AnalyticsError::policy_denied(
+                "mutation_approval_required",
+                &plan.tool,
+            ));
         }
         ApprovedMutation(plan)
     };
     if context.ct.is_cancelled() {
-        return Err(AnalyticsError::policy_denied("mutation_cancelled", "create"));
+        return Err(AnalyticsError::policy_denied(
+            "mutation_cancelled",
+            "create",
+        ));
     }
     let data = server.client.apply_approved_mutation(approved).await?;
     Ok(contract::success(data, contract::elapsed_ms(started)).into())
@@ -368,11 +470,17 @@ mod tests {
             counting_method: "ONCE_PER_EVENT".into(),
             default_numeric_value: None,
             default_currency_code: None,
-        }.plan().expect("valid event")
+        }
+        .plan()
+        .expect("valid event")
     }
 
     fn response(approved: bool) -> InputResponses {
-        [(APPROVAL_KEY.into(), json!({"action":"accept","content":{"approved":approved}}))].into()
+        [(
+            APPROVAL_KEY.into(),
+            json!({"action":"accept","content":{"approved":approved}}),
+        )]
+        .into()
     }
 
     #[test]
@@ -380,16 +488,42 @@ mod tests {
         let store = approval_store();
         let plan = key_event("purchase");
         let token = "00000000-0000-4000-8000-000000000001";
-        store.insert(token, scope(&plan).unwrap(), serde_json::to_value(&plan).unwrap()).unwrap();
-        assert!(consume_approval(&store, key_event("other"), token, Some(&response(true))).is_err());
+        store
+            .insert(
+                token,
+                scope(&plan).unwrap(),
+                serde_json::to_value(&plan).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            consume_approval(&store, key_event("other"), token, Some(&response(true))).is_err()
+        );
         assert!(consume_approval(&store, plan.clone(), token, Some(&response(true))).is_err());
-        store.insert(token, scope(&plan).unwrap(), serde_json::to_value(&plan).unwrap()).unwrap();
+        store
+            .insert(
+                token,
+                scope(&plan).unwrap(),
+                serde_json::to_value(&plan).unwrap(),
+            )
+            .unwrap();
         assert!(consume_approval(&store, plan.clone(), token, Some(&response(false))).is_err());
-        store.insert(token, scope(&plan).unwrap(), serde_json::to_value(&plan).unwrap()).unwrap();
+        store
+            .insert(
+                token,
+                scope(&plan).unwrap(),
+                serde_json::to_value(&plan).unwrap(),
+            )
+            .unwrap();
         assert!(consume_approval(&store, plan.clone(), token, Some(&response(true))).is_ok());
         assert!(consume_approval(&store, plan, token, Some(&response(true))).is_err());
         assert!(!approved_response(None));
-        assert!(!approved_response(Some(&[(APPROVAL_KEY.into(),json!({"action":"decline","content":{"approved":true}}))].into())));
+        assert!(!approved_response(Some(
+            &[(
+                APPROVAL_KEY.into(),
+                json!({"action":"decline","content":{"approved":true}})
+            )]
+            .into()
+        )));
     }
 
     #[test]
@@ -397,11 +531,17 @@ mod tests {
         let args: AnnotationArgs = serde_json::from_value(json!({"property_id":123,"title":"Release","color":"BLUE","start_date":"2026-11-27","end_date":"2026-11-28"})).unwrap();
         let plan = args.plan().unwrap();
         assert_eq!(plan.parent, "properties/123");
-        assert_eq!(plan.body["annotationDateRange"]["startDate"], json!({"year":2026,"month":11,"day":27}));
-        assert!(parse_date("date","2026-02-29").is_err());
-        assert!(parse_date("date","0000-01-01").is_err());
+        assert_eq!(
+            plan.body["annotationDateRange"]["startDate"],
+            json!({"year":2026,"month":11,"day":27})
+        );
+        assert!(parse_date("date", "2026-02-29").is_err());
+        assert!(parse_date("date", "0000-01-01").is_err());
         let args: CustomDimensionArgs = serde_json::from_value(json!({"property_id":123,"parameter_name":"campaign_code","display_name":"Campaign code","scope":"EVENT","disallow_ads_personalization":true})).unwrap();
         assert!(args.plan().is_err());
-        assert_eq!(key_event("purchase").body, json!({"eventName":"purchase","countingMethod":"ONCE_PER_EVENT"}));
+        assert_eq!(
+            key_event("purchase").body,
+            json!({"eventName":"purchase","countingMethod":"ONCE_PER_EVENT"})
+        );
     }
 }

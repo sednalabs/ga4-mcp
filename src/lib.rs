@@ -18,13 +18,13 @@
 
 pub mod auth_ux;
 mod change_history;
-mod mutations;
 pub mod config;
 pub mod contract;
 pub mod error;
 pub mod ga_client;
 pub mod http_config;
 pub mod http_runtime;
+mod mutations;
 pub mod scratchpad;
 pub mod server;
 pub mod sql_safety;

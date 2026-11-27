@@ -297,15 +297,19 @@ impl AnalyticsApiClient {
             .build()
             .map_err(AnalyticsError::Transport)?;
 
-        let mutation_http = if settings.capability_profile == crate::config::CapabilityProfile::Mutation {
-            Some(Client::builder()
-                .timeout(settings.http_timeout)
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .build().map_err(AnalyticsError::Transport)?)
-        } else {
-            None
-        };
+        let mutation_http =
+            if settings.capability_profile == crate::config::CapabilityProfile::Mutation {
+                Some(
+                    Client::builder()
+                        .timeout(settings.http_timeout)
+                        .redirect(reqwest::redirect::Policy::none())
+                        .retry(reqwest::retry::never())
+                        .build()
+                        .map_err(AnalyticsError::Transport)?,
+                )
+            } else {
+                None
+            };
 
         let auth_mode = select_auth_mode(settings)?;
 
@@ -931,13 +935,20 @@ impl AnalyticsApiClient {
         approved: crate::mutations::ApprovedMutation,
     ) -> Result<Value, AnalyticsError> {
         let plan = approved.into_plan();
-        let client = self.mutation_http.as_ref()
-            .filter(|_| self.analytics_scope() == crate::config::ANALYTICS_EDIT_SCOPE
-                && self.token_source == UpstreamTokenSource::Config
-                && self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com")
+        let client = self
+            .mutation_http
+            .as_ref()
+            .filter(|_| {
+                self.analytics_scope() == crate::config::ANALYTICS_EDIT_SCOPE
+                    && self.token_source == UpstreamTokenSource::Config
+                    && self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com"
+            })
             .ok_or_else(|| AnalyticsError::policy_denied("mutation_disabled", &plan.tool))?;
         let token = self.access_token().await?;
-        let url = format!("{}/{}/{}/{}", self.admin_base_url, plan.version, plan.parent, plan.collection);
+        let url = format!(
+            "{}/{}/{}/{}",
+            self.admin_base_url, plan.version, plan.parent, plan.collection
+        );
         let mut request = client.post(&url).bearer_auth(&token).json(&plan.body);
         if let Some(project) = &self.quota_project {
             request = request.header("x-goog-user-project", project.as_ref());
@@ -948,7 +959,9 @@ impl AnalyticsApiClient {
         let name = created.get("name").and_then(Value::as_str)
             .filter(|name| name.strip_prefix(&prefix).is_some_and(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')))
             .ok_or_else(|| AnalyticsError::Internal("GA4 creation may have succeeded but returned an invalid resource name; inspect before retrying".to_string()))?;
-        let mut readback = client.get(format!("{}/{}/{}", self.admin_base_url, plan.version, name)).bearer_auth(&token);
+        let mut readback = client
+            .get(format!("{}/{}/{}", self.admin_base_url, plan.version, name))
+            .bearer_auth(&token);
         if let Some(project) = &self.quota_project {
             readback = readback.header("x-goog-user-project", project.as_ref());
         }
@@ -1205,26 +1218,39 @@ impl AnalyticsApiClient {
 // filters or sensitive configuration data. Retain useful status-level guidance.
 async fn mutation_response(request: RequestBuilder) -> Result<Value, AnalyticsError> {
     const MAX_RESPONSE_BYTES: usize = 256 * 1024;
-    let mut response = request.send().await.map_err(|_| AnalyticsError::Internal(
-        "GA4 mutation outcome may be uncertain; inspect the resource before retrying".to_string()
-    ))?;
+    let mut response = request.send().await.map_err(|_| {
+        AnalyticsError::Internal(
+            "GA4 mutation outcome may be uncertain; inspect the resource before retrying"
+                .to_string(),
+        )
+    })?;
     let status = response.status();
     if !status.is_success() {
         return Err(AnalyticsError::UpstreamApi {
             status: status.as_u16(),
-            message: "Google rejected or did not confirm the operation; inspect before retrying".to_string(),
+            message: "Google rejected or did not confirm the operation; inspect before retrying"
+                .to_string(),
         });
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| AnalyticsError::Internal(
-        "GA4 response interrupted; inspect the resource before retrying".to_string()
-    ))? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
+        AnalyticsError::Internal(
+            "GA4 response interrupted; inspect the resource before retrying".to_string(),
+        )
+    })? {
         if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-            return Err(AnalyticsError::Internal("GA4 response exceeded the mutation response bound; inspect before retrying".to_string()));
+            return Err(AnalyticsError::Internal(
+                "GA4 response exceeded the mutation response bound; inspect before retrying"
+                    .to_string(),
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| AnalyticsError::Internal("GA4 returned an invalid response; inspect the resource before retrying".to_string()))
+    serde_json::from_slice(&bytes).map_err(|_| {
+        AnalyticsError::Internal(
+            "GA4 returned an invalid response; inspect the resource before retrying".to_string(),
+        )
+    })
 }
 
 fn change_history_rejection_message(status: u16) -> &'static str {

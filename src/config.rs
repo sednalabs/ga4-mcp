@@ -751,7 +751,11 @@ mod tests {
             "create_custom_dimension",
             "create_key_event",
         ] {
-            for profile in [CapabilityProfile::ReadOnly, CapabilityProfile::Scratchpad, CapabilityProfile::Audit] {
+            for profile in [
+                CapabilityProfile::ReadOnly,
+                CapabilityProfile::Scratchpad,
+                CapabilityProfile::Audit,
+            ] {
                 assert!(!profile.allows_tool(name));
             }
             assert!(CapabilityProfile::Mutation.allows_tool(name));
