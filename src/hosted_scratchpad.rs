@@ -163,8 +163,8 @@ pub(crate) async fn verify_hosted_mcp_request(
 pub(crate) struct HostedScratchpadVerifier {
     client: Client,
     max_sessions_per_principal: usize,
-    userinfo: &'static str,
-    account_summaries: &'static str,
+    userinfo: String,
+    account_summaries: String,
 }
 
 impl HostedScratchpadVerifier {
@@ -235,8 +235,8 @@ impl HostedScratchpadVerifier {
         Ok(Some(Self {
             client,
             max_sessions_per_principal: limit,
-            userinfo: USERINFO,
-            account_summaries: ACCOUNT_SUMMARIES,
+            userinfo: USERINFO.to_owned(),
+            account_summaries: ACCOUNT_SUMMARIES.to_owned(),
         }))
     }
 
@@ -289,7 +289,7 @@ impl HostedScratchpadVerifier {
         &self,
         token: &str,
     ) -> Result<(String, BTreeSet<String>), AnalyticsError> {
-        let info = bounded_json(self.client.get(self.userinfo).bearer_auth(token)).await?;
+        let info = bounded_json(self.client.get(&self.userinfo).bearer_auth(token)).await?;
         let subject = info
             .get("sub")
             .and_then(Value::as_str)
@@ -302,7 +302,7 @@ impl HostedScratchpadVerifier {
         for _ in 0..MAX_PAGES {
             let mut req = self
                 .client
-                .get(self.account_summaries)
+                .get(&self.account_summaries)
                 .bearer_auth(token)
                 .query(&[
                     ("pageSize", "100"),
@@ -423,6 +423,90 @@ mod tests {
         };
         assert!(expired.claim(token).is_err());
         assert!(canonical_token(Some("not valid token"), "x-google-token").is_err());
+    }
+
+    #[test]
+    fn malformed_authority_inventory_is_never_treated_as_empty() {
+        for page in [
+            json!({"accountSummaries": null}),
+            json!({"accountSummaries": {}}),
+            json!({"accountSummaries": [{"propertySummaries": null}]}),
+            json!({"accountSummaries": [{"propertySummaries": {}}]}),
+            json!({"accountSummaries": [{"propertySummaries": [{}]}]}),
+        ] {
+            assert!(collect_properties(&page, &mut BTreeSet::new()).is_err());
+        }
+        assert!(collect_properties(&json!({}), &mut BTreeSet::new()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn provider_identity_requires_complete_valid_bounded_authority() {
+        use axum::{Json, Router, extract::Query, http::HeaderMap, routing::get};
+        use std::collections::HashMap;
+
+        async fn userinfo(headers: HeaderMap) -> (StatusCode, Json<Value>) {
+            let subject = match headers.get("authorization").and_then(|h| h.to_str().ok()) {
+                Some("Bearer fixture-a") => "google-a",
+                Some("Bearer fixture-b") => "google-b",
+                Some("Bearer fixture-repeat") => "google-repeat",
+                Some("Bearer fixture-malformed") => "google-malformed",
+                _ => return (StatusCode::UNAUTHORIZED, Json(json!({}))),
+            };
+            (StatusCode::OK, Json(json!({"sub": subject})))
+        }
+
+        async fn summaries(
+            headers: HeaderMap,
+            Query(query): Query<HashMap<String, String>>,
+        ) -> (StatusCode, Json<Value>) {
+            let result = match headers.get("authorization").and_then(|h| h.to_str().ok()) {
+                Some("Bearer fixture-a") if !query.contains_key("pageToken") => {
+                    json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/42"}]}],"nextPageToken":"next"})
+                }
+                Some("Bearer fixture-a") if query.get("pageToken").map(String::as_str) == Some("next") => {
+                    json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/43"}]}]})
+                }
+                Some("Bearer fixture-b") => {
+                    json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/99"}]}]})
+                }
+                Some("Bearer fixture-repeat") => json!({"nextPageToken":"same"}),
+                Some("Bearer fixture-malformed") => json!({"accountSummaries": null}),
+                _ => return (StatusCode::FORBIDDEN, Json(json!({}))),
+            };
+            (StatusCode::OK, Json(result))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/userinfo", get(userinfo))
+            .route("/summaries", get(summaries));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        // Private test construction only; production uses fixed HTTPS URLs.
+        let verifier = HostedScratchpadVerifier {
+            client: Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+            max_sessions_per_principal: 4,
+            userinfo: format!("{origin}/userinfo"),
+            account_summaries: format!("{origin}/summaries"),
+        };
+        let (subject, props) = verifier.verify_google("fixture-a").await.unwrap();
+        assert_eq!(subject, "google-a");
+        assert_eq!(
+            props,
+            BTreeSet::from(["properties/42".to_owned(), "properties/43".to_owned()])
+        );
+        let (subject, props) = verifier.verify_google("fixture-b").await.unwrap();
+        assert_eq!(subject, "google-b");
+        assert_eq!(props, BTreeSet::from(["properties/99".to_owned()]));
+        for token in ["fixture-invalid", "fixture-repeat", "fixture-malformed"] {
+            assert!(verifier.verify_google(token).await.is_err());
+        }
+        server.abort();
     }
 
     #[test]

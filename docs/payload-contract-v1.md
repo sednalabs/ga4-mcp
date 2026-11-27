@@ -158,6 +158,7 @@ Postgres-specific fields are not required by this contract.
 
 - `get_account_summaries`
 - `get_account_data_sharing_settings`
+- `search_change_history_events` (audit profile only)
 - `get_property_details`
 - `get_property_data_retention_settings`
 - `list_google_ads_links`

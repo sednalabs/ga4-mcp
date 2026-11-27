@@ -280,7 +280,9 @@ cargo run --release --bin ga4-mcp-http
 Set `GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE` (or `--capability-profile`) to control tool authorization:
 
 - `read_only` (default): GA read/report tools only; all `scratchpad_*` tools are blocked.
-- `scratchpad`: full GA + scratchpad surface.
+- `scratchpad`: GA read/report and scratchpad surface.
+- `audit`: GA read/report and configuration history (no scratchpad or GA mutations).
+  Requires explicit `GOOGLE_ANALYTICS_MCP_SCOPE=https://www.googleapis.com/auth/analytics.edit`.
 
 Scratchpad sessions are not yet isolated by authenticated principal. Use stdio
 for scratchpad workflows, or a dedicated single-user loopback HTTP process with

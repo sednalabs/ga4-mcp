@@ -161,3 +161,21 @@ permissions, read event records, or start a billable BigQuery job. Resolve the
 project number and verify the expected `analytics_<property_id>` dataset in the
 linked project and location before any event-export query. Export data and
 GA Data API aggregate reports have different semantics.
+
+## Elevated configuration audit
+
+`search_change_history_events` requires capability profile `audit` and explicit
+`analytics.edit` scope, even though the operation is read-only. Google also
+checks the caller's account permissions. Supports account/property, resource,
+action, actor and RFC3339 time filters. Request one to ten pages (default one),
+each at most 200 events (default 50); use the returned continuation token only
+with the same filters. Actor emails and allowlisted configuration snapshots are
+omitted by default. Secret-bearing resources and unrecognised fields are never
+included in snapshots. The API exposes only Google's supported change history,
+not necessarily the complete UI audit log.
+
+The audit runtime deliberately accepts the exact explicit `analytics.edit`
+scope, not a broader mixed-scope configuration. Provider rejection messages
+are replaced with status-specific guidance to avoid reflecting actor filters
+or sensitive upstream values. An unexpectedly oversized provider page fails
+closed rather than silently dropping audit events or breaching the row bound.
