@@ -1,0 +1,5 @@
+[advisories]
+# Chrono maintenance only; expires 2026-12-18 00:00 UTC, tracked in Ops w19008.
+# Scope, locked version and expiry are checked before audit by CI and the local
+# governance script. See advisory-exceptions.toml and docs/SECURITY_MODEL.md.
+ignore = ["RUSTSEC-2026-0543"]

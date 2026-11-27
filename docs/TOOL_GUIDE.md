@@ -14,6 +14,7 @@ scratchpad analysis tools. All responses use Contract V1 envelopes:
 | `get_property_data_retention_settings` | Read property-level retention settings. |
 | `list_google_ads_links` | List Google Ads links for one property. |
 | `list_property_annotations` | List annotations for one property. |
+| `list_key_events` | List configured key-event definitions (including counting method and default value). |
 | `get_custom_dimensions_and_metrics` | List custom definitions for one property. |
 
 ## Report Tools
@@ -48,6 +49,13 @@ request schema supports `limit` but has no `offset` field. It returns one
 bounded result page, rejects non-zero offsets and cursors, and reports
 truncation without advertising a cursor that would repeat the same rows.
 Standard `run_report` pagination is unchanged.
+
+Both `run_realtime_report` and `scratchpad_ingest_realtime_report` accept
+optional `minute_ranges` (up to two objects), e.g.
+`[{"name":"recent","start_minutes_ago":4,"end_minutes_ago":0}]`.
+CamelCase field aliases are accepted. Omitted bounds default to 29 and 0;
+minutes 30–59 require a GA360 property and eligibility is checked by Google.
+Ranges are validated before an upstream request and are not pagination.
 
 `run_conversions_report` uses the same tabular controls and cursor behavior as
 `run_report`. Its `conversion_spec.conversion_actions` accepts zero or more
@@ -140,6 +148,19 @@ Clients should branch on `ok` first. When `ok=false`, inspect
 `error.reason`, `error.code`, and `error.status_code` if present. Authentication
 and upstream Google failures are reported through the same Contract V1 shape as
 validation and policy failures.
+
+## BigQuery export discovery
+
+Use `list_bigquery_links` with a property ID to inspect the configured export
+project (Google returns a project number), dataset location, daily and
+streaming export settings, selected streams, and excluded events. The GA Admin
+v1alpha endpoint accepts the existing `analytics.readonly` scope. Pagination
+is bounded by the same server limits as other Admin list tools. Discovery
+does not verify that an export dataset or table exists, establish BigQuery IAM
+permissions, read event records, or start a billable BigQuery job. Resolve the
+project number and verify the expected `analytics_<property_id>` dataset in the
+linked project and location before any event-export query. Export data and
+GA Data API aggregate reports have different semantics.
 
 ## Elevated configuration audit
 

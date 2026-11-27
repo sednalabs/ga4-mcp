@@ -14,6 +14,13 @@ Set `GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE` (or `--capability-profile`) to con
 - `read_only` (default): GA read/report tools only. All `scratchpad_*` tools are blocked.
 - `scratchpad`: GA + scratchpad tools enabled.
 
+Scratchpad sessions are not yet isolated by authenticated principal. Use stdio
+for scratchpad workflows, or a dedicated single-user loopback HTTP process with
+`GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config`, inbound auth disabled,
+and `GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP=1`. Never share or proxy
+that loopback scratchpad endpoint to other users. Other HTTP scratchpad
+configurations fail at startup; the read-only profile is unaffected.
+
 When blocked, tools return:
 
 ```json
@@ -168,6 +175,7 @@ Notes:
 - `date_ranges` entries must be objects containing non-empty `start_date`/`startDate` and `end_date`/`endDate` strings.
 - `dimension_filter` supports object, JSON-string object, and shorthand `field==value`.
 - Shorthand values with spaces must be quoted, for example `sessionDefaultChannelGroup=="Paid Other"`.
+- Realtime ingest accepts the same optional `minute_ranges` as `run_realtime_report`.
 - Ingest auto-pages upstream report responses; `max_rows` controls page size and `limit` caps total ingested rows.
 - Ingest responses now include `source.pagination` metadata so truncation/completion is explicit.
 - Set `append=true` to ingest additional rows into an existing scratchpad table. Append mode requires the incoming schema to match the existing table exactly (column names/order) and remain type-compatible with existing DuckDB column types.

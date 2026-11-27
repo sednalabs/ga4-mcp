@@ -67,6 +67,15 @@ Scratchpad tools do not add GA write capabilities. They do add local state, so
 operators should treat scratchpad session contents and exported evidence bundles
 as sensitive analytics data.
 
+Scratchpad sessions are not yet isolated by authenticated principal. Use stdio
+for scratchpad workflows, or a dedicated single-user loopback HTTP process with
+`GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config`, inbound auth disabled,
+and `GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP=1`. Never share or proxy
+that loopback scratchpad endpoint to other users. Other HTTP scratchpad
+configurations fail at startup; the read-only profile is unaffected.
+
+This restriction is containment, not a claim of per-principal isolation.
+
 ## Validation and Failure Behavior
 
 - Property and account identifiers are validated before use.
@@ -92,6 +101,58 @@ Keep OAuth client JSON files and ADC files outside the repository.
 
 See [../SECURITY.md](../SECURITY.md) for how to report suspected security
 issues.
+
+## Toolkit and MCP transport dependency custody
+
+The runtime migration uses an immutable, previously validated toolkit revision
+and the same reviewed RMCP patch as its root workspace. The HTTP service uses
+the toolkit's bounded local session runtime, rather than creating an unbounded
+raw session manager. Live discovery is capability-profile filtered; the CLI
+schema snapshot remains a full developer catalogue. The RMCP response adapter
+preserves Contract V1 complete results. The migration must pass fresh lockfile
+resolution, dependency governance, legacy/current protocol and container tests
+before production use. Scratchpad HTTP containment is unchanged.
+
+## Shared scratchpad substrate
+
+GA4 consumes the landed toolkit scratchpad revision `b2c2de4336cd1031e57bc63fcfdbfa17f54f7595`. Its shared
+manager provides private per-generation database storage, quotas and optional
+exact identity scopes. GA4 keeps the configured policy-runtime decision as a
+second query gate and preserves its Contract V1 error taxonomy and existing
+provider-specific column normalization. The old GA4 copy of the lifecycle
+manager is removed. HTTP multi-user scratchpads remain disabled until the
+request-bound MCP principal and independently verified Google account can be
+bound to the scoped manager for every operation; the scoped-store integration
+test is not evidence that hosted identity binding is complete.
+
+### Time-bounded dependency maintenance decision
+
+The migration adopts the existing toolkit decision for the identical locked
+Chrono 0.4.45 informational unmaintained notice (RUSTSEC-2026-0543), not a
+vulnerability waiver. Scope and expiry are enforced with the unchanged toolkit
+validator and tests. The exception expires at 2026-12-18 00:00 UTC, with no
+extension beyond the existing toolkit decision; package/version changes or
+additional ignored advisories fail validation. Removal is tracked in Ops
+w19008 and w19594. All vulnerability, license, source and yanked-package checks
+remain enabled. No production hosted scratchpad enablement is implied.
+
+## Opt-in stateless read-only HTTP
+
+Set `GA4_MCP_STATELESS_HTTP=1`, capability profile `read_only`, and
+`GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header`. The pinned rmcp
+3.9.0 server then disables MCP transport sessions and sends JSON responses
+for requests. Clients must send their own Google token on every API call.
+If inbound MCP OAuth is enabled, use a distinct configured Google-token
+header (for example `x-ga4-google-authorization`) rather than forwarding the
+MCP bearer token to Google. There is no server credential fallback.
+
+The default remains stateful HTTP. Stateless mode rejects scratchpad and other
+non-read-only profiles at startup. It does not share DuckDB state, transport
+sessions or OAuth authorisation state between replicas. Continue to enforce
+native TLS, allowed hosts/CIDRs and inbound auth for shared deployments;
+loopback must not be exposed through an untrusted reverse proxy. Replicas must
+use consistent configuration and credential boundaries. Two-replica live
+qualification is required before claiming production horizontal scaling.
 
 ## Elevated audit profile
 

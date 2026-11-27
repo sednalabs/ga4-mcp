@@ -14,8 +14,8 @@ use mcp_toolkit_observability::{
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -72,6 +72,16 @@ impl AnalyticsMcp {
         tool_allowed_for_profile(self.capability_profile, tool_name)
     }
 
+    /// Return the upstream token source used by request dispatch.
+    pub fn upstream_token_source(&self) -> UpstreamTokenSource {
+        self.upstream_token_source
+    }
+
+    /// Return the upstream token header used by request dispatch.
+    pub fn upstream_token_header(&self) -> &str {
+        &self.upstream_token_header
+    }
+
     pub fn accepts_upstream_request_tokens(&self) -> bool {
         self.upstream_token_source.uses_request_header()
     }
@@ -82,7 +92,7 @@ impl AnalyticsMcp {
 }
 
 impl ServerHandler for AnalyticsMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         rmcp_models::server_info(
             ProtocolVersion::V_2024_11_05,
             ServerCapabilities::builder().enable_tools().build(),
@@ -105,18 +115,21 @@ impl ServerHandler for AnalyticsMcp {
             .into_iter()
             .filter(|tool| self.is_tool_allowed(tool.name.as_ref()))
             .collect();
-        std::future::ready(Ok(ListToolsResult {
-            meta: None,
-            tools,
-            next_cursor: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        if !self.is_tool_allowed(name) {
+            return None;
+        }
+        self.tool_router.get(name).cloned()
     }
 
     fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_ {
+    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_ {
         let tool_name = request.name.to_string();
         let token_source = self.upstream_token_source;
         let token_header = self.upstream_token_header.clone();
@@ -140,7 +153,7 @@ impl ServerHandler for AnalyticsMcp {
                 let err =
                     AnalyticsError::policy_denied(self.capability_profile.as_str(), tool_name);
                 let result = contract::error(err, 0);
-                return Ok(result);
+                return Ok(result.into());
             }
 
             emit_event(
@@ -175,14 +188,16 @@ impl ServerHandler for AnalyticsMcp {
             .await;
 
             match &result {
-                Ok(tool_result) => {
+                Ok(response) => {
                     emit_event(
                         Level::INFO,
                         "ga4_mcp.tool.finish",
                         &EventContext::new().with_tool_name(&tool_name),
                         &[safe_text("tool", &tool_name)],
                     );
-                    emit_contract_observability(&tool_name, tool_result);
+                    if let CallToolResponse::Complete(tool_result) = response {
+                        emit_contract_observability(&tool_name, tool_result);
+                    }
                 }
                 Err(err) => emit_event(
                     Level::WARN,

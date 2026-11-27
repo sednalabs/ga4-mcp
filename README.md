@@ -49,6 +49,7 @@ The server also includes:
 - `get_property_data_retention_settings`
 - `list_google_ads_links`
 - `list_property_annotations`
+- `list_key_events`
 - `get_custom_dimensions_and_metrics`
 - `run_report`
 - `run_conversions_report`
@@ -63,6 +64,8 @@ The server also includes:
 v1alpha endpoints. Alpha features can change and conversion reporting may not
 be enabled for every property. Both tools remain read-only and use the same
 `analytics.readonly` OAuth scope as the other report tools.
+`list_key_events` reads configured key-event definitions. Realtime reports
+and realtime scratchpad ingest support up to two named minute ranges.
 
 ### Request preflight and compatibility tools
 
@@ -280,6 +283,13 @@ Set `GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE` (or `--capability-profile`) to con
 - `scratchpad`: GA read/report and scratchpad surface.
 - `audit`: GA read/report and configuration history (no scratchpad or GA mutations).
   Requires explicit `GOOGLE_ANALYTICS_MCP_SCOPE=https://www.googleapis.com/auth/analytics.edit`.
+
+Scratchpad sessions are not yet isolated by authenticated principal. Use stdio
+for scratchpad workflows, or a dedicated single-user loopback HTTP process with
+`GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=config`, inbound auth disabled,
+and `GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP=1`. Never share or proxy
+that loopback scratchpad endpoint to other users. Other HTTP scratchpad
+configurations fail at startup; the read-only profile is unaffected.
 
 Example enabling scratchpad:
 

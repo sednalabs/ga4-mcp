@@ -162,7 +162,9 @@ Postgres-specific fields are not required by this contract.
 - `get_property_details`
 - `get_property_data_retention_settings`
 - `list_google_ads_links`
+- `list_bigquery_links`
 - `list_property_annotations`
+- `list_key_events`
 - `get_custom_dimensions_and_metrics`
 - `check_report_compatibility`
 - `preview_report_request`
