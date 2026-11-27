@@ -544,10 +544,11 @@ mod tests {
             json!({"eventName":"purchase","countingMethod":"ONCE_PER_EVENT"})
         );
     }
+
     // Exercise the actual RMCP line transport and tool router. The client is
-    // deliberately constructed with a non-Google Admin origin after CLI
-    // validation, so even an approved request must stop at the provider gate
-    // before credential resolution or network I/O. Separate provider fixtures
+    // deliberately constructed without a mutation transport and with a
+    // non-Google Admin origin after CLI validation, so even an approved
+    // request must stop before credential resolution or network I/O. Separate provider fixtures
     // exercise the exact POST and readback request shapes.
     #[tokio::test]
     async fn modern_stdio_approval_is_required_bound_and_single_use() {
@@ -571,6 +572,7 @@ mod tests {
             "config",
         ]))
         .unwrap();
+        settings.capability_profile = CapabilityProfile::ReadOnly;
         settings.admin_base_url = "https://fixture.invalid".to_string();
         let client = Arc::new(AnalyticsApiClient::from_settings(&settings).await.unwrap());
         let engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
@@ -683,7 +685,9 @@ mod tests {
             assert!(message.contains("properties/123"));
             assert!(message.contains("purchase"));
             assert!(message.contains("ONCE_PER_EVENT"));
-            result["requestState"].as_str().expect("opaque approval state")
+            result["requestState"]
+                .as_str()
+                .expect("opaque approval state")
         }
 
         let unsupported = exchange(&mut read, &mut write, 1, params("purchase", false)).await;
@@ -705,15 +709,18 @@ mod tests {
 
         let second = exchange(&mut read, &mut write, 6, params("purchase", true)).await;
         let state = approval_state(&second);
-        let declined = exchange(&mut read, &mut write, 7, continuation("purchase", state, false)).await;
+        let declined =
+            exchange(&mut read, &mut write, 7, continuation("purchase", state, false)).await;
         assert_denied(&declined, "mutation_approval_required");
 
         let third = exchange(&mut read, &mut write, 8, params("purchase", true)).await;
         let state = approval_state(&third);
-        let accepted = exchange(&mut read, &mut write, 9, continuation("purchase", state, true)).await;
-        // Only a correctly approved call can reach the independent origin gate.
+        let accepted =
+            exchange(&mut read, &mut write, 9, continuation("purchase", state, true)).await;
+        // Only a correctly approved call can reach the independent provider gate.
         assert_denied(&accepted, "mutation_disabled");
-        let replay = exchange(&mut read, &mut write, 10, continuation("purchase", state, true)).await;
+        let replay =
+            exchange(&mut read, &mut write, 10, continuation("purchase", state, true)).await;
         assert_denied(&replay, "mutation_approval_required");
 
         drop(write);
@@ -723,5 +730,4 @@ mod tests {
             .expect("MCP service terminates")
             .unwrap();
     }
-
 }
