@@ -163,8 +163,6 @@ pub(crate) async fn verify_hosted_mcp_request(
 pub(crate) struct HostedScratchpadVerifier {
     client: Client,
     max_sessions_per_principal: usize,
-    userinfo: String,
-    account_summaries: String,
 }
 
 impl HostedScratchpadVerifier {
@@ -235,8 +233,6 @@ impl HostedScratchpadVerifier {
         Ok(Some(Self {
             client,
             max_sessions_per_principal: limit,
-            userinfo: USERINFO.to_owned(),
-            account_summaries: ACCOUNT_SUMMARIES.to_owned(),
         }))
     }
 
@@ -289,7 +285,21 @@ impl HostedScratchpadVerifier {
         &self,
         token: &str,
     ) -> Result<(String, BTreeSet<String>), AnalyticsError> {
-        let info = bounded_json(self.client.get(&self.userinfo).bearer_auth(token)).await?;
+        self.verify_google_with(token, bounded_json).await
+    }
+
+    async fn verify_google_with<F, Fut>(
+        &self,
+        token: &str,
+        mut send: F,
+    ) -> Result<(String, BTreeSet<String>), AnalyticsError>
+    where
+        F: FnMut(RequestBuilder) -> Fut,
+        Fut: std::future::Future<Output = Result<Value, AnalyticsError>>,
+    {
+        // Provider destinations are fixed HTTPS origins even in fixture tests.
+        // Only the response transport is replaceable, never the credential target.
+        let info = send(self.client.get(USERINFO).bearer_auth(token)).await?;
         let subject = info
             .get("sub")
             .and_then(Value::as_str)
@@ -302,7 +312,7 @@ impl HostedScratchpadVerifier {
         for _ in 0..MAX_PAGES {
             let mut req = self
                 .client
-                .get(&self.account_summaries)
+                .get(ACCOUNT_SUMMARIES)
                 .bearer_auth(token)
                 .query(&[
                     ("pageSize", "100"),
@@ -314,7 +324,7 @@ impl HostedScratchpadVerifier {
             if let Some(page) = &cursor {
                 req = req.query(&[("pageToken", page)]);
             }
-            let page = bounded_json(req).await?;
+            let page = send(req).await?;
             collect_properties(&page, &mut properties)?;
             cursor = match page.get("nextPageToken") {
                 None | Some(Value::Null) => None,
@@ -441,74 +451,88 @@ mod tests {
 
     #[tokio::test]
     async fn provider_identity_requires_complete_valid_bounded_authority() {
-        use axum::{Json, Router, extract::Query, http::HeaderMap, routing::get};
         use std::collections::HashMap;
 
-        async fn userinfo(headers: HeaderMap) -> (StatusCode, Json<Value>) {
-            let subject = match headers.get("authorization").and_then(|h| h.to_str().ok()) {
-                Some("Bearer fixture-a") => "google-a",
-                Some("Bearer fixture-b") => "google-b",
-                Some("Bearer fixture-repeat") => "google-repeat",
-                Some("Bearer fixture-malformed") => "google-malformed",
-                _ => return (StatusCode::UNAUTHORIZED, Json(json!({}))),
-            };
-            (StatusCode::OK, Json(json!({"sub": subject})))
+        async fn fixture(request: RequestBuilder) -> Result<Value, AnalyticsError> {
+            let request = request.build().map_err(|_| denied())?;
+            assert_eq!(request.method(), reqwest::Method::GET);
+            assert_eq!(request.url().scheme(), "https");
+            let authorization = request
+                .headers()
+                .get("authorization")
+                .and_then(|h| h.to_str().ok())
+                .ok_or_else(denied)?;
+            match request.url().host_str() {
+                Some("openidconnect.googleapis.com") => {
+                    assert_eq!(request.url().path(), "/v1/userinfo");
+                    assert!(request.url().query().is_none());
+                    let subject = match authorization {
+                        "Bearer fixture-a" => "google-a",
+                        "Bearer fixture-b" => "google-b",
+                        "Bearer fixture-repeat" => "google-repeat",
+                        "Bearer fixture-malformed" => "google-malformed",
+                        _ => return Err(denied()),
+                    };
+                    Ok(json!({"sub": subject}))
+                }
+                Some("analyticsadmin.googleapis.com") => {
+                    assert_eq!(request.url().path(), "/v1beta/accountSummaries");
+                    let query: HashMap<_, _> = request.url().query_pairs().collect();
+                    assert_eq!(query.get("pageSize").map(|s| s.as_ref()), Some("100"));
+                    assert_eq!(
+                        query.get("fields").map(|s| s.as_ref()),
+                        Some("accountSummaries(propertySummaries(property)),nextPageToken")
+                    );
+                    let page = match authorization {
+                        "Bearer fixture-a" if !query.contains_key("pageToken") => {
+                            json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/42"}]}],"nextPageToken":"next"})
+                        }
+                        "Bearer fixture-a"
+                            if query.get("pageToken").map(|s| s.as_ref()) == Some("next") =>
+                        {
+                            json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/43"}]}]})
+                        }
+                        "Bearer fixture-b" => {
+                            json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/99"}]}]})
+                        }
+                        "Bearer fixture-repeat" => json!({"nextPageToken":"same"}),
+                        "Bearer fixture-malformed" => json!({"accountSummaries": null}),
+                        _ => return Err(denied()),
+                    };
+                    Ok(page)
+                }
+                _ => panic!("unexpected fixture origin"),
+            }
         }
 
-        async fn summaries(
-            headers: HeaderMap,
-            Query(query): Query<HashMap<String, String>>,
-        ) -> (StatusCode, Json<Value>) {
-            let result = match headers.get("authorization").and_then(|h| h.to_str().ok()) {
-                Some("Bearer fixture-a") if !query.contains_key("pageToken") => {
-                    json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/42"}]}],"nextPageToken":"next"})
-                }
-                Some("Bearer fixture-a")
-                    if query.get("pageToken").map(String::as_str) == Some("next") =>
-                {
-                    json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/43"}]}]})
-                }
-                Some("Bearer fixture-b") => {
-                    json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/99"}]}]})
-                }
-                Some("Bearer fixture-repeat") => json!({"nextPageToken":"same"}),
-                Some("Bearer fixture-malformed") => json!({"accountSummaries": null}),
-                _ => return (StatusCode::FORBIDDEN, Json(json!({}))),
-            };
-            (StatusCode::OK, Json(result))
-        }
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let app = Router::new()
-            .route("/userinfo", get(userinfo))
-            .route("/summaries", get(summaries));
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        // Private test construction only; production uses fixed HTTPS URLs.
         let verifier = HostedScratchpadVerifier {
             client: Client::builder()
+                .https_only(true)
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(2))
                 .build()
                 .unwrap(),
             max_sessions_per_principal: 4,
-            userinfo: format!("{origin}/userinfo"),
-            account_summaries: format!("{origin}/summaries"),
         };
-        let (subject, props) = verifier.verify_google("fixture-a").await.unwrap();
+        let (subject, props) = verifier
+            .verify_google_with("fixture-a", fixture)
+            .await
+            .unwrap();
         assert_eq!(subject, "google-a");
         assert_eq!(
             props,
             BTreeSet::from(["properties/42".to_owned(), "properties/43".to_owned()])
         );
-        let (subject, props) = verifier.verify_google("fixture-b").await.unwrap();
+        let (subject, props) = verifier
+            .verify_google_with("fixture-b", fixture)
+            .await
+            .unwrap();
         assert_eq!(subject, "google-b");
         assert_eq!(props, BTreeSet::from(["properties/99".to_owned()]));
         for token in ["fixture-invalid", "fixture-repeat", "fixture-malformed"] {
-            assert!(verifier.verify_google(token).await.is_err());
+            assert!(verifier.verify_google_with(token, fixture).await.is_err());
         }
-        server.abort();
     }
 
     #[test]
