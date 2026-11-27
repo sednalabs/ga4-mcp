@@ -468,6 +468,26 @@ impl AnalyticsApiClient {
         })
     }
 
+    pub async fn list_bigquery_links(
+        &self,
+        property_id: &PropertyId,
+        pagination: PaginationOptions,
+    ) -> Result<Value, AnalyticsError> {
+        let property = property_id.to_resource_name()?;
+        self.collect_paginated(
+            &format!("{}/v1alpha/{property}/bigQueryLinks", self.admin_base_url),
+            "bigqueryLinks",
+            pagination,
+        )
+        .await
+        .map(|(items, meta)| {
+            json!({
+                "bigquery_links": items,
+                "meta": meta,
+            })
+        })
+    }
+
     pub async fn list_property_annotations(
         &self,
         property_id: &PropertyId,
