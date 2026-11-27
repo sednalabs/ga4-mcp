@@ -24,10 +24,9 @@ use crate::config::{
     conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
 };
 use crate::contract::redact_secret_text;
-use crate::ga_client::{AnalyticsApiClient, AuthSource};
+use crate::ga_client::{AnalyticsApiClient, ApiProbeStatus, AuthSource, api_probe_status};
 
 const ANALYTICS_API_NAME: &str = "Google Analytics API";
-const ANALYTICS_ADMIN_API_SERVICE: &str = "analyticsadmin.googleapis.com";
 const ANALYTICS_DATA_API_SERVICE: &str = "analyticsdata.googleapis.com";
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +43,8 @@ struct AuthReport {
     quota_project: QuotaProjectStatus,
     detected: CredentialDetection,
     verification: VerificationReport,
+    data_api: ApiProbeStatus,
+    admin_api: ApiProbeStatus,
     ready: bool,
     next_steps: Vec<String>,
 }
@@ -410,6 +411,8 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
     let client = AnalyticsApiClient::from_settings(settings).await;
     let mut detected_auth_source = None;
     let mut detected_quota_project = settings.quota_project.clone();
+    let mut data_api = api_probe_status(None, false);
+    let mut admin_api = api_probe_status(None, true);
     let verification = match client {
         Ok(client) => {
             detected_auth_source = Some(client.auth_source());
@@ -421,6 +424,13 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
                 } else {
                     client.verify_token().await
                 };
+                data_api = api_probe_status(Some(&result), false);
+                let admin_result = client
+                    .probe_admin_api(
+                        settings.upstream_token_source == UpstreamTokenSource::RequestHeader,
+                    )
+                    .await;
+                admin_api = api_probe_status(Some(&admin_result), true);
                 match result {
                     Ok(()) => VerificationReport::Ok,
                     Err(err) => VerificationReport::Failed {
@@ -466,6 +476,8 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
         quota_project,
         detected: detection,
         verification,
+        data_api,
+        admin_api,
         ready,
         next_steps,
     }
@@ -573,6 +585,16 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
             println!("Error: {error}");
         }
     }
+    println!("Data API: {}", report.data_api.status);
+    let admin_status = report.admin_api.status;
+    if report.admin_api.severity == Some("warning") {
+        println!(
+            "Admin API: warning ({admin_status}); reporting can still work with an explicit property ID."
+        );
+    } else {
+        println!("Admin API: {admin_status} (optional)");
+    }
+    println!("A successful Data API probe does not verify access to any particular property.");
     println!(
         "Ready: {}",
         if matches!(report.verification, VerificationReport::NotChecked) {
@@ -933,7 +955,7 @@ fn next_steps(
                     .to_string(),
             );
             steps.push(
-                "Call get_account_summaries to list accessible GA4 accounts and properties."
+                "Use an explicit property ID for reports, or call get_account_summaries if the optional Admin API is available."
                     .to_string(),
             );
             steps
@@ -955,7 +977,7 @@ fn next_steps(
                 steps.extend([
                     "Run `ga4-mcp auth status --verify-token` to prove Google API access."
                         .to_string(),
-                    "Then restart the MCP client and call get_account_summaries.".to_string(),
+                    "Then restart the MCP client and run a report using an explicit property ID; Admin discovery is optional.".to_string(),
                 ]);
                 steps
             } else {
@@ -963,7 +985,7 @@ fn next_steps(
                     format!("Run `{login_command}` for browser login."),
                     "Then run `ga4-mcp auth status --verify-token` to prove Google API access."
                         .to_string(),
-                    "Restart the MCP client and call get_account_summaries.".to_string(),
+                    "Restart the MCP client and run a report using an explicit property ID; Admin discovery is optional.".to_string(),
                 ];
                 if explicit_credential_config_detected(settings, detection) {
                     steps.insert(0, "Fix or clear explicit credential configuration before browser login; it takes precedence over Application Default Credentials.".to_string());
@@ -997,7 +1019,7 @@ fn next_steps(
                 ));
                 if let Some(api_enable) = setup_plan.api_enable.as_ref() {
                     steps.push(format!(
-                        "Enable the required Analytics APIs with `{}`.",
+                        "Enable the required Analytics Data API with `{}`.",
                         api_enable.shell
                     ));
                 }
@@ -1159,7 +1181,7 @@ fn adc_login_target_description(shared_adc: bool) -> String {
 
 pub(crate) fn google_provider_auth_config(scope: &str) -> GoogleProviderAuthConfig {
     GoogleProviderAuthConfig::new(ANALYTICS_API_NAME, split_scopes(scope))
-        .with_api_service_names([ANALYTICS_ADMIN_API_SERVICE, ANALYTICS_DATA_API_SERVICE])
+        .with_api_service_name(ANALYTICS_DATA_API_SERVICE)
 }
 
 fn split_scopes(scope: &str) -> Vec<String> {
@@ -1455,6 +1477,125 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn data_only_reporting_and_doctor_are_admin_independent() {
+        use crate::ga_client::{
+            PaginationOptions, PropertyId, RunReportRequest, with_request_access_token_override,
+        };
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::{StatusCode, Uri},
+        };
+        use serde_json::{Value, json};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let admin_calls = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .fallback(
+                |State(calls): State<Arc<AtomicUsize>>, uri: Uri| async move {
+                    let (status, body): (StatusCode, Value) = if uri.path().starts_with("/admin/") {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::FORBIDDEN,
+                            json!({"error": {
+                                "status": "PERMISSION_DENIED",
+                                "details": [{
+                                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                                    "domain": "googleapis.com",
+                                    "reason": "SERVICE_DISABLED"
+                                }]
+                            }}),
+                        )
+                    } else if uri.path() == "/data/v1beta/properties/0/metadata" {
+                        (StatusCode::OK, json!({"dimensions": [], "metrics": []}))
+                    } else if uri.path() == "/data/v1beta/properties/123:runReport" {
+                        (
+                            StatusCode::OK,
+                            json!({"rowCount": 1, "rows": [{"metricValues": [{"value": "42"}]}]}),
+                        )
+                    } else {
+                        (StatusCode::NOT_FOUND, json!({}))
+                    };
+                    (status, Json(body))
+                },
+            )
+            .with_state(admin_calls.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.admin_base_url = format!("http://{addr}/admin");
+        settings.data_base_url = format!("http://{addr}/data");
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeaderOrConfig;
+        settings.shared_adc = true;
+        settings.http_timeout = std::time::Duration::from_secs(5);
+        with_request_access_token_override(Some("Bearer test-token".to_string()), async {
+            let client = AnalyticsApiClient::from_settings(&settings).await.unwrap();
+            let report = client
+                .run_report(RunReportRequest {
+                    property_id: PropertyId::Text("properties/123".into()),
+                    date_ranges: vec![json!({"startDate":"7daysAgo","endDate":"yesterday"})],
+                    dimensions: vec![],
+                    metrics: vec!["activeUsers".into()],
+                    dimension_filter: None,
+                    metric_filter: None,
+                    order_bys: None,
+                    limit: Some(1),
+                    offset: None,
+                    currency_code: None,
+                    return_property_quota: false,
+                })
+                .await
+                .unwrap();
+            assert_eq!(report["rowCount"], 1);
+            assert_eq!(admin_calls.load(Ordering::SeqCst), 0);
+            let err = client
+                .get_account_summaries(PaginationOptions {
+                    page_size: Some(1),
+                    max_pages: Some(1),
+                })
+                .await
+                .unwrap_err();
+            let envelope = crate::contract::error(err, 0).structured_content.unwrap();
+            assert_eq!(envelope["ok"], false);
+            assert_eq!(envelope["error"]["reason"], "api_disabled");
+            assert_eq!(
+                envelope["error"]["detail"],
+                "api=analyticsadmin.googleapis.com"
+            );
+            assert!(
+                envelope["error"]["hint"]
+                    .as_str()
+                    .unwrap()
+                    .contains("run_report")
+            );
+            let doctor = build_auth_report(&settings, true).await;
+            assert!(doctor.ready);
+            assert_eq!(doctor.data_api.status, "verified");
+            assert_eq!(doctor.admin_api.status, "api_disabled");
+            assert_eq!(doctor.admin_api.severity, Some("warning"));
+            let serialized = serde_json::to_value(&doctor).unwrap();
+            assert_eq!(serialized["data_api"]["status"], "verified");
+            assert_eq!(serialized["admin_api"]["severity"], "warning");
+            assert_eq!(admin_calls.load(Ordering::SeqCst), 2);
+        })
+        .await;
+        server.abort();
+    }
+
+    #[test]
+    fn optional_admin_status_does_not_claim_unverified_access() {
+        assert_eq!(api_probe_status(None, true).status, "not_checked");
+        assert_eq!(api_probe_status(None, false).status, "not_checked");
     }
 
     fn test_settings(scope: &str) -> Settings {

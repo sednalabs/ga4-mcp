@@ -50,31 +50,45 @@ async fn live_google_auth_and_ga_tool_calls_succeed() {
         .await
         .expect("google auth bootstrap should succeed");
 
-    let summaries = client
-        .get_account_summaries(PaginationOptions {
-            page_size: Some(5),
-            max_pages: Some(1),
-        })
-        .await
-        .expect("account summary call should succeed");
-    let accounts = summaries
-        .get("account_summaries")
-        .and_then(Value::as_array)
-        .expect("account_summaries should be an array");
-    assert!(
-        !accounts.is_empty(),
-        "expected at least one GA account summary row"
-    );
+    let data_only = std::env::var("GA4_LIVE_DATA_ONLY").as_deref() == Ok("1");
+    if data_only {
+        assert!(
+            std::env::var(PROPERTY_ENV).is_ok_and(|value| !value.trim().is_empty()),
+            "Data-only smoke requires an explicit {PROPERTY_ENV}"
+        );
+        client
+            .verify_token()
+            .await
+            .expect("Data API verification should succeed without Admin discovery");
+    } else {
+        let summaries = client
+            .get_account_summaries(PaginationOptions {
+                page_size: Some(5),
+                max_pages: Some(1),
+            })
+            .await
+            .expect("account summary call should succeed");
+        let accounts = summaries
+            .get("account_summaries")
+            .and_then(Value::as_array)
+            .expect("account_summaries should be an array");
+        assert!(
+            !accounts.is_empty(),
+            "expected at least one GA account summary row"
+        );
+    }
 
     let property_id = smoke_property_id();
-    let details = client
-        .get_property_details(&property_id)
-        .await
-        .expect("property details call should succeed");
-    assert!(
-        details.get("name").and_then(Value::as_str).is_some(),
-        "property details should include a resource name"
-    );
+    if !data_only {
+        let details = client
+            .get_property_details(&property_id)
+            .await
+            .expect("property details call should succeed");
+        assert!(
+            details.get("name").and_then(Value::as_str).is_some(),
+            "property details should include a resource name"
+        );
+    }
 
     let report = client
         .run_report(RunReportRequest {

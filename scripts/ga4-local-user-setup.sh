@@ -372,6 +372,6 @@ Verify with:
   ga4-mcp auth status --verify-token
 
 If Google reports that local ADC needs a quota project, run:
-  gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+  gcloud services enable analyticsdata.googleapis.com --project YOUR_PROJECT
   ${QUOTA_PROJECT_COMMAND}
 EOF

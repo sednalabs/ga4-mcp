@@ -1,0 +1,124 @@
+name: release
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/*release_binary.py"
+      - "scripts/validate_agent_plugin.py"
+      - "plugin.json"
+      - "mcp.json"
+      - "skills/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "spec/**"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Native ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, platform: linux-x86_64, binary: ga4-mcp}
+          - {runner: windows-2025, platform: windows-x86_64, binary: ga4-mcp.exe}
+          - {runner: macos-15, platform: macos-aarch64, binary: ga4-mcp}
+          - {runner: macos-15-intel, platform: macos-x86_64, binary: ga4-mcp}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag and main ancestry
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          test "$GITHUB_REF_NAME" = "v$version"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - name: Validate portable Power
+        shell: bash
+        run: |
+          python -m pip install jsonschema==4.25.1
+          python scripts/validate_agent_plugin.py
+
+      - name: Build native executable
+        run: cargo build --locked --release --bin ga4-mcp
+
+      - name: Verify binary version, tool contract and stdio
+        env:
+          BINARY_NAME: ${{ matrix.binary }}
+        shell: bash
+        run: python scripts/verify_release_binary.py "target/release/$BINARY_NAME"
+
+      - name: Package executable and checksum
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          BINARY_NAME: ${{ matrix.binary }}
+        shell: bash
+        run: python scripts/package_release_binary.py "$PLATFORM" "target/release/$BINARY_NAME"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ga4-release-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+  publish-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: ga4-release-*
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+
+      - name: Verify complete release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          for platform in linux-x86_64 windows-x86_64 macos-aarch64 macos-x86_64; do
+            archive="ga4-mcp-$GITHUB_REF_NAME-$platform.zip"
+            test -f "$archive"
+            test -f "$archive.sha256"
+            expected="$(cut -d ' ' -f 1 "$archive.sha256")"
+            actual="$(sha256sum "$archive" | cut -d ' ' -f 1)"
+            test "$expected" = "$actual"
+          done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 8
+
+      - name: Attest release archives
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-path: "dist/*.zip"
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*.zip dist/*.zip.sha256

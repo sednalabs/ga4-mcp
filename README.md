@@ -11,6 +11,8 @@ workflow for analysis-heavy use cases.
 - [Getting started](docs/GETTING_STARTED.md)
 - [Security model](docs/SECURITY_MODEL.md)
 - [Tool guide](docs/TOOL_GUIDE.md)
+- [Agent skill](skills/ga4-mcp/SKILL.md)
+- [Using with Kiro](#using-with-kiro)
 - [Auth modes](docs/auth-modes.md)
 - [Payload Contract V1](docs/payload-contract-v1.md)
 
@@ -28,7 +30,7 @@ described here are local `ga4-mcp` semantics.
 The server also includes:
 
 - additional GA Admin/Data API coverage (pivot, batch, access reports, annotations, retention, sharing settings)
-- local request preflight helpers (`preview_report_request`, `check_report_compatibility`)
+- local request preview (`preview_report_request`) and Data API compatibility checks (`check_report_compatibility`)
 - Contract V1-only envelopes (`ok/data/meta` and `ok/error/meta`)
 - profile-gated DuckDB scratchpad tools (`read_only` vs `scratchpad`)
 - streamable HTTP transport with host/IP/TLS guardrails and optional inbound OAuth resource-server mode
@@ -48,6 +50,7 @@ The server also includes:
 - `get_property_details`
 - `get_property_data_retention_settings`
 - `list_google_ads_links`
+- `list_bigquery_links`
 - `list_property_annotations`
 - `list_key_events`
 - `get_custom_dimensions_and_metrics`
@@ -126,9 +129,24 @@ Credentials file at
 Google MCPs keep their own tokens and scopes. Use `--shared-adc` only when you
 intentionally want the conventional shared gcloud ADC file.
 
-`YOUR_PROJECT` should be a Google Cloud project where both
-`analyticsadmin.googleapis.com` and `analyticsdata.googleapis.com` are enabled
-and where your Google account is allowed to use the project for quota.
+`YOUR_PROJECT` should be a Google Cloud project with
+`analyticsdata.googleapis.com` enabled and where your Google account is allowed
+to use the project for quota (`serviceusage.services.use`). The Analytics Admin
+API (`analyticsadmin.googleapis.com`) is optional: enable it only for account
+and property discovery, configuration metadata, and access reports. See the
+[API dependency map](docs/TOOL_GUIDE.md#api-dependency-map).
+
+If Admin is unavailable, obtain the numeric GA4 property ID from the property
+selector, your administrator or existing configuration and supply
+`properties/<id>` directly. Core reporting, compatibility checks and custom
+dimension/metric metadata do not require Admin access. Access reports require
+the appropriate Analytics Administrator role; see [Google's access report documentation](https://developers.google.com/analytics/devguides/config/admin/v1/access-api).
+
+`auth status --verify-token`, `auth doctor --verify-token` and verified
+`ga4_auth_status` distinguish Data API verification from the optional Admin
+probe. A successful universal Data metadata probe verifies API access, not
+permission to any particular property. Verify that with a report. Admin-only
+failure is a warning and does not prevent successful Data API verification.
 
 Result: if a client sends `Authorization: Bearer <google_access_token>`, the
 server uses that token. If the client sends no token, the server uses the local
@@ -168,12 +186,12 @@ ga4-mcp auth status --json --verify-token
 ```
 
 If verification says local ADC needs a quota project, enable the Analytics
-Admin and Data APIs on a Google Cloud project, then rerun login with
+Data API on a Google Cloud project, then rerun login with
 `--quota-project` or run `ga4-mcp auth command --quota-project YOUR_PROJECT`
 and execute the printed quota-project command:
 
 ```bash
-gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+gcloud services enable analyticsdata.googleapis.com --project YOUR_PROJECT
 ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
@@ -274,6 +292,94 @@ GA4_MCP_TLS_CERT_PATH=/etc/ga4-mcp/tls/fullchain.pem \
 GA4_MCP_TLS_KEY_PATH=/etc/ga4-mcp/tls/privkey.pem \
 cargo run --release --bin ga4-mcp-http
 ```
+
+## Using with Kiro
+
+This repository is a portable [Agent Plugin](https://agent-plugins.org/) and
+can be imported as a [Kiro Power](https://kiro.dev/docs/powers/create).
+The Power uses local stdio with the read-only capability profile. It neither
+installs the executable nor embeds credentials.
+
+1. Install the prebuilt `ga4-mcp` executable (see [installation](#installing-a-prebuilt-binary))
+   on the same host that runs Kiro. Confirm that `ga4-mcp --version` works
+   from the environment used to launch the IDE.
+2. Enable `analyticsdata.googleapis.com` on your quota project. Admin is
+   optional. Run `ga4-mcp auth login --quota-project YOUR_PROJECT` once
+   and verify with `ga4-mcp auth status --verify-token`. See the
+   [authentication instructions](#1-configure-google-authentication) if
+   a custom OAuth client is needed.
+3. Set `GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT` in Kiro's launch environment.
+   In Kiro IDE Settings, search for **Mcp Approved Env Vars** and approve
+   that variable for interpolation. Restart the IDE if its environment has
+   changed. Never put access tokens, refresh tokens or OAuth client secrets
+   into the Power manifests.
+4. In **Powers → Add Custom Power**, import the repository URL
+   `https://github.com/sednalabs/ga4-mcp`. Kiro manages and namespaces the
+   bundled `ga4` server; do not add a duplicate manual server merely
+   to activate the Power.
+5. Activate the Power, call `ga4_get_started` first, then
+   `ga4_auth_status` with verification. Supply your known property ID
+   directly to `run_report`. If the Admin API is available, discovery is
+   optional; a warning from the Admin probe alone is not a reporting failure.
+
+For a client that supports per-tool approval, the suggested `autoApprove`
+allowlist is limited to report and read/preflight tools (use their actual
+client-visible names, which may be namespaced):
+
+```json
+[
+  "ga4_get_started",
+  "ga4_auth_status",
+  "get_account_summaries",
+  "get_property_details",
+  "get_custom_dimensions_and_metrics",
+  "get_account_data_sharing_settings",
+  "get_property_data_retention_settings",
+  "list_google_ads_links",
+  "list_bigquery_links",
+  "list_property_annotations",
+  "list_key_events",
+  "preview_report_request",
+  "check_report_compatibility",
+  "run_report",
+  "run_pivot_report",
+  "batch_run_reports",
+  "run_realtime_report",
+  "run_funnel_report",
+  "run_conversions_report"
+]
+```
+
+Approve access audit reports individually because of their sensitive data.
+Do not auto-approve `scratchpad_*` or authentication commands. The Power
+itself does not configure automatic approval; review tool permissions in
+the IDE. The server enforces the read-only profile even when a client
+offers scratchpad tools in its catalog.
+
+## Installing a prebuilt binary
+
+For a published version, download the matching ZIP and its `.sha256`
+checksum from [GitHub Releases](https://github.com/sednalabs/ga4-mcp/releases).
+The release workflow is designed to build native archives named
+`ga4-mcp-v<VERSION>-<PLATFORM>.zip` for these platforms:
+
+| Platform | Archive suffix |
+|---|---|
+| Windows x64 | `windows-x86_64` |
+| macOS Apple Silicon | `macos-aarch64` |
+| macOS Intel | `macos-x86_64` |
+| Linux x64 | `linux-x86_64` |
+
+Verify the downloaded archive SHA-256 against the published checksum
+(`Get-FileHash -Algorithm SHA256 <archive>` on Windows,
+`shasum -a 256 <archive>` on macOS or `sha256sum <archive>` on Linux).
+Extract the executable into a directory on PATH, using a user-owned
+directory such as `~/.local/bin` on Unix or a directory in your Windows
+user PATH. On Unix, run `chmod +x /path/to/ga4-mcp` if needed.
+Linux releases target the glibc environment of the Ubuntu build runner;
+macOS binaries are not promised to be notarized. Check `ga4-mcp --version`
+before configuring a client. If no compatible release has been published,
+build from source using Cargo.
 
 ## Capability Profiles
 
@@ -464,6 +570,10 @@ GA4_LIVE_SMOKE_PROPERTY_ID=properties/<YOUR_PROPERTY_ID> \
 GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT=<YOUR_GCP_PROJECT_ID> \
 cargo test --test live_google_auth_smoke -- --nocapture
 ```
+
+For a project with only the Data API enabled, also set
+`GA4_LIVE_DATA_ONLY=1`. That smoke path requires an explicit property ID and
+skips Admin discovery.
 
 Build-helper presets:
 

@@ -5,12 +5,15 @@ the default read-only tool profile.
 
 ## Prerequisites
 
-- Rust toolchain compatible with edition 2024.
+- A prebuilt `ga4-mcp` executable on PATH, or a Rust toolchain compatible with
+  edition 2024 if building from source.
 - Google Cloud SDK (`gcloud`) only when intentionally using the gcloud ADC
   fallback or shared ADC.
 - Access to the GA4 account or property you want to inspect.
-- Google Analytics Admin API and Google Analytics Data API enabled in the
-  Google Cloud project used for OAuth or quota.
+- Google Analytics Data API (`analyticsdata.googleapis.com`) enabled in the
+  Google Cloud project used for quota. Admin API enablement is optional and
+  needed only for Admin tools. See the [API map](TOOL_GUIDE.md#api-dependency-map).
+- Permission to use the quota project and read the target GA4 property.
 
 ## Native Linux artifacts
 
@@ -75,7 +78,7 @@ credential file and does not use gcloud's bundled OAuth app.
 If verification says local ADC needs a quota project, run:
 
 ```bash
-gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+gcloud services enable analyticsdata.googleapis.com --project YOUR_PROJECT
 ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
@@ -129,8 +132,10 @@ Start with low-cost discovery and validation:
 1. `ga4_get_started` if the client exposes setup helper tools.
 2. `ga4_auth_status` with `verify_token=true` if you need to inspect auth from
    inside MCP.
-3. `get_account_summaries` to confirm the Google identity can see GA accounts.
-4. `get_property_details` for the property you plan to query.
+3. Supply an explicit numeric property ID (`properties/<id>`). If Admin is
+   available, optionally use `get_account_summaries` to discover IDs.
+4. Optionally call `get_property_details` to check property configuration.
+   If Admin is unavailable, skip discovery and use the known property ID.
 5. `check_report_compatibility` before running a report with new
    dimension/metric combinations.
 6. `preview_report_request` to validate and normalize a report payload without
