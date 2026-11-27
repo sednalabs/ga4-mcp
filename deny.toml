@@ -5,7 +5,8 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# Exact inherited maintenance notice only; validator enforces version and expiry.
+ignore = ["RUSTSEC-2026-0543"]
 
 [licenses]
 version = 2

@@ -1,0 +1,12 @@
+# Repository-specific decisions; generated servers must assess their own graph.
+[[exception]]
+advisory = "RUSTSEC-2026-0543"
+package = "chrono"
+versions = ["0.4.45"]
+kind = "unmaintained"
+owner = "SednaLabs maintainers"
+approved_on = 2026-11-18
+expires = 2026-12-18
+work_item = "Ops w19008; GA4 migration w19594"
+source = "https://rustsec.org/advisories/RUSTSEC-2026-0543.html"
+rationale = "Adopts the existing toolkit maintenance decision for the identical locked chrono 0.4.45, with the same 2026-12-18 expiry and no extension. GA4 lockfile independently confirms Arrow, gcp_auth, oauth2, RMCP and schemars dependencies; the migrated graph cleared all reported vulnerabilities and retains only the informational maintenance notice. Track coordinated removal in w19008/w19594. No vulnerability or yanked-package exception."

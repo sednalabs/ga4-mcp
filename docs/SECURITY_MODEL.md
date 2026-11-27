@@ -124,3 +124,14 @@ manager is removed. HTTP multi-user scratchpads remain disabled until the
 request-bound MCP principal and independently verified Google account can be
 bound to the scoped manager for every operation; the scoped-store integration
 test is not evidence that hosted identity binding is complete.
+
+### Time-bounded dependency maintenance decision
+
+The migration adopts the existing toolkit decision for the identical locked
+Chrono 0.4.45 informational unmaintained notice (RUSTSEC-2026-0543), not a
+vulnerability waiver. Scope and expiry are enforced with the unchanged toolkit
+validator and tests. The exception expires at 2026-12-18 00:00 UTC, with no
+extension beyond the existing toolkit decision; package/version changes or
+additional ignored advisories fail validation. Removal is tracked in Ops
+w19008 and w19594. All vulnerability, license, source and yanked-package checks
+remain enabled. No production hosted scratchpad enablement is implied.
