@@ -32,5 +32,5 @@ jobs:
       - name: Print tool inventory
         run: |
           set -euo pipefail
-          cargo run --bin ga4-mcp -- --print-tools > /tmp/tools.json
+          cargo run --locked --bin ga4-mcp -- --print-tools > /tmp/tools.json
           test -s /tmp/tools.json
