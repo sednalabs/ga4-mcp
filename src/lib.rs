@@ -7,7 +7,7 @@
 //! agents can run high-value analytics queries with low startup overhead.
 //!
 //! ## Security Boundaries
-//! * Read-only OAuth scope (`analytics.readonly`) is used for all API calls.
+//! * Ordinary tools default to analytics.readonly; the audit profile explicitly requires analytics.edit.
 //! * Tool validation rejects malformed property identifiers and unsafe argument shapes.
 //! * Upstream error payloads are sanitized into deterministic MCP-facing contracts.
 //!
@@ -17,6 +17,7 @@
 //! * `https://github.com/googleanalytics/google-analytics-mcp`
 
 pub mod auth_ux;
+mod change_history;
 pub mod config;
 pub mod contract;
 pub mod error;

@@ -313,3 +313,27 @@ fn bigquery_link_discovery_snapshot_has_bounded_list_controls() {
         assert!(keys.iter().any(|name| name == key));
     }
 }
+
+#[test]
+fn change_history_snapshot_exposes_bounded_audit_parameters() {
+    let snapshot: Value =
+        serde_json::from_str(include_str!("../spec/tool_schema_snapshot.v1.json"))
+            .expect("valid schema snapshot");
+    let keys = tool_input_property_names(&snapshot, "search_change_history_events");
+    for key in [
+        "account_id",
+        "property_id",
+        "resource_types",
+        "actions",
+        "actor_emails",
+        "earliest_change_time",
+        "latest_change_time",
+        "page_size",
+        "max_pages",
+        "page_token",
+        "include_actor_email",
+        "include_resource_snapshots",
+    ] {
+        assert!(keys.iter().any(|name| name == key));
+    }
+}

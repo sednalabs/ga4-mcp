@@ -3212,6 +3212,148 @@
         "type": "object"
       },
       "name": "scratchpad_summarize_table"
+    },
+    {
+      "description": "Search bounded GA configuration change history. Requires the audit profile and analytics.edit; secret-bearing snapshots are excluded.",
+      "inputSchema": {
+        "$defs": {
+          "AccountId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "PropertyId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "account_id": {
+            "$ref": "#/$defs/AccountId",
+            "description": "The Google Analytics account id as integer or \"accounts/<id>\"."
+          },
+          "actions": {
+            "default": null,
+            "description": "Optional action types: CREATED, UPDATED or DELETED.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "actor_emails": {
+            "default": null,
+            "description": "Optional actor email filters (sensitive; never logged).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "earliest_change_time": {
+            "default": null,
+            "description": "Optional inclusive RFC3339 start timestamp.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_actor_email": {
+            "default": false,
+            "description": "Include actor email addresses in results; defaults to false.",
+            "type": "boolean"
+          },
+          "include_resource_snapshots": {
+            "default": false,
+            "description": "Include allowlisted configuration snapshot fields; defaults to false.",
+            "type": "boolean"
+          },
+          "latest_change_time": {
+            "default": null,
+            "description": "Optional inclusive RFC3339 end timestamp.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_pages": {
+            "default": null,
+            "description": "Optional number of pages, between 1 and 10 (default 1).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "page_size": {
+            "default": null,
+            "description": "Optional provider page size, between 1 and 200 (default 50).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "page_token": {
+            "default": null,
+            "description": "Optional provider continuation token from an earlier identical search.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "property_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PropertyId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional child property filter, as an integer or resource name."
+          },
+          "resource_types": {
+            "default": null,
+            "description": "Optional GA v1beta change-history resource types.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "account_id"
+        ],
+        "type": "object"
+      },
+      "name": "search_change_history_events"
     }
   ],
   "version": 1

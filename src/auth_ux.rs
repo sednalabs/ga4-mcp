@@ -1048,7 +1048,9 @@ fn next_steps(
 
 fn scope_allows_analytics_read(scope: &str) -> bool {
     scope.split([',', ' ', '\n', '\t']).any(|item| {
-        item == DEFAULT_ANALYTICS_SCOPE || item == "https://www.googleapis.com/auth/analytics"
+        item == DEFAULT_ANALYTICS_SCOPE
+            || item == crate::config::ANALYTICS_EDIT_SCOPE
+            || item == "https://www.googleapis.com/auth/analytics"
     })
 }
 

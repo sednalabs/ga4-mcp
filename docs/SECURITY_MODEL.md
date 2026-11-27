@@ -153,3 +153,18 @@ native TLS, allowed hosts/CIDRs and inbound auth for shared deployments;
 loopback must not be exposed through an untrusted reverse proxy. Replicas must
 use consistent configuration and credential boundaries. Two-replica live
 qualification is required before claiming production horizontal scaling.
+
+## Elevated audit profile
+
+The `audit` profile requires an explicit `analytics.edit` scope for the
+configuration-history API. It does not authorize GA mutations or scratchpad
+operations. Use a separate credential and deployment when practical. Live MCP
+tool discovery and dispatch enforce the profile; the developer schema snapshot
+remains the full registered catalogue. The audit tool does not return raw
+provider snapshots: actor email is opt-in and scalar snapshot fields are
+allowlisted. Treat even projected audit data as sensitive.
+
+The audit profile requires the exact single configured edit scope. Google
+still validates the effective request credential and account permissions.
+Do not widen the deployment's grant to unrelated scopes for convenience.
+Provider errors retain status-level diagnostics, not raw response bodies.
