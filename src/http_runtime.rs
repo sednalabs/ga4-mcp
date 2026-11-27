@@ -156,7 +156,7 @@ pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Re
 fn streamable_http_config(settings: &HttpSettings) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
         .with_allowed_hosts(settings.allowed_hosts.iter().cloned())
-        .with_stateful_mode(!settings.stateless_http)
+        .with_legacy_session_mode(!settings.stateless_http)
         .with_json_response(settings.stateless_http)
 }
 
