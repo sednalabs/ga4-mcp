@@ -1,5 +1,5 @@
 # Build native GA4 MCP binaries without carrying toolchains or source into the runtime.
-FROM rust:1-bookworm AS build
+FROM rust:1.100.0-bookworm AS build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -7,7 +7,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock README.md LICENSE ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml README.md LICENSE ./
 COPY src/ ./src/
 COPY spec/ ./spec/
 
