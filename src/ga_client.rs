@@ -1898,6 +1898,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn google_api_failure_classifies_structured_permissions_and_quota() {
+        for (status, reason, expected) in [
+            (403, "SERVICE_DISABLED", "api_disabled"),
+            (403, "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "missing_scope"),
+            (403, "USER_PROJECT_DENIED", "quota_project_denied"),
+            (403, "OTHER", "permission_denied"),
+            (429, "OTHER", "rate_limited"),
+            (503, "OTHER", "upstream_unavailable"),
+        ] {
+            let body = json!({
+                "error": {
+                    "details": [{"domain": "googleapis.com", "reason": reason}],
+                    "message": "private upstream details"
+                }
+            })
+            .to_string();
+            let err = classify_api_failure(ADMIN_API, status, &body).unwrap();
+            assert_eq!(err.reason(), expected);
+            assert!(!err.to_string().contains("private upstream details"));
+            assert_eq!(err.status_code(), Some(status));
+        }
+    }
+
+    #[test]
     fn property_id_accepts_numeric_and_prefixed_values() {
         let plain = PropertyId::Text("1234".to_string())
             .to_resource_name()

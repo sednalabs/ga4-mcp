@@ -1482,6 +1482,125 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn data_only_reporting_and_doctor_are_admin_independent() {
+        use crate::ga_client::{
+            PaginationOptions, PropertyId, RunReportRequest, with_request_access_token_override,
+        };
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::{StatusCode, Uri},
+        };
+        use serde_json::{Value, json};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let admin_calls = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .fallback(
+                |State(calls): State<Arc<AtomicUsize>>, uri: Uri| async move {
+                    let (status, body): (StatusCode, Value) =
+                        if uri.path().starts_with("/admin/") {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            (
+                                StatusCode::FORBIDDEN,
+                                json!({"error": {
+                                    "status": "PERMISSION_DENIED",
+                                    "details": [{
+                                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                                        "domain": "googleapis.com",
+                                        "reason": "SERVICE_DISABLED"
+                                    }]
+                                }}),
+                            )
+                        } else if uri.path() == "/data/v1beta/properties/0/metadata" {
+                            (StatusCode::OK, json!({"dimensions": [], "metrics": []}))
+                        } else if uri.path() == "/data/v1beta/properties/123:runReport" {
+                            (
+                                StatusCode::OK,
+                                json!({"rowCount": 1, "rows": [{"metricValues": [{"value": "42"}]}]}),
+                            )
+                        } else {
+                            (StatusCode::NOT_FOUND, json!({}))
+                        };
+                    (status, Json(body))
+                },
+            )
+            .with_state(admin_calls.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mut settings = test_settings(DEFAULT_ANALYTICS_SCOPE);
+        settings.admin_base_url = format!("http://{addr}/admin");
+        settings.data_base_url = format!("http://{addr}/data");
+        settings.upstream_token_source = UpstreamTokenSource::RequestHeaderOrConfig;
+        settings.shared_adc = true;
+        settings.http_timeout = std::time::Duration::from_secs(5);
+        with_request_access_token_override(Some("Bearer test-token".to_string()), async {
+            let client = AnalyticsApiClient::from_settings(&settings).await.unwrap();
+            let report = client
+                .run_report(RunReportRequest {
+                    property_id: PropertyId::Text("properties/123".into()),
+                    date_ranges: vec![json!({"startDate":"7daysAgo","endDate":"yesterday"})],
+                    dimensions: vec![],
+                    metrics: vec!["activeUsers".into()],
+                    dimension_filter: None,
+                    metric_filter: None,
+                    order_bys: None,
+                    limit: Some(1),
+                    offset: None,
+                    currency_code: None,
+                    return_property_quota: false,
+                })
+                .await
+                .unwrap();
+            assert_eq!(report["rowCount"], 1);
+            assert_eq!(admin_calls.load(Ordering::SeqCst), 0);
+            let err = client
+                .get_account_summaries(PaginationOptions {
+                    page_size: Some(1),
+                    max_pages: Some(1),
+                })
+                .await
+                .unwrap_err();
+            let envelope = crate::contract::error(err, 0).structured_content.unwrap();
+            assert_eq!(envelope["ok"], false);
+            assert_eq!(envelope["error"]["reason"], "api_disabled");
+            assert_eq!(
+                envelope["error"]["detail"],
+                "api=analyticsadmin.googleapis.com"
+            );
+            assert!(
+                envelope["error"]["hint"]
+                    .as_str()
+                    .unwrap()
+                    .contains("run_report")
+            );
+            let doctor = build_auth_report(&settings, true).await;
+            assert!(doctor.ready);
+            assert_eq!(doctor.data_api["status"], "verified");
+            assert_eq!(doctor.admin_api["status"], "api_disabled");
+            assert_eq!(doctor.admin_api["severity"], "warning");
+            assert_eq!(admin_calls.load(Ordering::SeqCst), 2);
+        })
+        .await;
+        server.abort();
+    }
+
+    #[test]
+    fn optional_admin_status_does_not_claim_unverified_access() {
+        assert_eq!(api_probe_status(None, true)["status"], "not_checked");
+        assert_eq!(api_probe_status(None, false)["status"], "not_checked");
+    }
+
     fn test_settings(scope: &str) -> Settings {
         Settings {
             analytics_scope: scope.to_string(),
