@@ -981,7 +981,12 @@ mod tests {
         });
         let error = query_fixture(steps).await.unwrap_err();
         assert_eq!(error.code(), "BIGQUERY_EXECUTION_UNCONFIRMED");
-        assert!(error.hint().unwrap().contains("submitted job may still run"));
+        assert!(
+            error
+                .hint()
+                .unwrap()
+                .contains("submitted job may still run")
+        );
     }
 
     #[tokio::test]
