@@ -566,6 +566,57 @@
       "name": "list_google_ads_links"
     },
     {
+      "description": "Lists configured key events for a Google Analytics property.",
+      "inputSchema": {
+        "$defs": {
+          "PropertyId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_pages": {
+            "default": null,
+            "description": "Optional max pages to fetch before stopping.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "page_size": {
+            "default": null,
+            "description": "Optional page size used during pagination. Defaults to server max.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "property_id": {
+            "$ref": "#/$defs/PropertyId",
+            "description": "The Google Analytics property id as integer or \"properties/<id>\"."
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "type": "object"
+      },
+      "name": "list_key_events"
+    },
+    {
       "description": "Returns reporting data annotations for a property.",
       "inputSchema": {
         "$defs": {
@@ -1747,6 +1798,37 @@
               }
             ]
           },
+          "RealtimeMinuteRange": {
+            "additionalProperties": false,
+            "properties": {
+              "end_minutes_ago": {
+                "description": "Inclusive ending minute, 0–59; defaults to 0 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "description": "Optional range name; must not use a reserved prefix.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "start_minutes_ago": {
+                "description": "Inclusive starting minute, 0–59; defaults to 29 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
           "TabularOutputMode": {
             "enum": [
               "rows",
@@ -1815,6 +1897,17 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "minute_ranges": {
+            "default": null,
+            "description": "Optional Google realtime minute ranges (up to two objects with name, start_minutes_ago and end_minutes_ago; camelCase also accepted).",
+            "items": {
+              "$ref": "#/$defs/RealtimeMinuteRange"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "offset": {
             "default": null,
@@ -2215,6 +2308,37 @@
               }
             ]
           },
+          "RealtimeMinuteRange": {
+            "additionalProperties": false,
+            "properties": {
+              "end_minutes_ago": {
+                "description": "Inclusive ending minute, 0–59; defaults to 0 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "description": "Optional range name; must not use a reserved prefix.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "start_minutes_ago": {
+                "description": "Inclusive starting minute, 0–59; defaults to 29 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
           "TabularOutputMode": {
             "enum": [
               "rows",
@@ -2288,6 +2412,17 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "minute_ranges": {
+            "default": null,
+            "description": "Optional Google realtime minute ranges (up to two objects with name, start_minutes_ago and end_minutes_ago; camelCase also accepted).",
+            "items": {
+              "$ref": "#/$defs/RealtimeMinuteRange"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "offset": {
             "default": null,

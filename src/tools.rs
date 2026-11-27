@@ -32,8 +32,8 @@ use crate::contract;
 use crate::error::AnalyticsError;
 use crate::ga_client::{
     AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
-    PropertyId, RunAccessReportRequest, RunConversionsReportRequest, RunFunnelReportRequest,
-    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
+    PropertyId, RealtimeMinuteRange, RunAccessReportRequest, RunConversionsReportRequest,
+    RunFunnelReportRequest, RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
     build_run_conversions_report_payload, build_run_funnel_report_payload, normalize_funnel_step,
     snake_to_camel_json, sort_object,
 };
@@ -539,6 +539,9 @@ pub struct RunRealtimeReportArgs {
     pub order_bys: Option<Vec<Value>>,
     #[serde(default)]
     pub limit: Option<u64>,
+    /// Optional Google realtime minute ranges (up to two objects with name, start_minutes_ago and end_minutes_ago; camelCase also accepted).
+    #[serde(default)]
+    pub minute_ranges: Option<Vec<RealtimeMinuteRange>>,
     /// Realtime API requests accept a result limit but do not support offset pagination.
     #[serde(default)]
     pub offset: Option<u64>,
@@ -1331,6 +1334,32 @@ impl AnalyticsMcp {
         }
     }
 
+    /// List configured key events for a property.
+    #[tool(
+        name = "list_key_events",
+        description = "Lists configured key events for a Google Analytics property."
+    )]
+    async fn list_key_events(
+        &self,
+        Parameters(args): Parameters<PropertyListArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        match self
+            .client
+            .list_key_events(
+                &args.property_id,
+                PaginationOptions {
+                    page_size: args.page_size,
+                    max_pages: args.max_pages,
+                },
+            )
+            .await
+        {
+            Ok(data) => Ok(contract_success(data, started)),
+            Err(err) => Ok(contract_error(err, started)),
+        }
+    }
+
     /// Discover configured BigQuery export links for a GA4 property.
     #[tool(
         name = "list_bigquery_links",
@@ -1948,6 +1977,7 @@ impl AnalyticsMcp {
             metric_filter: args.metric_filter,
             order_bys: args.order_bys,
             limit: Some(effective_limit),
+            minute_ranges: args.minute_ranges,
             return_property_quota: args.return_property_quota,
         };
 
@@ -4341,6 +4371,7 @@ async fn collect_run_realtime_projection_for_ingest(
         metric_filter: request_args.metric_filter.clone(),
         order_bys: request_args.order_bys.clone(),
         limit: Some(request_limit),
+        minute_ranges: request_args.minute_ranges.clone(),
         return_property_quota: request_args.return_property_quota,
     };
     let data = server.client.run_realtime_report(request).await?;
@@ -5823,6 +5854,7 @@ fn run_realtime_query_hash(args: &RunRealtimeReportArgs) -> Result<String, Analy
         "dimension_filter": &args.dimension_filter,
         "metric_filter": &args.metric_filter,
         "order_bys": &args.order_bys,
+        "minute_ranges": &args.minute_ranges,
         "return_property_quota": args.return_property_quota,
     });
     stable_query_hash(&signature)
@@ -7197,6 +7229,32 @@ mod tests {
         }))
         .expect_err("unsupported funnel visualization type must fail deserialization");
         assert!(funnel_err.to_string().contains("STANDARD_FUNNEL"));
+    }
+
+    #[test]
+    fn realtime_range_changes_query_hash() {
+        let request = json!({
+            "property_id": "properties/1234",
+            "dimensions": ["country"],
+            "metrics": ["activeUsers"]
+        });
+        let default_args: RunRealtimeReportArgs =
+            serde_json::from_value(request.clone()).expect("default request");
+        let mut ranged_request = request;
+        ranged_request["minute_ranges"] = json!([{"start_minutes_ago": 4, "end_minutes_ago": 0}]);
+        let ranged_args: RunRealtimeReportArgs =
+            serde_json::from_value(ranged_request.clone()).expect("ranged request");
+        ranged_request["minute_ranges"] = json!([{"startMinutesAgo": 4, "endMinutesAgo": 0}]);
+        let alias_args: RunRealtimeReportArgs =
+            serde_json::from_value(ranged_request).expect("alias request");
+        assert_eq!(
+            run_realtime_query_hash(&ranged_args).expect("ranged hash"),
+            run_realtime_query_hash(&alias_args).expect("alias hash")
+        );
+        assert_ne!(
+            run_realtime_query_hash(&default_args).expect("default hash"),
+            run_realtime_query_hash(&ranged_args).expect("ranged hash")
+        );
     }
 
     #[test]
