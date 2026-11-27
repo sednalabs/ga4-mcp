@@ -407,7 +407,9 @@ impl BigQueryExportClient {
         .await?;
         check_query_page(&dry)?;
         if has_query_warnings(&dry)? {
-            return Err(job_failure("BigQuery dry run returned diagnostics; execution was not started"));
+            return Err(job_failure(
+                "BigQuery dry run returned diagnostics; execution was not started",
+            ));
         }
         let estimate = dry
             .get("totalBytesProcessed")
@@ -465,7 +467,10 @@ impl BigQueryExportClient {
                 if !verified {
                     let status = response(
                         self.http
-                            .get(format!("{BQ}/projects/{}/jobs/{job_id}", self.billing_project))
+                            .get(format!(
+                                "{BQ}/projects/{}/jobs/{job_id}",
+                                self.billing_project
+                            ))
                             .bearer_auth(token)
                             .query(&[("location", self.location.as_str())]),
                     )
@@ -530,10 +535,16 @@ fn check_query_page(page: &Value) -> Result<(), AnalyticsError> {
     if !page.is_object() {
         return Err(bad_provider());
     }
-    if page.get("errorResult").is_some_and(|value| !value.is_null())
-        || page.pointer("/status/errorResult").is_some_and(|value| !value.is_null())
+    if page
+        .get("errorResult")
+        .is_some_and(|value| !value.is_null())
+        || page
+            .pointer("/status/errorResult")
+            .is_some_and(|value| !value.is_null())
     {
-        return Err(job_failure("BigQuery job failed; inspect the job before retrying"));
+        return Err(job_failure(
+            "BigQuery job failed; inspect the job before retrying",
+        ));
     }
     Ok(())
 }
@@ -551,16 +562,20 @@ fn has_query_warnings(page: &Value) -> Result<bool, AnalyticsError> {
 fn verify_completed_job(status: &Value, expected: &Value) -> Result<(), AnalyticsError> {
     let actual = status.get("jobReference").ok_or_else(bad_provider)?;
     for key in ["jobId", "projectId"] {
-        if actual.get(key).and_then(Value::as_str)
-            != expected.get(key).and_then(Value::as_str)
-        {
+        if actual.get(key).and_then(Value::as_str) != expected.get(key).and_then(Value::as_str) {
             return Err(bad_provider());
         }
     }
-    if !actual.get("location").and_then(Value::as_str).is_some_and(|location| {
-        expected.get("location").and_then(Value::as_str)
-            .is_some_and(|expected| location.eq_ignore_ascii_case(expected))
-    }) {
+    if !actual
+        .get("location")
+        .and_then(Value::as_str)
+        .is_some_and(|location| {
+            expected
+                .get("location")
+                .and_then(Value::as_str)
+                .is_some_and(|expected| location.eq_ignore_ascii_case(expected))
+        })
+    {
         return Err(bad_provider());
     }
     check_query_page(status)?;
@@ -732,7 +747,9 @@ mod tests {
         assert!(verify_completed_job(&done, &reference).is_ok());
         let failed = json!({"jobReference":reference,"status":{"state":"DONE","errorResult":{"reason":"stopped","message":"private details"}}});
         assert_eq!(
-            verify_completed_job(&failed, &reference).unwrap_err().code(),
+            verify_completed_job(&failed, &reference)
+                .unwrap_err()
+                .code(),
             "UPSTREAM_REJECTED"
         );
         let running = json!({"jobReference":reference,"status":{"state":"RUNNING"}});
