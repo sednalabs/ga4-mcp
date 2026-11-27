@@ -641,7 +641,9 @@ mod tests {
                     request.headers().get("x-goog-user-project").unwrap(),
                     "operator-fixture"
                 );
-                Ok(json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/42"}]}]}))
+                Ok(
+                    json!({"accountSummaries":[{"propertySummaries":[{"property":"properties/42"}]}]}),
+                )
             }
             _ => panic!("unexpected fixture origin"),
         }
@@ -701,7 +703,8 @@ mod tests {
         );
         let jwks_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let jwks_url = format!("http://{}/jwks", jwks_listener.local_addr().unwrap());
-        let jwks_task = tokio::spawn(async move { axum::serve(jwks_listener, jwks).await.unwrap() });
+        let jwks_task =
+            tokio::spawn(async move { axum::serve(jwks_listener, jwks).await.unwrap() });
         let authenticator = Arc::new(
             Authenticator::new(AuthConfig {
                 mode: AuthMode::Jwks,
@@ -857,27 +860,63 @@ mod tests {
         let b = signed_token("mcp-b", "analytics:read");
         let session = json!({"session_id":"same"});
         let (a_open, b_open) = tokio::join!(
-            payload(call(a.clone(), "fixture-google-a", "scratchpad_open_session", session.clone())),
-            payload(call(b.clone(), "fixture-google-b", "scratchpad_open_session", session.clone()))
+            payload(call(
+                a.clone(),
+                "fixture-google-a",
+                "scratchpad_open_session",
+                session.clone()
+            )),
+            payload(call(
+                b.clone(),
+                "fixture-google-b",
+                "scratchpad_open_session",
+                session.clone()
+            ))
         );
         assert_eq!(a_open["ok"], true);
         assert_eq!(b_open["ok"], true);
 
         let properties = BTreeSet::from(["properties/42".to_owned()]);
         for (mcp_subject, google_subject, google_token, sql) in [
-            ("mcp-a", "google-a", "fixture-google-a", "CREATE TABLE private_data AS SELECT 'only-a' AS marker"),
-            ("mcp-b", "google-b", "fixture-google-b", "CREATE TABLE private_data AS SELECT 'only-b' AS marker"),
+            (
+                "mcp-a",
+                "google-a",
+                "fixture-google-a",
+                "CREATE TABLE private_data AS SELECT 'only-a' AS marker",
+            ),
+            (
+                "mcp-b",
+                "google-b",
+                "fixture-google-b",
+                "CREATE TABLE private_data AS SELECT 'only-b' AS marker",
+            ),
         ] {
             let principal = serde_json::to_string(&(ISSUER, mcp_subject)).unwrap();
             let view = root
-                .for_scope(bound_scope(&principal, google_subject, google_token, &properties).unwrap(), 1)
+                .for_scope(
+                    bound_scope(&principal, google_subject, google_token, &properties).unwrap(),
+                    1,
+                )
                 .unwrap();
-            view.open_connection("same").unwrap().execute_batch(sql).unwrap();
+            view.open_connection("same")
+                .unwrap()
+                .execute_batch(sql)
+                .unwrap();
         }
         let query = json!({"session_id":"same","sql":"SELECT marker FROM private_data"});
         let (a_query, b_query) = tokio::join!(
-            payload(call(a.clone(), "fixture-google-a", "scratchpad_query", query.clone())),
-            payload(call(b.clone(), "fixture-google-b", "scratchpad_query", query.clone()))
+            payload(call(
+                a.clone(),
+                "fixture-google-a",
+                "scratchpad_query",
+                query.clone()
+            )),
+            payload(call(
+                b.clone(),
+                "fixture-google-b",
+                "scratchpad_query",
+                query.clone()
+            ))
         );
         assert_eq!(a_query["ok"], true);
         assert_eq!(b_query["ok"], true);
@@ -896,25 +935,79 @@ mod tests {
             assert_eq!(listing["data"]["returned"], 0);
         }
 
-        let limit = payload(call(a.clone(), "fixture-google-a", "scratchpad_set_runtime_limits", json!({"max_sessions":99}))).await;
+        let limit = payload(call(
+            a.clone(),
+            "fixture-google-a",
+            "scratchpad_set_runtime_limits",
+            json!({"max_sessions":99}),
+        ))
+        .await;
         assert_eq!(limit["ok"], false);
         assert_eq!(root.max_sessions_limit(), 2);
-        let extra = payload(call(a.clone(), "fixture-google-a", "scratchpad_open_session", json!({"session_id":"extra"}))).await;
+        let extra = payload(call(
+            a.clone(),
+            "fixture-google-a",
+            "scratchpad_open_session",
+            json!({"session_id":"extra"}),
+        ))
+        .await;
         assert_eq!(extra["ok"], false);
 
-        let dropped = payload(call(a.clone(), "fixture-google-a", "scratchpad_drop_table", json!({"session_id":"same","table_name":"private_data"}))).await;
+        let dropped = payload(call(
+            a.clone(),
+            "fixture-google-a",
+            "scratchpad_drop_table",
+            json!({"session_id":"same","table_name":"private_data"}),
+        ))
+        .await;
         assert_eq!(dropped["ok"], true);
-        let still_b = payload(call(b.clone(), "fixture-google-b", "scratchpad_query", query)).await;
+        let still_b = payload(call(
+            b.clone(),
+            "fixture-google-b",
+            "scratchpad_query",
+            query,
+        ))
+        .await;
         assert_eq!(still_b["ok"], true);
         assert!(still_b["data"].to_string().contains("only-b"));
 
-        let invalid = call(signed_token("mcp-a", "wrong:scope"), "fixture-google-a", "scratchpad_list_sessions", json!({})).send().await.unwrap();
-        assert!(matches!(invalid.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN));
-        let duplicate = call(a.clone(), "fixture-google-a", "scratchpad_list_sessions", json!({})).header("x-google-token", "fixture-google-b").send().await.unwrap();
+        let invalid = call(
+            signed_token("mcp-a", "wrong:scope"),
+            "fixture-google-a",
+            "scratchpad_list_sessions",
+            json!({}),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert!(matches!(
+            invalid.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
+        let duplicate = call(
+            a.clone(),
+            "fixture-google-a",
+            "scratchpad_list_sessions",
+            json!({}),
+        )
+        .header("x-google-token", "fixture-google-b")
+        .send()
+        .await
+        .unwrap();
         assert_eq!(duplicate.status(), StatusCode::UNAUTHORIZED);
-        let invalid_google = payload(call(a.clone(), "fixture-google-invalid", "scratchpad_list_sessions", json!({}))).await;
+        let invalid_google = payload(call(
+            a.clone(),
+            "fixture-google-invalid",
+            "scratchpad_list_sessions",
+            json!({}),
+        ))
+        .await;
         assert_eq!(invalid_google["ok"], false);
-        let legacy = call(a, "fixture-google-a", "scratchpad_list_sessions", json!({})).header("mcp-session-id", "not-authority").send().await.unwrap();
+        let legacy = call(a, "fixture-google-a", "scratchpad_list_sessions", json!({}))
+            .header("mcp-session-id", "not-authority")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(legacy.status(), StatusCode::METHOD_NOT_ALLOWED);
 
         task.abort();
