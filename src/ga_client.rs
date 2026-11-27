@@ -297,8 +297,11 @@ impl AnalyticsApiClient {
             .build()
             .map_err(AnalyticsError::Transport)?;
 
-        let bigquery = if settings.capability_profile == crate::config::CapabilityProfile::BigQuery {
-            Some(crate::bigquery::BigQueryExportClient::from_env(settings.http_timeout)?)
+        let bigquery = if settings.capability_profile == crate::config::CapabilityProfile::BigQuery
+        {
+            Some(crate::bigquery::BigQueryExportClient::from_env(
+                settings.http_timeout,
+            )?)
         } else {
             None
         };
@@ -563,11 +566,17 @@ impl AnalyticsApiClient {
         &self,
         args: crate::bigquery::ExportQueryArgs,
     ) -> Result<Value, AnalyticsError> {
-        let client = self.bigquery.as_ref()
-            .filter(|_| self.analytics_scope() == crate::config::BIGQUERY_EXPORT_SCOPE
-                && self.token_source == UpstreamTokenSource::Config
-                && self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com")
-            .ok_or_else(|| AnalyticsError::policy_denied("bigquery_disabled", "query_bigquery_export"))?;
+        let client = self
+            .bigquery
+            .as_ref()
+            .filter(|_| {
+                self.analytics_scope() == crate::config::BIGQUERY_EXPORT_SCOPE
+                    && self.token_source == UpstreamTokenSource::Config
+                    && self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com"
+            })
+            .ok_or_else(|| {
+                AnalyticsError::policy_denied("bigquery_disabled", "query_bigquery_export")
+            })?;
         let plan = client.plan(args)?;
         let token = self.access_token().await?;
         client.query(plan, &token).await
@@ -1023,7 +1032,11 @@ impl AnalyticsApiClient {
             ));
         };
 
-        let scopes = self.analytics_scope.split_whitespace().map(str::to_string).collect();
+        let scopes = self
+            .analytics_scope
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
         let adc = match google_authorized_user_adc_from_file(path, scopes) {
             Ok(adc) => adc,
             Err(err) if google_adc_file_missing(&err) => return Ok(None),

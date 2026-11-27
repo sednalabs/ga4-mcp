@@ -81,25 +81,42 @@ fn valid_project(value: &str) -> bool {
     (6..=30).contains(&bytes.len())
         && bytes[0].is_ascii_lowercase()
         && bytes[bytes.len() - 1].is_ascii_alphanumeric()
-        && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
 fn valid_segment(value: &str, limit: usize) -> bool {
-    !value.is_empty() && value.len() <= limit
-        && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    !value.is_empty()
+        && value.len() <= limit
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn parse_date(field: &'static str, raw: &str) -> Result<Date, AnalyticsError> {
     let b = raw.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-'
-        || !b.iter().enumerate().all(|(i, v)| i == 4 || i == 7 || v.is_ascii_digit())
+    if b.len() != 10
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !b
+            .iter()
+            .enumerate()
+            .all(|(i, v)| i == 4 || i == 7 || v.is_ascii_digit())
     {
         return Err(invalid(field, "expected YYYY-MM-DD"));
     }
-    let year = raw[..4].parse::<i32>().map_err(|_| invalid(field, "invalid year"))?;
-    let month = raw[5..7].parse::<u8>().ok().and_then(|m| Month::try_from(m).ok())
+    let year = raw[..4]
+        .parse::<i32>()
+        .map_err(|_| invalid(field, "invalid year"))?;
+    let month = raw[5..7]
+        .parse::<u8>()
+        .ok()
+        .and_then(|m| Month::try_from(m).ok())
         .ok_or_else(|| invalid(field, "invalid month"))?;
-    let day = raw[8..].parse::<u8>().map_err(|_| invalid(field, "invalid day"))?;
+    let day = raw[8..]
+        .parse::<u8>()
+        .map_err(|_| invalid(field, "invalid day"))?;
     if year < 2000 {
         return Err(invalid(field, "date must be in or after 2000"));
     }
@@ -107,7 +124,12 @@ fn parse_date(field: &'static str, raw: &str) -> Result<Date, AnalyticsError> {
 }
 
 fn suffix(date: Date) -> String {
-    format!("{:04}{:02}{:02}", date.year(), u8::from(date.month()), date.day())
+    format!(
+        "{:04}{:02}{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
 }
 
 impl BigQueryExportClient {
@@ -116,14 +138,28 @@ impl BigQueryExportClient {
         let export_project_number = env("GA4_MCP_BIGQUERY_EXPORT_PROJECT_NUMBER")?;
         let billing_project = env("GA4_MCP_BIGQUERY_BILLING_PROJECT")?;
         let location = env("GA4_MCP_BIGQUERY_LOCATION")?;
-        let maximum_bytes = env("GA4_MCP_BIGQUERY_MAX_BYTES")?.parse::<u64>()
+        let maximum_bytes = env("GA4_MCP_BIGQUERY_MAX_BYTES")?
+            .parse::<u64>()
             .map_err(|_| invalid("GA4_MCP_BIGQUERY_MAX_BYTES", "expected a positive byte cap"))?;
         let allow_execution = match std::env::var("GA4_MCP_BIGQUERY_ALLOW_EXECUTION").as_deref() {
             Ok("true") => true,
             Ok("false") | Err(std::env::VarError::NotPresent) => false,
-            _ => return Err(invalid("GA4_MCP_BIGQUERY_ALLOW_EXECUTION", "expected true or false")),
+            _ => {
+                return Err(invalid(
+                    "GA4_MCP_BIGQUERY_ALLOW_EXECUTION",
+                    "expected true or false",
+                ));
+            }
         };
-        Self::new(timeout, export_project, export_project_number, billing_project, location, maximum_bytes, allow_execution)
+        Self::new(
+            timeout,
+            export_project,
+            export_project_number,
+            billing_project,
+            location,
+            maximum_bytes,
+            allow_execution,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -136,44 +172,81 @@ impl BigQueryExportClient {
         maximum_bytes: u64,
         allow_execution: bool,
     ) -> Result<Self, AnalyticsError> {
-        if !valid_project(&export_project) || !valid_project(&billing_project)
-            || export_project_number.parse::<u64>().ok().filter(|n| *n > 0).is_none()
+        if !valid_project(&export_project)
+            || !valid_project(&billing_project)
+            || export_project_number
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .is_none()
             || !export_project_number.bytes().all(|b| b.is_ascii_digit())
             || !valid_segment(&location, 40)
-            || maximum_bytes == 0 || maximum_bytes > 1024_u64.pow(4)
+            || maximum_bytes == 0
+            || maximum_bytes > 1024_u64.pow(4)
         {
-            return Err(invalid("bigquery_configuration", "invalid project mapping, location or byte cap (maximum 1 TiB)"));
+            return Err(invalid(
+                "bigquery_configuration",
+                "invalid project mapping, location or byte cap (maximum 1 TiB)",
+            ));
         }
         let http = Client::builder()
             .timeout(timeout.min(Duration::from_secs(20)))
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
-            .build().map_err(AnalyticsError::Transport)?;
-        Ok(Self { http, export_project, export_project_number, billing_project, location, maximum_bytes, allow_execution })
+            .build()
+            .map_err(AnalyticsError::Transport)?;
+        Ok(Self {
+            http,
+            export_project,
+            export_project_number,
+            billing_project,
+            location,
+            maximum_bytes,
+            allow_execution,
+        })
     }
 
     pub(crate) fn plan(&self, args: ExportQueryArgs) -> Result<ExportPlan, AnalyticsError> {
         let property = args.property_id.to_resource_name()?;
-        let property_number = property.strip_prefix("properties/").ok_or_else(bad_provider)?;
-        if property_number.parse::<u64>().ok().filter(|n| *n > 0).is_none() {
-            return Err(invalid("property_id", "expected a positive property number"));
+        let property_number = property
+            .strip_prefix("properties/")
+            .ok_or_else(bad_provider)?;
+        if property_number
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .is_none()
+        {
+            return Err(invalid(
+                "property_id",
+                "expected a positive property number",
+            ));
         }
         let dataset = format!("analytics_{property_number}");
         let start = parse_date("start_date", &args.start_date)?;
         let end = parse_date("end_date", &args.end_date)?;
         let days = (end - start).whole_days();
         if !(0..31).contains(&days) {
-            return Err(invalid("end_date", "expected a nonnegative date range of at most 31 inclusive days"));
+            return Err(invalid(
+                "end_date",
+                "expected a nonnegative date range of at most 31 inclusive days",
+            ));
         }
         if args.maximum_bytes_billed == 0 || args.maximum_bytes_billed > self.maximum_bytes {
-            return Err(invalid("maximum_bytes_billed", "positive byte cap must not exceed operator limit"));
+            return Err(invalid(
+                "maximum_bytes_billed",
+                "positive byte cap must not exceed operator limit",
+            ));
         }
         let max_rows = args.max_rows.unwrap_or(100);
         if !(1..=MAX_ROWS).contains(&max_rows) {
             return Err(invalid("max_rows", "expected 1 through 500"));
         }
         if args.execute && !self.allow_execution {
-            return Err(AnalyticsError::policy_denied("bigquery_execution_disabled", "query_bigquery_export"));
+            return Err(AnalyticsError::policy_denied(
+                "bigquery_execution_disabled",
+                "query_bigquery_export",
+            ));
         }
         // Only validated operator project and numeric GA property enter the identifier.
         // All date and row limits are named query parameters. Intraday tables cannot match.
@@ -183,25 +256,59 @@ impl BigQueryExportClient {
         let event = "IF(REGEXP_CONTAINS(event_name, r'^[A-Za-z][A-Za-z0-9_]{0,39}$'), event_name, '(other)')";
         let (query, columns) = match args.report_kind.as_str() {
             "daily_events" => (
-                format!("SELECT event_date, {event} AS event_label, COUNT(*) AS event_count, COUNT(DISTINCT user_pseudo_id) AS observed_users FROM {table} WHERE {filter} GROUP BY event_date,event_label HAVING COUNT(*) >= 5 ORDER BY event_date,event_count DESC,event_label LIMIT @row_limit"),
-                vec!["event_date","event_label","event_count","observed_users"]),
+                format!(
+                    "SELECT event_date, {event} AS event_label, COUNT(*) AS event_count, COUNT(DISTINCT user_pseudo_id) AS observed_users FROM {table} WHERE {filter} GROUP BY event_date,event_label HAVING COUNT(*) >= 5 ORDER BY event_date,event_count DESC,event_label LIMIT @row_limit"
+                ),
+                vec!["event_date", "event_label", "event_count", "observed_users"],
+            ),
             "daily_sessions" => (
-                format!("WITH events AS (SELECT event_date,user_pseudo_id,{session_id} AS sid FROM {table} WHERE {filter}) SELECT event_date,COUNT(DISTINCT STRUCT_KEY) AS observed_sessions FROM (SELECT event_date,TO_JSON_STRING(STRUCT(user_pseudo_id,sid)) AS STRUCT_KEY FROM events WHERE user_pseudo_id IS NOT NULL AND sid IS NOT NULL) GROUP BY event_date HAVING COUNT(DISTINCT STRUCT_KEY) >= 5 ORDER BY event_date LIMIT @row_limit"),
-                vec!["event_date","observed_sessions"]),
+                format!(
+                    "WITH events AS (SELECT event_date,user_pseudo_id,{session_id} AS sid FROM {table} WHERE {filter}) SELECT event_date,COUNT(DISTINCT STRUCT_KEY) AS observed_sessions FROM (SELECT event_date,TO_JSON_STRING(STRUCT(user_pseudo_id,sid)) AS STRUCT_KEY FROM events WHERE user_pseudo_id IS NOT NULL AND sid IS NOT NULL) GROUP BY event_date HAVING COUNT(DISTINCT STRUCT_KEY) >= 5 ORDER BY event_date LIMIT @row_limit"
+                ),
+                vec!["event_date", "observed_sessions"],
+            ),
             "event_transitions" => (
-                format!("WITH events AS (SELECT user_pseudo_id,{session_id} AS sid,event_timestamp,{event} AS event_label FROM {table} WHERE {filter}), sequenced AS (SELECT event_label,LEAD(event_label) OVER (PARTITION BY user_pseudo_id,sid ORDER BY event_timestamp,event_label) AS next_event FROM events WHERE user_pseudo_id IS NOT NULL AND sid IS NOT NULL) SELECT event_label,next_event,COUNT(*) AS transitions FROM sequenced WHERE next_event IS NOT NULL GROUP BY event_label,next_event HAVING COUNT(*) >= 5 ORDER BY transitions DESC,event_label,next_event LIMIT @row_limit"),
-                vec!["event_label","next_event","transitions"]),
+                format!(
+                    "WITH events AS (SELECT user_pseudo_id,{session_id} AS sid,event_timestamp,{event} AS event_label FROM {table} WHERE {filter}), sequenced AS (SELECT event_label,LEAD(event_label) OVER (PARTITION BY user_pseudo_id,sid ORDER BY event_timestamp,event_label) AS next_event FROM events WHERE user_pseudo_id IS NOT NULL AND sid IS NOT NULL) SELECT event_label,next_event,COUNT(*) AS transitions FROM sequenced WHERE next_event IS NOT NULL GROUP BY event_label,next_event HAVING COUNT(*) >= 5 ORDER BY transitions DESC,event_label,next_event LIMIT @row_limit"
+                ),
+                vec!["event_label", "next_event", "transitions"],
+            ),
             "first_user_acquisition" => (
-                format!("SELECT IF(REGEXP_CONTAINS(traffic_source.medium,r'^[A-Za-z][A-Za-z0-9_-]{0,39}$'),traffic_source.medium,'(other)') AS first_user_medium,COUNT(*) AS event_count,COUNT(DISTINCT user_pseudo_id) AS observed_users,COUNTIF(event_name='purchase') AS purchase_events FROM {table} WHERE {filter} GROUP BY first_user_medium HAVING COUNT(*) >= 5 ORDER BY event_count DESC,first_user_medium LIMIT @row_limit"),
-                vec!["first_user_medium","event_count","observed_users","purchase_events"]),
+                format!(
+                    "SELECT IF(REGEXP_CONTAINS(traffic_source.medium,r'^[A-Za-z][A-Za-z0-9_-]{0,39}$'),traffic_source.medium,'(other)') AS first_user_medium,COUNT(*) AS event_count,COUNT(DISTINCT user_pseudo_id) AS observed_users,COUNTIF(event_name='purchase') AS purchase_events FROM {table} WHERE {filter} GROUP BY first_user_medium HAVING COUNT(*) >= 5 ORDER BY event_count DESC,first_user_medium LIMIT @row_limit"
+                ),
+                vec![
+                    "first_user_medium",
+                    "event_count",
+                    "observed_users",
+                    "purchase_events",
+                ],
+            ),
             "item_categories" => (
-                format!("SELECT IF(REGEXP_CONTAINS(i.item_category,r'^[A-Za-z][A-Za-z0-9 _-]{0,63}$'),i.item_category,'(other)') AS item_category,COUNT(*) AS item_records,COUNTIF(event_name='purchase') AS purchase_item_records,SUM(IF(event_name='purchase',COALESCE(i.quantity,0),0)) AS purchased_quantity FROM {table},UNNEST(items) i WHERE {filter} GROUP BY item_category HAVING COUNT(*) >= 5 ORDER BY item_records DESC,item_category LIMIT @row_limit"),
-                vec!["item_category","item_records","purchase_item_records","purchased_quantity"]),
+                format!(
+                    "SELECT IF(REGEXP_CONTAINS(i.item_category,r'^[A-Za-z][A-Za-z0-9 _-]{0,63}$'),i.item_category,'(other)') AS item_category,COUNT(*) AS item_records,COUNTIF(event_name='purchase') AS purchase_item_records,SUM(IF(event_name='purchase',COALESCE(i.quantity,0),0)) AS purchased_quantity FROM {table},UNNEST(items) i WHERE {filter} GROUP BY item_category HAVING COUNT(*) >= 5 ORDER BY item_records DESC,item_category LIMIT @row_limit"
+                ),
+                vec![
+                    "item_category",
+                    "item_records",
+                    "purchase_item_records",
+                    "purchased_quantity",
+                ],
+            ),
             _ => return Err(invalid("report_kind", "unknown predefined export report")),
         };
-        Ok(ExportPlan { property, dataset, report_kind: args.report_kind, query, columns,
-            start_suffix: suffix(start), end_suffix: suffix(end), maximum_bytes: args.maximum_bytes_billed,
-            max_rows, execute: args.execute })
+        Ok(ExportPlan {
+            property,
+            dataset,
+            report_kind: args.report_kind,
+            query,
+            columns,
+            start_suffix: suffix(start),
+            end_suffix: suffix(end),
+            maximum_bytes: args.maximum_bytes_billed,
+            max_rows,
+            execute: args.execute,
+        })
     }
 
     fn request_body(&self, plan: &ExportPlan, dry_run: bool) -> Value {
@@ -223,39 +330,86 @@ impl BigQueryExportClient {
         let url = format!("{ADMIN}/{}/bigQueryLinks", plan.property);
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_LINK_PAGES {
-            let mut req = self.http.get(&url).bearer_auth(token).query(&[("pageSize","100")]);
+            let mut req = self
+                .http
+                .get(&url)
+                .bearer_auth(token)
+                .query(&[("pageSize", "100")]);
             if let Some(page) = &page_token {
-                req = req.query(&[("pageToken",page)]);
+                req = req.query(&[("pageToken", page)]);
             }
             let page = response(req).await?;
-            if page.get("bigqueryLinks").and_then(Value::as_array).is_some_and(|links| links.iter().any(|link|
-                link.get("project").and_then(Value::as_str) == Some(expected.as_str())
-                && link.get("datasetLocation").and_then(Value::as_str).is_some_and(|loc| loc.eq_ignore_ascii_case(&self.location))
-                && (link.get("dailyExportEnabled").and_then(Value::as_bool) == Some(true)
-                    || link.get("freshDailyExportEnabled").and_then(Value::as_bool) == Some(true))
-            )) {
+            if page
+                .get("bigqueryLinks")
+                .and_then(Value::as_array)
+                .is_some_and(|links| {
+                    links.iter().any(|link| {
+                        link.get("project").and_then(Value::as_str) == Some(expected.as_str())
+                            && link
+                                .get("datasetLocation")
+                                .and_then(Value::as_str)
+                                .is_some_and(|loc| loc.eq_ignore_ascii_case(&self.location))
+                            && (link.get("dailyExportEnabled").and_then(Value::as_bool)
+                                == Some(true)
+                                || link.get("freshDailyExportEnabled").and_then(Value::as_bool)
+                                    == Some(true))
+                    })
+                })
+            {
                 return Ok(());
             }
             page_token = bounded_page_token(&page)?;
-            if page_token.is_none() { break; }
+            if page_token.is_none() {
+                break;
+            }
         }
-        Err(AnalyticsError::policy_denied("bigquery_export_link_unverified", "query_bigquery_export"))
+        Err(AnalyticsError::policy_denied(
+            "bigquery_export_link_unverified",
+            "query_bigquery_export",
+        ))
     }
 
-    pub(crate) async fn query(&self, plan: ExportPlan, token: &str) -> Result<Value, AnalyticsError> {
+    pub(crate) async fn query(
+        &self,
+        plan: ExportPlan,
+        token: &str,
+    ) -> Result<Value, AnalyticsError> {
         self.verify_link(&plan, token).await?;
-        let dataset = response(self.http.get(format!("{BQ}/projects/{}/datasets/{}",self.export_project,plan.dataset)).bearer_auth(token)).await?;
+        let dataset = response(
+            self.http
+                .get(format!(
+                    "{BQ}/projects/{}/datasets/{}",
+                    self.export_project, plan.dataset
+                ))
+                .bearer_auth(token),
+        )
+        .await?;
         let reference = dataset.get("datasetReference").ok_or_else(bad_provider)?;
         if reference.get("projectId").and_then(Value::as_str) != Some(self.export_project.as_str())
             || reference.get("datasetId").and_then(Value::as_str) != Some(plan.dataset.as_str())
-            || !dataset.get("location").and_then(Value::as_str).is_some_and(|loc|loc.eq_ignore_ascii_case(&self.location))
+            || !dataset
+                .get("location")
+                .and_then(Value::as_str)
+                .is_some_and(|loc| loc.eq_ignore_ascii_case(&self.location))
         {
-            return Err(AnalyticsError::policy_denied("bigquery_dataset_unverified", "query_bigquery_export"));
+            return Err(AnalyticsError::policy_denied(
+                "bigquery_dataset_unverified",
+                "query_bigquery_export",
+            ));
         }
         let url = format!("{BQ}/projects/{}/queries", self.billing_project);
-        let dry = response(self.http.post(&url).bearer_auth(token).json(&self.request_body(&plan,true))).await?;
-        let estimate = dry.get("totalBytesProcessed").and_then(Value::as_str)
-            .and_then(|s|s.parse::<u64>().ok()).ok_or_else(bad_provider)?;
+        let dry = response(
+            self.http
+                .post(&url)
+                .bearer_auth(token)
+                .json(&self.request_body(&plan, true)),
+        )
+        .await?;
+        let estimate = dry
+            .get("totalBytesProcessed")
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse::<u64>().ok())
+            .ok_or_else(bad_provider)?;
         let mut output = json!({
             "report_kind":plan.report_kind, "property":plan.property, "dataset":plan.dataset,
             "location":self.location, "estimated_bytes_processed":estimate.to_string(),
@@ -267,33 +421,62 @@ impl BigQueryExportClient {
             output["execution_blocked_by_estimate"] = json!(estimate > plan.maximum_bytes);
             return Ok(output);
         }
-        let mut page = response(self.http.post(&url).bearer_auth(token).json(&self.request_body(&plan,false))).await?;
+        let mut page = response(
+            self.http
+                .post(&url)
+                .bearer_auth(token)
+                .json(&self.request_body(&plan, false)),
+        )
+        .await?;
         let job = page.get("jobReference").ok_or_else(bad_provider)?.clone();
-        let job_id = job.get("jobId").and_then(Value::as_str).filter(|s|valid_segment(s,1024)).ok_or_else(bad_provider)?;
+        let job_id = job
+            .get("jobId")
+            .and_then(Value::as_str)
+            .filter(|s| valid_segment(s, 1024))
+            .ok_or_else(bad_provider)?;
         if job.get("projectId").and_then(Value::as_str) != Some(self.billing_project.as_str())
-            || !job.get("location").and_then(Value::as_str).is_some_and(|loc|loc.eq_ignore_ascii_case(&self.location))
-        { return Err(bad_provider()); }
+            || !job
+                .get("location")
+                .and_then(Value::as_str)
+                .is_some_and(|loc| loc.eq_ignore_ascii_case(&self.location))
+        {
+            return Err(bad_provider());
+        }
         let results_url = format!("{url}/{job_id}");
         let mut rows = Vec::new();
         let mut complete = false;
         let mut truncated = false;
         let mut fetched = 0;
         for i in 0..MAX_PAGES {
-            complete = page.get("jobComplete").and_then(Value::as_bool).ok_or_else(bad_provider)?;
+            complete = page
+                .get("jobComplete")
+                .and_then(Value::as_bool)
+                .ok_or_else(bad_provider)?;
             if complete {
-                append_rows(&page,&plan,&mut rows)?;
+                append_rows(&page, &plan, &mut rows)?;
                 fetched += 1;
             }
-            let next = if complete { bounded_page_token(&page)? } else { None };
-            if complete && next.is_none() { break; }
+            let next = if complete {
+                bounded_page_token(&page)?
+            } else {
+                None
+            };
+            if complete && next.is_none() {
+                break;
+            }
             if rows.len() >= plan.max_rows as usize || i + 1 == MAX_PAGES {
                 truncated = complete && next.is_some();
                 break;
             }
-            let mut req = self.http.get(&results_url).bearer_auth(token)
-                .query(&[("location",self.location.as_str()),("timeoutMs","3000")])
-                .query(&[("maxResults",(plan.max_rows - rows.len() as u32).min(100))]);
-            if let Some(next) = &next { req = req.query(&[("pageToken",next)]); }
+            let mut req = self
+                .http
+                .get(&results_url)
+                .bearer_auth(token)
+                .query(&[("location", self.location.as_str()), ("timeoutMs", "3000")])
+                .query(&[("maxResults", (plan.max_rows - rows.len() as u32).min(100))]);
+            if let Some(next) = &next {
+                req = req.query(&[("pageToken", next)]);
+            }
             page = match response(req).await {
                 Ok(value) => value,
                 Err(_) => {
@@ -310,13 +493,14 @@ impl BigQueryExportClient {
         output["pages_fetched"] = json!(fetched);
         output["rows"] = json!(rows);
         output["columns"] = json!(plan.columns);
-        output["remote_cancellation"] = json!("read-only scope cannot cancel jobs; 30-second job timeout is best effort");
+        output["remote_cancellation"] =
+            json!("read-only scope cannot cancel jobs; 30-second job timeout is best effort");
         Ok(output)
     }
 }
 
 fn bounded_page_token(page: &Value) -> Result<Option<String>, AnalyticsError> {
-    let token = page.get("nextPageToken").or_else(||page.get("pageToken"));
+    let token = page.get("nextPageToken").or_else(|| page.get("pageToken"));
     match token {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) if s.is_empty() => Ok(None),
@@ -325,27 +509,45 @@ fn bounded_page_token(page: &Value) -> Result<Option<String>, AnalyticsError> {
     }
 }
 
-fn append_rows(page: &Value, plan: &ExportPlan, rows: &mut Vec<Value>) -> Result<(), AnalyticsError> {
+fn append_rows(
+    page: &Value,
+    plan: &ExportPlan,
+    rows: &mut Vec<Value>,
+) -> Result<(), AnalyticsError> {
     if let Some(schema) = page.pointer("/schema/fields") {
         let names = schema.as_array().ok_or_else(bad_provider)?;
-        if names.len()!=plan.columns.len() || !names.iter().zip(&plan.columns).all(|(field,name)| field.get("name").and_then(Value::as_str)==Some(*name)) {
+        if names.len() != plan.columns.len()
+            || !names
+                .iter()
+                .zip(&plan.columns)
+                .all(|(field, name)| field.get("name").and_then(Value::as_str) == Some(*name))
+        {
             return Err(bad_provider());
         }
     } else if rows.is_empty() {
         return Err(bad_provider());
     }
-    let Some(raw) = page.get("rows") else { return Ok(()); };
+    let Some(raw) = page.get("rows") else {
+        return Ok(());
+    };
     for row in raw.as_array().ok_or_else(bad_provider)? {
-        if rows.len() >= plan.max_rows as usize { return Err(bad_provider()); }
-        let fields = row.get("f").and_then(Value::as_array).ok_or_else(bad_provider)?;
-        if fields.len()!=plan.columns.len() { return Err(bad_provider()); }
+        if rows.len() >= plan.max_rows as usize {
+            return Err(bad_provider());
+        }
+        let fields = row
+            .get("f")
+            .and_then(Value::as_array)
+            .ok_or_else(bad_provider)?;
+        if fields.len() != plan.columns.len() {
+            return Err(bad_provider());
+        }
         let mut values = serde_json::Map::new();
-        for (field,name) in fields.iter().zip(&plan.columns) {
+        for (field, name) in fields.iter().zip(&plan.columns) {
             let value = field.get("v").ok_or_else(bad_provider)?;
-            if !value.is_null() && !value.as_str().is_some_and(|s|s.len() <= 128) {
+            if !value.is_null() && !value.as_str().is_some_and(|s| s.len() <= 128) {
                 return Err(bad_provider());
             }
-            values.insert((*name).to_string(),value.clone());
+            values.insert((*name).to_string(), value.clone());
         }
         rows.push(Value::Object(values));
     }
@@ -359,11 +561,13 @@ async fn response(request: RequestBuilder) -> Result<Value, AnalyticsError> {
         return Err(AnalyticsError::UpstreamApi {status:result.status().as_u16(),message:"Google rejected the bounded export request; check dataset IAM, region, export link and cost limit".to_string()});
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = result.chunk().await.map_err(|_|bad_provider())? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE { return Err(bad_provider()); }
+    while let Some(chunk) = result.chunk().await.map_err(|_| bad_provider())? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE {
+            return Err(bad_provider());
+        }
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_|bad_provider())
+    serde_json::from_slice(&bytes).map_err(|_| bad_provider())
 }
 
 #[cfg(test)]
@@ -371,55 +575,96 @@ mod tests {
     use super::*;
 
     fn fixture(execute: bool) -> BigQueryExportClient {
-        BigQueryExportClient::new(Duration::from_secs(2),"export-fixture".into(),"12345".into(),
-            "billing-fixture".into(),"US".into(),1_000_000,execute).unwrap()
+        BigQueryExportClient::new(
+            Duration::from_secs(2),
+            "export-fixture".into(),
+            "12345".into(),
+            "billing-fixture".into(),
+            "US".into(),
+            1_000_000,
+            execute,
+        )
+        .unwrap()
     }
 
     fn args(kind: &str, execute: bool) -> ExportQueryArgs {
-        ExportQueryArgs { property_id:PropertyId::Number(42), report_kind:kind.into(), start_date:"2026-11-01".into(),
-            end_date:"2026-11-30".into(),maximum_bytes_billed:100_000,max_rows:Some(10),execute }
+        ExportQueryArgs {
+            property_id: PropertyId::Number(42),
+            report_kind: kind.into(),
+            start_date: "2026-11-01".into(),
+            end_date: "2026-11-30".into(),
+            maximum_bytes_billed: 100_000,
+            max_rows: Some(10),
+            execute,
+        }
     }
 
     #[test]
     fn templates_are_fixed_parameterized_and_budgeted() {
-        let client=fixture(true);
-        for kind in ["daily_events","daily_sessions","event_transitions","first_user_acquisition","item_categories"] {
-            let plan=client.plan(args(kind,true)).unwrap();
-            assert!(plan.query.contains("`export-fixture.analytics_42.events_*`"));
-            assert!(plan.query.contains("_TABLE_SUFFIX BETWEEN @start_suffix AND @end_suffix"));
+        let client = fixture(true);
+        for kind in [
+            "daily_events",
+            "daily_sessions",
+            "event_transitions",
+            "first_user_acquisition",
+            "item_categories",
+        ] {
+            let plan = client.plan(args(kind, true)).unwrap();
+            assert!(
+                plan.query
+                    .contains("`export-fixture.analytics_42.events_*`")
+            );
+            assert!(
+                plan.query
+                    .contains("_TABLE_SUFFIX BETWEEN @start_suffix AND @end_suffix")
+            );
             assert!(plan.query.contains("LIMIT @row_limit"));
             assert!(!plan.query.contains("20261101"));
-            let dry=client.request_body(&plan,true);
-            let run=client.request_body(&plan,false);
-            assert_eq!(dry["dryRun"],true);
-            assert_eq!(run["dryRun"],false);
-            assert_eq!(run["maximumBytesBilled"],"100000");
-            assert_eq!(dry["queryParameters"],run["queryParameters"]);
+            let dry = client.request_body(&plan, true);
+            let run = client.request_body(&plan, false);
+            assert_eq!(dry["dryRun"], true);
+            assert_eq!(run["dryRun"], false);
+            assert_eq!(run["maximumBytesBilled"], "100000");
+            assert_eq!(dry["queryParameters"], run["queryParameters"]);
         }
     }
 
     #[test]
     fn rejects_ambient_billing_and_invalid_ranges() {
-        let client=fixture(false);
-        assert!(client.plan(args("daily_events",true)).is_err());
-        assert!(client.plan(args("SELECT *",false)).is_err());
-        let mut a=args("daily_events",false);
-        a.end_date="2026-12-02".into();
+        let client = fixture(false);
+        assert!(client.plan(args("daily_events", true)).is_err());
+        assert!(client.plan(args("SELECT *", false)).is_err());
+        let mut a = args("daily_events", false);
+        a.end_date = "2026-12-02".into();
         assert!(client.plan(a).is_err());
-        let mut a=args("daily_events",false);
-        a.maximum_bytes_billed=1_000_001;
+        let mut a = args("daily_events", false);
+        a.maximum_bytes_billed = 1_000_001;
         assert!(client.plan(a).is_err());
-        assert!(parse_date("start_date","2026-02-29").is_err());
+        assert!(parse_date("start_date", "2026-02-29").is_err());
         assert!(!valid_project("a-b`evil"));
     }
 
     #[test]
     fn validates_aggregate_schema_and_bounded_scalar_rows() {
-        let plan=fixture(false).plan(args("daily_sessions",false)).unwrap();
-        let mut rows=Vec::new();
+        let plan = fixture(false).plan(args("daily_sessions", false)).unwrap();
+        let mut rows = Vec::new();
         append_rows(&json!({"schema":{"fields":[{"name":"event_date"},{"name":"observed_sessions"}]},"rows":[{"f":[{"v":"20261101"},{"v":"42"}]}]}),&plan,&mut rows).unwrap();
-        assert_eq!(rows[0]["observed_sessions"],"42");
-        assert!(append_rows(&json!({"schema":{"fields":[{"name":"event_date"},{"name":"user_pseudo_id"}]}}),&plan,&mut rows).is_err());
-        assert!(append_rows(&json!({"rows":[{"f":[{"v":"20261101"},{"v":{"raw":"identifier"}}]}]}),&plan,&mut rows).is_err());
+        assert_eq!(rows[0]["observed_sessions"], "42");
+        assert!(
+            append_rows(
+                &json!({"schema":{"fields":[{"name":"event_date"},{"name":"user_pseudo_id"}]}}),
+                &plan,
+                &mut rows
+            )
+            .is_err()
+        );
+        assert!(
+            append_rows(
+                &json!({"rows":[{"f":[{"v":"20261101"},{"v":{"raw":"identifier"}}]}]}),
+                &plan,
+                &mut rows
+            )
+            .is_err()
+        );
     }
 }
