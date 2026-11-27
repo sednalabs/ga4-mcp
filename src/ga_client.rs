@@ -312,6 +312,7 @@ impl AnalyticsApiClient {
                 Some(
                     Client::builder()
                         .timeout(settings.http_timeout)
+                        .https_only(true)
                         .redirect(reqwest::redirect::Policy::none())
                         .retry(reqwest::retry::never())
                         .build()
@@ -976,39 +977,14 @@ impl AnalyticsApiClient {
             })
             .ok_or_else(|| AnalyticsError::policy_denied("mutation_disabled", &plan.tool))?;
         let token = self.access_token().await?;
-        let url = format!(
-            "{}/{}/{}/{}",
-            self.admin_base_url, plan.version, plan.parent, plan.collection
-        );
-        let mut request = client.post(&url).bearer_auth(&token).json(&plan.body);
-        if let Some(project) = &self.quota_project {
-            request = request.header("x-goog-user-project", project.as_ref());
-        }
-        // No retry or redirect: a transport failure after submission is ambiguous.
-        let created = mutation_response(request).await?;
-        let prefix = format!("{}/{}/", plan.parent, plan.collection);
-        let name = created.get("name").and_then(Value::as_str)
-            .filter(|name| name.strip_prefix(&prefix).is_some_and(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')))
-            .ok_or_else(|| AnalyticsError::Internal("GA4 creation may have succeeded but returned an invalid resource name; inspect before retrying".to_string()))?;
-        let mut readback = client
-            .get(format!("{}/{}/{}", self.admin_base_url, plan.version, name))
-            .bearer_auth(&token);
-        if let Some(project) = &self.quota_project {
-            readback = readback.header("x-goog-user-project", project.as_ref());
-        }
-        let verified = match mutation_response(readback).await {
-            Ok(value) if value.get("name").and_then(Value::as_str) == Some(name) => Some(value),
-            _ => None,
-        };
-        // Never convert a successful POST into a retryable create error merely
-        // because the readback failed. Return the exact created resource.
-        Ok(json!({
-            "resource_name": name,
-            "created": created,
-            "readback_verified": verified.is_some(),
-            "readback": verified,
-            "retry_safe": false
-        }))
+        dispatch_mutation(
+            client,
+            &plan,
+            &token,
+            self.quota_project.as_deref(),
+            mutation_response,
+        )
+        .await
     }
 
     async fn post_json(&self, url: &str, body: Value) -> Result<Value, AnalyticsError> {
@@ -1252,6 +1228,55 @@ impl AnalyticsApiClient {
 
 // Do not echo provider messages: change-history errors can include actor email
 // filters or sensitive configuration data. Retain useful status-level guidance.
+async fn dispatch_mutation<F, Fut>(
+    client: &Client,
+    plan: &crate::mutations::MutationPlan,
+    token: &str,
+    quota_project: Option<&str>,
+    mut dispatch: F,
+) -> Result<Value, AnalyticsError>
+where
+    F: FnMut(RequestBuilder) -> Fut,
+    Fut: Future<Output = Result<Value, AnalyticsError>>,
+{
+    let url = format!(
+        "https://analyticsadmin.googleapis.com/{}/{}/{}",
+        plan.version, plan.parent, plan.collection
+    );
+    let mut request = client.post(&url).bearer_auth(token).json(&plan.body);
+    if let Some(project) = quota_project {
+        request = request.header("x-goog-user-project", project);
+    }
+    // No retry or redirect: a transport failure after submission is ambiguous.
+    let created = dispatch(request).await?;
+    let prefix = format!("{}/{}/", plan.parent, plan.collection);
+    let name = created.get("name").and_then(Value::as_str)
+        .filter(|name| name.strip_prefix(&prefix).is_some_and(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')))
+        .ok_or_else(|| AnalyticsError::Internal("GA4 creation may have succeeded but returned an invalid resource name; inspect before retrying".to_string()))?;
+    let mut readback = client
+        .get(format!(
+            "https://analyticsadmin.googleapis.com/{}/{}",
+            plan.version, name
+        ))
+        .bearer_auth(token);
+    if let Some(project) = quota_project {
+        readback = readback.header("x-goog-user-project", project);
+    }
+    let verified = match dispatch(readback).await {
+        Ok(value) if value.get("name").and_then(Value::as_str) == Some(name) => Some(value),
+        _ => None,
+    };
+    // Never convert a successful POST into a retryable create error merely
+    // because the readback failed. Return the exact created resource.
+    Ok(json!({
+        "resource_name": name,
+        "created": created,
+        "readback_verified": verified.is_some(),
+        "readback": verified,
+        "retry_safe": false
+    }))
+}
+
 async fn mutation_response(request: RequestBuilder) -> Result<Value, AnalyticsError> {
     const MAX_RESPONSE_BYTES: usize = 256 * 1024;
     let mut response = request.send().await.map_err(|_| {
@@ -1973,6 +1998,137 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    #[tokio::test]
+    async fn mutation_dispatch_fixture_checks_exact_google_requests() {
+        use crate::mutations::{AnnotationArgs, CustomDimensionArgs, KeyEventArgs};
+
+        let annotation: AnnotationArgs = serde_json::from_value(json!({
+            "property_id": 123, "title": "Release", "color": "BLUE",
+            "start_date": "2026-11-27"
+        }))
+        .unwrap();
+        let dimension: CustomDimensionArgs = serde_json::from_value(json!({
+            "property_id": 123, "parameter_name": "campaign_code",
+            "display_name": "Campaign code", "scope": "EVENT"
+        }))
+        .unwrap();
+        let event: KeyEventArgs = serde_json::from_value(json!({
+            "property_id": 123, "event_name": "purchase",
+            "counting_method": "ONCE_PER_EVENT"
+        }))
+        .unwrap();
+        let cases = [
+            (
+                annotation.plan().unwrap(),
+                "v1alpha/reportingDataAnnotations",
+                json!({"title":"Release","color":"BLUE","annotationDate":{"year":2026,"month":11,"day":27}}),
+            ),
+            (
+                dimension.plan().unwrap(),
+                "v1beta/customDimensions",
+                json!({"parameterName":"campaign_code","displayName":"Campaign code","scope":"EVENT"}),
+            ),
+            (
+                event.plan().unwrap(),
+                "v1beta/keyEvents",
+                json!({"eventName":"purchase","countingMethod":"ONCE_PER_EVENT"}),
+            ),
+        ];
+        let client = Client::new();
+        for (plan, endpoint, expected_body) in cases {
+            let (version, collection) = endpoint.split_once('/').unwrap();
+            let name = format!("properties/123/{collection}/456");
+            let mut calls = 0;
+            let result = dispatch_mutation(
+                &client,
+                &plan,
+                "fixture-only",
+                Some("fixture-project"),
+                |builder| {
+                    let request = builder.build().unwrap();
+                    calls += 1;
+                    assert_eq!(request.url().scheme(), "https");
+                    assert_eq!(
+                        request.url().host_str(),
+                        Some("analyticsadmin.googleapis.com")
+                    );
+                    assert_eq!(request.headers()["authorization"], "Bearer fixture-only");
+                    assert_eq!(request.headers()["x-goog-user-project"], "fixture-project");
+                    if calls == 1 {
+                        assert_eq!(request.method(), Method::POST);
+                        assert_eq!(
+                            request.url().path(),
+                            format!("/{version}/properties/123/{collection}")
+                        );
+                        let body = request.body().unwrap().as_bytes().unwrap();
+                        assert_eq!(
+                            serde_json::from_slice::<Value>(body).unwrap(),
+                            expected_body
+                        );
+                    } else {
+                        assert_eq!(calls, 2);
+                        assert_eq!(request.method(), Method::GET);
+                        assert_eq!(request.url().path(), format!("/{version}/{name}"));
+                        assert!(request.body().is_none());
+                    }
+                    std::future::ready(Ok(json!({"name":name})))
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(calls, 2);
+            assert_eq!(result["resource_name"], name);
+            assert_eq!(result["readback_verified"], true);
+            assert_eq!(result["retry_safe"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_dispatch_fixture_never_retries_or_reads_untrusted_names() {
+        let args: crate::mutations::KeyEventArgs = serde_json::from_value(json!({
+            "property_id": 123, "event_name": "purchase",
+            "counting_method": "ONCE_PER_EVENT"
+        }))
+        .unwrap();
+        let plan = args.plan().unwrap();
+        let client = Client::new();
+        for name in [
+            None,
+            Some("properties/999/keyEvents/456"),
+            Some("properties/123/keyEvents/../456"),
+            Some("properties/123/keyEvents/456?x=y"),
+        ] {
+            let mut calls = 0;
+            let result = dispatch_mutation(&client, &plan, "fixture-only", None, |builder| {
+                calls += 1;
+                assert_eq!(builder.build().unwrap().method(), Method::POST);
+                std::future::ready(match name {
+                    Some(name) => Ok(json!({"name":name})),
+                    None => Err(AnalyticsError::Internal("fixture interruption".into())),
+                })
+            })
+            .await;
+            assert!(result.is_err());
+            assert_eq!(calls, 1);
+        }
+        let mut calls = 0;
+        let result = dispatch_mutation(&client, &plan, "fixture-only", None, |builder| {
+            calls += 1;
+            let request = builder.build().unwrap();
+            std::future::ready(if request.method() == Method::POST {
+                Ok(json!({"name":"properties/123/keyEvents/456"}))
+            } else {
+                Err(AnalyticsError::Internal("fixture readback failure".into()))
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(result["readback_verified"], false);
+        assert_eq!(result["retry_safe"], false);
+        assert_eq!(result["resource_name"], "properties/123/keyEvents/456");
+    }
 
     #[test]
     fn property_id_accepts_numeric_and_prefixed_values() {
