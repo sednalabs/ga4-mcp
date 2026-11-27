@@ -651,7 +651,8 @@ mod tests {
 
     #[tokio::test]
     async fn actual_http_dispatch_isolates_verified_principals_and_rejects_limit_changes() {
-        use axum::{Json, Router, middleware, routing::get};
+        use axum::{Json, Router, middleware, routing::get, routing::post};
+        use std::sync::atomic::AtomicUsize;
         use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use mcp_toolkit_auth::{
             AuthConfig,
@@ -745,10 +746,49 @@ mod tests {
         surface.allow_insecure_http = true;
         let auth_layer = AuthSurfaceLayer::from_config(surface).unwrap();
 
+        // Real report ingestion uses only this loopback provider. The separate
+        // identity/entitlement fixture above never sends its HTTPS requests.
+        let report_calls = Arc::new(AtomicUsize::new(0));
+        let fixture_calls = report_calls.clone();
+        let provider = Router::new().route(
+            "/v1beta/properties/{report}",
+            post(move |headers: axum::http::HeaderMap,
+                       axum::extract::Path(report): axum::extract::Path<String>,
+                       Json(body): Json<Value>| {
+                let calls = fixture_calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(report, "42:runReport");
+                    assert_eq!(
+                        headers.get("x-goog-user-project").unwrap(),
+                        "operator-fixture"
+                    );
+                    let marker = match headers.get("authorization").unwrap().to_str().unwrap() {
+                        "Bearer fixture-google-a" => "only-a",
+                        "Bearer fixture-google-b" => "only-b",
+                        _ => panic!("unexpected report credential"),
+                    };
+                    assert_eq!(body["dimensions"], json!([{"name":"country"}]));
+                    assert_eq!(body["metrics"], json!([{"name":"activeUsers"}]));
+                    Json(json!({
+                        "dimensionHeaders":[{"name":"country"}],
+                        "metricHeaders":[{"name":"activeUsers","type":"TYPE_INTEGER"}],
+                        "rows":[{"dimensionValues":[{"value":marker}],
+                                 "metricValues":[{"value":"1"}]}],
+                        "rowCount":1
+                    }))
+                }
+            }),
+        );
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_url = format!("http://{}", provider_listener.local_addr().unwrap());
+        let provider_task =
+            tokio::spawn(async move { axum::serve(provider_listener, provider).await.unwrap() });
+
         let settings = crate::config::Settings {
             analytics_scope: crate::config::DEFAULT_ANALYTICS_SCOPE.to_owned(),
-            admin_base_url: "https://analyticsadmin.googleapis.com".to_owned(),
-            data_base_url: "https://analyticsdata.googleapis.com".to_owned(),
+            admin_base_url: provider_url.clone(),
+            data_base_url: provider_url,
             http_timeout: Duration::from_secs(2),
             max_page_size: 100,
             max_pages: 2,
@@ -802,23 +842,26 @@ mod tests {
             max_sessions_per_principal: 1,
             dispatch_fixture: true,
         }));
-        let runtime = build_local_streamable_http_service(
-            move || Ok(server.clone()),
-            LocalStreamableHttpServiceConfig {
-                server_config: StreamableHttpServerConfig::default()
-                    .with_allowed_hosts(["127.0.0.1".to_owned()])
-                    .with_legacy_session_mode(false)
-                    .with_json_response(true),
-                ..Default::default()
-            },
-        );
-        let app = Router::new()
-            .nest_service("/mcp", runtime.service)
-            .layer(middleware::from_fn_with_state(
-                HostedAuthGuard::new(authenticator, "x-google-token".to_owned()),
-                verify_hosted_mcp_request,
-            ))
-            .layer(auth_layer);
+        let build_app = |server: AnalyticsMcp| {
+            let runtime = build_local_streamable_http_service(
+                move || Ok(server.clone()),
+                LocalStreamableHttpServiceConfig {
+                    server_config: StreamableHttpServerConfig::default()
+                        .with_allowed_hosts(["127.0.0.1".to_owned()])
+                        .with_legacy_session_mode(false)
+                        .with_json_response(true),
+                    ..Default::default()
+                },
+            );
+            Router::new()
+                .nest_service("/mcp", runtime.service)
+                .layer(middleware::from_fn_with_state(
+                    HostedAuthGuard::new(authenticator.clone(), "x-google-token".to_owned()),
+                    verify_hosted_mcp_request,
+                ))
+                .layer(auth_layer.clone())
+        };
+        let app = build_app(server.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -828,8 +871,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let call = |token: String, google: &'static str, tool: &'static str, args: Value| {
-            http.post(&endpoint)
+        let call_at = |url: &str, token: String, google: &'static str, tool: &'static str, args: Value| {
+            http.post(url)
                 .bearer_auth(token)
                 .header("x-google-token", google)
                 .header("accept", "application/json, text/event-stream")
@@ -845,6 +888,7 @@ mod tests {
                     }}
                 }))
         };
+        let call = |token, google, tool, args| call_at(&endpoint, token, google, tool, args);
         async fn payload(request: RequestBuilder) -> Value {
             let response = request.send().await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
@@ -876,34 +920,40 @@ mod tests {
         assert_eq!(a_open["ok"], true);
         assert_eq!(b_open["ok"], true);
 
-        let properties = BTreeSet::from(["properties/42".to_owned()]);
-        for (mcp_subject, google_subject, google_token, sql) in [
-            (
-                "mcp-a",
-                "google-a",
+        let report = json!({
+            "session_id":"same","table_name":"private_data","property_id":"42",
+            "date_ranges":[{"start_date":"2026-01-01","end_date":"2026-01-01"}],
+            "dimensions":["country"],"metrics":["activeUsers"],"limit":1
+        });
+        let mut forbidden_report = report.clone();
+        forbidden_report["property_id"] = json!("99");
+        let denied_ingest = payload(call(
+            a.clone(),
+            "fixture-google-a",
+            "scratchpad_ingest_report",
+            forbidden_report,
+        ))
+        .await;
+        assert_eq!(denied_ingest["ok"], false);
+        assert_eq!(report_calls.load(Ordering::SeqCst), 0);
+        let (a_ingest, b_ingest) = tokio::join!(
+            payload(call(
+                a.clone(),
                 "fixture-google-a",
-                "CREATE TABLE private_data AS SELECT 'only-a' AS marker",
-            ),
-            (
-                "mcp-b",
-                "google-b",
+                "scratchpad_ingest_report",
+                report.clone()
+            )),
+            payload(call(
+                b.clone(),
                 "fixture-google-b",
-                "CREATE TABLE private_data AS SELECT 'only-b' AS marker",
-            ),
-        ] {
-            let principal = serde_json::to_string(&(ISSUER, mcp_subject)).unwrap();
-            let view = root
-                .for_scope(
-                    bound_scope(&principal, google_subject, google_token, &properties).unwrap(),
-                    1,
-                )
-                .unwrap();
-            view.open_connection("same")
-                .unwrap()
-                .execute_batch(sql)
-                .unwrap();
-        }
-        let query = json!({"session_id":"same","sql":"SELECT marker FROM private_data"});
+                "scratchpad_ingest_report",
+                report.clone()
+            ))
+        );
+        assert_eq!(a_ingest["ok"], true, "{a_ingest}");
+        assert_eq!(b_ingest["ok"], true, "{b_ingest}");
+        assert_eq!(report_calls.load(Ordering::SeqCst), 2);
+        let query = json!({"session_id":"same","sql":"SELECT country FROM private_data"});
         let (a_query, b_query) = tokio::join!(
             payload(call(
                 a.clone(),
@@ -934,6 +984,17 @@ mod tests {
             assert_eq!(listing["ok"], true);
             assert_eq!(listing["data"]["returned"], 0);
         }
+
+        let exported = payload(call(
+            b.clone(),
+            "fixture-google-b",
+            "scratchpad_export_evidence_bundle",
+            json!({"session_id":"same","table_names":["private_data"],"sample_rows_per_table":1}),
+        ))
+        .await;
+        assert_eq!(exported["ok"], true, "{exported}");
+        assert!(exported["data"].to_string().contains("only-b"));
+        assert!(!exported["data"].to_string().contains("only-a"));
 
         let limit = payload(call(
             a.clone(),
@@ -1003,14 +1064,51 @@ mod tests {
         ))
         .await;
         assert_eq!(invalid_google["ok"], false);
-        let legacy = call(a, "fixture-google-a", "scratchpad_list_sessions", json!({}))
+        let legacy = call(a.clone(), "fixture-google-a", "scratchpad_list_sessions", json!({}))
             .header("mcp-session-id", "not-authority")
             .send()
             .await
             .unwrap();
         assert_eq!(legacy.status(), StatusCode::METHOD_NOT_ALLOWED);
 
+        // Independent runtime and fresh manager: never resurrect process-local
+        // state from the same logical session identifier or verified credentials.
         task.abort();
+        let _ = task.await;
+        let fresh_engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
+        let fresh_root = Arc::new(
+            ScratchpadSessionManager::new(
+                fresh_engine,
+                ScratchpadSessionConfig::new(Duration::from_secs(60), 2, 4, 100, 128),
+            )
+            .unwrap(),
+        );
+        server.scratchpad_sessions = fresh_root;
+        server.client = Arc::new(
+            crate::ga_client::AnalyticsApiClient::from_settings(&settings)
+                .await
+                .unwrap(),
+        );
+        let fresh_app = build_app(server);
+        let fresh_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fresh_endpoint = format!("http://{}/mcp", fresh_listener.local_addr().unwrap());
+        let fresh_task =
+            tokio::spawn(async move { axum::serve(fresh_listener, fresh_app).await.unwrap() });
+        for (token, google) in [(a, "fixture-google-a"), (b, "fixture-google-b")] {
+            let listing = payload(call_at(
+                &fresh_endpoint,
+                token,
+                google,
+                "scratchpad_list_sessions",
+                json!({}),
+            ))
+            .await;
+            assert_eq!(listing["ok"], true);
+            assert_eq!(listing["data"]["returned"], 0);
+        }
+        assert_eq!(report_calls.load(Ordering::SeqCst), 2);
+        fresh_task.abort();
+        provider_task.abort();
         jwks_task.abort();
     }
 }
