@@ -37,7 +37,9 @@ use crate::ga_client::{
     build_run_conversions_report_payload, build_run_funnel_report_payload, normalize_funnel_step,
     snake_to_camel_json, sort_object,
 };
-use crate::scratchpad::{ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo};
+use crate::scratchpad::{
+    ScratchpadError, ScratchpadIngestColumn, ScratchpadIngestMode, ScratchpadTableInfo,
+};
 use crate::server::AnalyticsMcp;
 
 const MAX_REPORT_LIMIT: u64 = 250_000;
@@ -4480,7 +4482,7 @@ fn ingest_projection_into_scratchpad(
                     safe_error("error", &err),
                 ],
             );
-            return Err(err);
+            return Err(err.into());
         }
     };
 
@@ -5310,15 +5312,24 @@ fn execute_scratchpad_projection(
     offset: u64,
     page_size: u64,
 ) -> Result<ScratchpadTabularProjection, AnalyticsError> {
+    // Preserve GA4's configured policy-runtime authority as an additional gate.
+    // The shared manager also independently applies the toolkit SQL policy.
+    crate::sql_safety::validate_scratchpad_sql(
+        sql,
+        server.scratchpad_sessions.config().max_sql_bytes,
+    )
+    .map_err(|error| AnalyticsError::scratchpad_sql_rejected(error.code, error.message))?;
     let hooks = server.scratchpad_sessions.default_execution_hooks();
     server
         .scratchpad_sessions
         .run_guarded(session_id, sql, hooks, |conn| {
             if supports_wrapped_pagination(sql) {
                 let count_sql = wrap_query_for_row_count(sql);
-                let row_count_total = query_row_count(conn, &count_sql)?;
+                let row_count_total =
+                    query_row_count(conn, &count_sql).map_err(projection_scratchpad_error)?;
                 let page_sql = wrap_query_for_page(sql, offset, page_size);
-                let (columns, rows) = execute_duckdb_query_rows(conn, &page_sql)?;
+                let (columns, rows) =
+                    execute_duckdb_query_rows(conn, &page_sql).map_err(projection_scratchpad_error)?;
 
                 Ok(ScratchpadTabularProjection {
                     rows,
@@ -5328,7 +5339,8 @@ fn execute_scratchpad_projection(
                     pagination_mode: "wrapped_sql",
                 })
             } else {
-                let (columns, rows) = execute_duckdb_query_rows(conn, sql)?;
+                let (columns, rows) =
+                    execute_duckdb_query_rows(conn, sql).map_err(projection_scratchpad_error)?;
                 let row_count_total = rows.len();
                 let offset = usize::try_from(offset).unwrap_or(usize::MAX);
                 let limit = usize::try_from(page_size).unwrap_or(usize::MAX);
@@ -5354,6 +5366,15 @@ fn execute_scratchpad_projection(
                 })
             }
         })
+        .map_err(AnalyticsError::from)
+}
+
+fn projection_scratchpad_error(error: AnalyticsError) -> ScratchpadError {
+    match error {
+        AnalyticsError::ScratchpadEngine(message) => ScratchpadError::ScratchpadEngine(message),
+        AnalyticsError::Internal(message) => ScratchpadError::Internal(message),
+        _ => ScratchpadError::Internal("unexpected GA4 projection error".to_string()),
+    }
 }
 
 fn query_row_count(conn: &duckdb::Connection, sql: &str) -> Result<usize, AnalyticsError> {
@@ -6795,6 +6816,7 @@ fn collect_runtime_memory_pressure(
     for info in session_infos {
         match sessions
             .open_connection(&info.session_id)
+            .map_err(AnalyticsError::from)
             .and_then(|conn| probe_duckdb_memory_usage(&conn))
         {
             Ok((used_bytes, limit_bytes)) => {
@@ -6969,8 +6991,8 @@ fn contract_success(data: Value, started: Instant) -> CallToolResult {
     contract::success(data, contract::elapsed_ms(started))
 }
 
-fn contract_error(err: AnalyticsError, started: Instant) -> CallToolResult {
-    contract::error(err, contract::elapsed_ms(started))
+fn contract_error(err: impl Into<AnalyticsError>, started: Instant) -> CallToolResult {
+    contract::error(err.into(), contract::elapsed_ms(started))
 }
 
 fn redact_tool_error_message(err: &impl std::fmt::Display) -> String {
@@ -7487,7 +7509,6 @@ mod tests {
     fn collect_runtime_memory_pressure_handles_zero_sessions() {
         let engine: crate::scratchpad::SharedScratchpadEngine =
             std::sync::Arc::new(crate::scratchpad::DuckDbEngine::new().expect("engine"));
-        let root_dir = std::env::temp_dir().join("ga4-mcp-tools-memory-zero-sessions");
         let manager = crate::scratchpad::ScratchpadSessionManager::new(
             engine,
             crate::scratchpad::ScratchpadSessionConfig::new(
@@ -7496,8 +7517,7 @@ mod tests {
                 4,
                 100,
                 128,
-            )
-            .with_root_dir(root_dir.clone()),
+            ),
         )
         .expect("manager");
 
@@ -7508,7 +7528,7 @@ mod tests {
         assert_eq!(payload["pressure_level"], json!("normal"));
         assert_eq!(payload["high_pressure"], json!(false));
 
-        let _ = std::fs::remove_dir_all(root_dir);
+        let _ = std::fs::remove_dir_all(&manager.config().root_dir);
     }
 
     use serde_json::json;

@@ -112,3 +112,15 @@ schema snapshot remains a full developer catalogue. The RMCP response adapter
 preserves Contract V1 complete results. The migration must pass fresh lockfile
 resolution, dependency governance, legacy/current protocol and container tests
 before production use. Scratchpad HTTP containment is unchanged.
+
+## Shared scratchpad substrate
+
+GA4 consumes the landed toolkit scratchpad revision `b2c2de4336cd1031e57bc63fcfdbfa17f54f7595`. Its shared
+manager provides private per-generation database storage, quotas and optional
+exact identity scopes. GA4 keeps the configured policy-runtime decision as a
+second query gate and preserves its Contract V1 error taxonomy and existing
+provider-specific column normalization. The old GA4 copy of the lifecycle
+manager is removed. HTTP multi-user scratchpads remain disabled until the
+request-bound MCP principal and independently verified Google account can be
+bound to the scoped manager for every operation; the scoped-store integration
+test is not evidence that hosted identity binding is complete.

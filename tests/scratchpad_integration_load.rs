@@ -1,24 +1,14 @@
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use ga4_mcp::error::AnalyticsError;
 use ga4_mcp::scratchpad::{
-    DuckDbEngine, ScratchpadExecutionHooks, ScratchpadIngestColumn, ScratchpadSessionConfig,
-    ScratchpadSessionManager, SharedScratchpadEngine,
+    DuckDbEngine, ScratchpadError, ScratchpadExecutionHooks, ScratchpadIngestColumn,
+    ScratchpadScope, ScratchpadSessionConfig, ScratchpadSessionManager, SharedScratchpadEngine,
 };
 use serde_json::{Map, Value};
 
-fn test_root_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("clock should be monotonic")
-        .as_nanos();
-    std::env::temp_dir().join(format!("ga4-mcp-it-{name}-{nanos}"))
-}
-
 fn test_manager(
-    name: &str,
+    _name: &str,
     max_rows_per_session: usize,
     max_memory_mb: usize,
     query_timeout: Duration,
@@ -31,7 +21,6 @@ fn test_manager(
         max_rows_per_session,
         max_memory_mb,
     )
-    .with_root_dir(test_root_dir(name))
     .with_query_timeout(query_timeout)
     .with_max_sql_bytes(128 * 1024);
     ScratchpadSessionManager::new(engine, config).expect("manager")
@@ -71,17 +60,17 @@ fn query_count(
     manager: &ScratchpadSessionManager,
     session_id: &str,
     sql: &str,
-) -> Result<i64, AnalyticsError> {
+) -> Result<i64, ScratchpadError> {
     let hooks = manager
         .default_execution_hooks()
         .with_interrupt_poll_interval(Duration::from_millis(1));
     manager.run_guarded(session_id, sql, hooks, |conn| {
         let mut stmt = conn.prepare(sql).map_err(|err| {
-            AnalyticsError::ScratchpadEngine(format!("failed to prepare count query: {err}"))
+            ScratchpadError::ScratchpadEngine(format!("failed to prepare count query: {err}"))
         })?;
         stmt.query_row([], |row| row.get::<_, i64>(0))
             .map_err(|err| {
-                AnalyticsError::ScratchpadEngine(format!("failed to execute count query: {err}"))
+                ScratchpadError::ScratchpadEngine(format!("failed to execute count query: {err}"))
             })
     })
 }
@@ -199,4 +188,36 @@ fn scratchpad_ingest_rejects_rows_beyond_session_bound() {
     assert_eq!(info.tables_used, 0);
 
     let _ = std::fs::remove_dir_all(manager.config().root_dir.clone());
+}
+
+#[test]
+fn shared_toolkit_scope_keeps_identical_session_names_separate() {
+    let root = test_manager("scoped-adoption", 10_000, 128, Duration::from_secs(3));
+    let a = root
+        .for_scope(ScratchpadScope::new("issuer/a", "google/account").expect("scope"), 2)
+        .expect("scope a");
+    let b = root
+        .for_scope(ScratchpadScope::new("issuer/b", "google/account").expect("scope"), 2)
+        .expect("scope b");
+    a.open_session("same").expect("session a");
+    b.open_session("same").expect("session b");
+    a.ingest_rows("same", "events", &default_columns(), &make_rows(3, 0))
+        .expect("ingest a");
+    b.ingest_rows("same", "events", &default_columns(), &make_rows(1, 0))
+        .expect("ingest b");
+    assert_eq!(
+        query_count(&a, "same", "SELECT COUNT(*) FROM events").expect("a rows"),
+        3
+    );
+    assert_eq!(
+        query_count(&b, "same", "SELECT COUNT(*) FROM events").expect("b rows"),
+        1
+    );
+    assert!(a.set_max_sessions_limit(100).is_err());
+    assert!(a.release_session("same").expect("release a"));
+    assert_eq!(
+        query_count(&b, "same", "SELECT COUNT(*) FROM events").expect("b remains"),
+        1
+    );
+    let _ = std::fs::remove_dir_all(&root.config().root_dir);
 }
