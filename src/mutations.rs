@@ -664,8 +664,7 @@ mod tests {
         fn assert_denied(result: &Value, profile: &str) {
             assert_eq!(result["structuredContent"]["ok"], false, "{result}");
             assert_eq!(
-                result["structuredContent"]["error"]["code"],
-                "POLICY_DENIED",
+                result["structuredContent"]["error"]["code"], "POLICY_DENIED",
                 "{result}"
             );
             assert!(
@@ -704,23 +703,44 @@ mod tests {
         let state = approval_state(&first);
         let tampered = exchange(&mut read, &mut write, 4, continuation("other", state, true)).await;
         assert_denied(&tampered, "mutation_approval_required");
-        let consumed = exchange(&mut read, &mut write, 5, continuation("purchase", state, true)).await;
+        let consumed = exchange(
+            &mut read,
+            &mut write,
+            5,
+            continuation("purchase", state, true),
+        )
+        .await;
         assert_denied(&consumed, "mutation_approval_required");
 
         let second = exchange(&mut read, &mut write, 6, params("purchase", true)).await;
         let state = approval_state(&second);
-        let declined =
-            exchange(&mut read, &mut write, 7, continuation("purchase", state, false)).await;
+        let declined = exchange(
+            &mut read,
+            &mut write,
+            7,
+            continuation("purchase", state, false),
+        )
+        .await;
         assert_denied(&declined, "mutation_approval_required");
 
         let third = exchange(&mut read, &mut write, 8, params("purchase", true)).await;
         let state = approval_state(&third);
-        let accepted =
-            exchange(&mut read, &mut write, 9, continuation("purchase", state, true)).await;
+        let accepted = exchange(
+            &mut read,
+            &mut write,
+            9,
+            continuation("purchase", state, true),
+        )
+        .await;
         // Only a correctly approved call can reach the independent provider gate.
         assert_denied(&accepted, "mutation_disabled");
-        let replay =
-            exchange(&mut read, &mut write, 10, continuation("purchase", state, true)).await;
+        let replay = exchange(
+            &mut read,
+            &mut write,
+            10,
+            continuation("purchase", state, true),
+        )
+        .await;
         assert_denied(&replay, "mutation_approval_required");
 
         drop(write);
