@@ -5570,9 +5570,11 @@ fn duck_value_to_json(value: DuckValue) -> Result<Value, AnalyticsError> {
             "days": days,
             "nanos": nanos
         }),
-        DuckValue::List(raw) | DuckValue::Array(raw) => {
-            Value::Array(raw.into_iter().map(duck_value_to_json).collect::<Result<_, _>>()?)
-        }
+        DuckValue::List(raw) | DuckValue::Array(raw) => Value::Array(
+            raw.into_iter()
+                .map(duck_value_to_json)
+                .collect::<Result<_, _>>()?,
+        ),
         DuckValue::Struct(raw) => Value::Object(
             raw.iter()
                 .map(|(key, value)| Ok((key.clone(), duck_value_to_json(value.clone())?)))
@@ -9095,8 +9097,8 @@ mod tests {
 
     #[test]
     fn duck_value_to_json_preserves_unsigned_128_bit_precision() {
-        let value = duck_value_to_json(DuckValue::UHugeInt(u128::MAX))
-            .expect("unsigned huge integer");
+        let value =
+            duck_value_to_json(DuckValue::UHugeInt(u128::MAX)).expect("unsigned huge integer");
         assert_eq!(value, Value::String(u128::MAX.to_string()));
     }
 
