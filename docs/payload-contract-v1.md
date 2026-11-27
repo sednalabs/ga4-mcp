@@ -161,6 +161,7 @@ Postgres-specific fields are not required by this contract.
 - `get_property_details`
 - `get_property_data_retention_settings`
 - `list_google_ads_links`
+- `list_bigquery_links`
 - `list_property_annotations`
 - `get_custom_dimensions_and_metrics`
 - `check_report_compatibility`
