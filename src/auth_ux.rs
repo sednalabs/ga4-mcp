@@ -24,10 +24,9 @@ use crate::config::{
     conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
 };
 use crate::contract::redact_secret_text;
-use crate::ga_client::{AnalyticsApiClient, AuthSource};
+use crate::ga_client::{AnalyticsApiClient, AuthSource, api_probe_status};
 
 const ANALYTICS_API_NAME: &str = "Google Analytics API";
-const ANALYTICS_ADMIN_API_SERVICE: &str = "analyticsadmin.googleapis.com";
 const ANALYTICS_DATA_API_SERVICE: &str = "analyticsdata.googleapis.com";
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +43,8 @@ struct AuthReport {
     quota_project: QuotaProjectStatus,
     detected: CredentialDetection,
     verification: VerificationReport,
+    data_api: serde_json::Value,
+    admin_api: serde_json::Value,
     ready: bool,
     next_steps: Vec<String>,
 }
@@ -410,6 +411,8 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
     let client = AnalyticsApiClient::from_settings(settings).await;
     let mut detected_auth_source = None;
     let mut detected_quota_project = settings.quota_project.clone();
+    let mut data_api = api_probe_status(None, false);
+    let mut admin_api = api_probe_status(None, true);
     let verification = match client {
         Ok(client) => {
             detected_auth_source = Some(client.auth_source());
@@ -421,6 +424,13 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
                 } else {
                     client.verify_token().await
                 };
+                data_api = api_probe_status(Some(&result), false);
+                let admin_result = client
+                    .probe_admin_api(
+                        settings.upstream_token_source == UpstreamTokenSource::RequestHeader,
+                    )
+                    .await;
+                admin_api = api_probe_status(Some(&admin_result), true);
                 match result {
                     Ok(()) => VerificationReport::Ok,
                     Err(err) => VerificationReport::Failed {
@@ -466,6 +476,8 @@ async fn build_auth_report(settings: &Settings, verify_token: bool) -> AuthRepor
         quota_project,
         detected: detection,
         verification,
+        data_api,
+        admin_api,
         ready,
         next_steps,
     }
@@ -573,6 +585,19 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
             println!("Error: {error}");
         }
     }
+    println!(
+        "Data API: {}",
+        report.data_api["status"].as_str().unwrap_or("unknown")
+    );
+    let admin_status = report.admin_api["status"].as_str().unwrap_or("unknown");
+    if report.admin_api["severity"].as_str() == Some("warning") {
+        println!(
+            "Admin API: warning ({admin_status}); reporting can still work with an explicit property ID."
+        );
+    } else {
+        println!("Admin API: {admin_status} (optional)");
+    }
+    println!("A successful Data API probe does not verify access to any particular property.");
     println!(
         "Ready: {}",
         if matches!(report.verification, VerificationReport::NotChecked) {
@@ -933,7 +958,7 @@ fn next_steps(
                     .to_string(),
             );
             steps.push(
-                "Call get_account_summaries to list accessible GA4 accounts and properties."
+                "Use an explicit property ID for reports, or call get_account_summaries if the optional Admin API is available."
                     .to_string(),
             );
             steps
@@ -955,7 +980,7 @@ fn next_steps(
                 steps.extend([
                     "Run `ga4-mcp auth status --verify-token` to prove Google API access."
                         .to_string(),
-                    "Then restart the MCP client and call get_account_summaries.".to_string(),
+                    "Then restart the MCP client and run a report using an explicit property ID; Admin discovery is optional.".to_string(),
                 ]);
                 steps
             } else {
@@ -963,7 +988,7 @@ fn next_steps(
                     format!("Run `{login_command}` for browser login."),
                     "Then run `ga4-mcp auth status --verify-token` to prove Google API access."
                         .to_string(),
-                    "Restart the MCP client and call get_account_summaries.".to_string(),
+                    "Restart the MCP client and run a report using an explicit property ID; Admin discovery is optional.".to_string(),
                 ];
                 if explicit_credential_config_detected(settings, detection) {
                     steps.insert(0, "Fix or clear explicit credential configuration before browser login; it takes precedence over Application Default Credentials.".to_string());
@@ -997,7 +1022,7 @@ fn next_steps(
                 ));
                 if let Some(api_enable) = setup_plan.api_enable.as_ref() {
                     steps.push(format!(
-                        "Enable the required Analytics APIs with `{}`.",
+                        "Enable the required Analytics Data API with `{}`.",
                         api_enable.shell
                     ));
                 }
@@ -1159,7 +1184,7 @@ fn adc_login_target_description(shared_adc: bool) -> String {
 
 pub(crate) fn google_provider_auth_config(scope: &str) -> GoogleProviderAuthConfig {
     GoogleProviderAuthConfig::new(ANALYTICS_API_NAME, split_scopes(scope))
-        .with_api_service_names([ANALYTICS_ADMIN_API_SERVICE, ANALYTICS_DATA_API_SERVICE])
+        .with_api_service_name(ANALYTICS_DATA_API_SERVICE)
 }
 
 fn split_scopes(scope: &str) -> Vec<String> {

@@ -27,6 +27,31 @@ use crate::config::{
     conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
 };
 use crate::error::AnalyticsError;
+use mcp_toolkit_auth::provider_auth::{
+    GoogleProviderAuthConfig, GoogleProviderAuthFailureKind, classify_google_provider_auth_error,
+};
+
+pub(crate) const ADMIN_API: &str = "analyticsadmin.googleapis.com";
+pub(crate) const DATA_API: &str = "analyticsdata.googleapis.com";
+
+/// A probe verifies an endpoint, not authorization for a specific property.
+pub(crate) fn api_probe_status(
+    result: Option<&Result<(), AnalyticsError>>,
+    optional: bool,
+) -> Value {
+    match result {
+        None => json!({"status": "not_checked", "optional": optional}),
+        Some(Ok(())) => json!({"status": "verified", "optional": optional}),
+        Some(Err(err)) => json!({
+            "status": err.reason(),
+            "optional": optional,
+            "severity": if optional { "warning" } else { "error" },
+            "code": err.code(),
+            "status_code": err.status_code(),
+            "hint": err.hint(),
+        }),
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -347,28 +372,54 @@ impl AnalyticsApiClient {
         self.quota_project.as_deref()
     }
 
+    /// Verify the Data API without property discovery or Admin access.
     pub async fn verify_token(&self) -> Result<(), AnalyticsError> {
-        self.get_account_summaries(PaginationOptions {
-            page_size: Some(1),
-            max_pages: Some(1),
-        })
-        .await
-        .map(|_| ())
+        self.probe_api(DATA_API, false).await
     }
 
+    /// Verify configured credentials for CLI diagnostics in request-header mode.
     pub async fn verify_config_token(&self) -> Result<(), AnalyticsError> {
-        let token = self.configured_access_token().await?;
-        let url =
-            parse_https_upstream_url(&format!("{}/v1beta/accountSummaries", self.admin_base_url))?;
+        self.probe_api(DATA_API, true).await
+    }
+
+    pub(crate) async fn probe_admin_api(
+        &self,
+        configured_only: bool,
+    ) -> Result<(), AnalyticsError> {
+        self.probe_api(ADMIN_API, configured_only).await
+    }
+
+    async fn probe_api(
+        &self,
+        api: &'static str,
+        configured_only: bool,
+    ) -> Result<(), AnalyticsError> {
+        let token = if configured_only {
+            self.configured_access_token().await?
+        } else {
+            self.access_token().await?
+        };
+        // Property 0 is Google's universal reporting metadata endpoint.
+        // It needs no property-specific permission or Admin lookup.
+        let url = if api == ADMIN_API {
+            format!("{}/v1beta/accountSummaries?pageSize=1", self.admin_base_url)
+        } else {
+            format!("{}/v1beta/properties/0/metadata", self.data_base_url)
+        };
         let mut request = self
             .http
-            .request(Method::GET, url)
-            .bearer_auth(token)
-            .query(&[("pageSize", "1")]);
+            .request(Method::GET, parse_https_upstream_url(&url)?)
+            .bearer_auth(token);
         if let Some(quota_project) = &self.quota_project {
             request = request.header("x-goog-user-project", quota_project.as_ref());
         }
-        self.send_json(request).await.map(|_| ())
+        let response = self.send_json(api, request).await?;
+        if !response.is_object() {
+            return Err(AnalyticsError::Internal(format!(
+                "Google API {api} probe returned no JSON object"
+            )));
+        }
+        Ok(())
     }
 
     pub async fn get_account_summaries(
@@ -394,7 +445,11 @@ impl AnalyticsApiClient {
         property_id: &PropertyId,
     ) -> Result<Value, AnalyticsError> {
         let property = property_id.to_resource_name()?;
-        self.get_json(&format!("{}/v1beta/{property}", self.admin_base_url), &[])
+        self.get_json(
+            ADMIN_API,
+            &format!("{}/v1beta/{property}", self.admin_base_url),
+            &[],
+        )
             .await
     }
 
@@ -404,6 +459,7 @@ impl AnalyticsApiClient {
     ) -> Result<Value, AnalyticsError> {
         let account = account_id.to_resource_name()?;
         self.get_json(
+            ADMIN_API,
             &format!(
                 "{}/v1beta/{account}/dataSharingSettings",
                 self.admin_base_url
@@ -419,6 +475,7 @@ impl AnalyticsApiClient {
     ) -> Result<Value, AnalyticsError> {
         let property = property_id.to_resource_name()?;
         self.get_json(
+            ADMIN_API,
             &format!(
                 "{}/v1beta/{property}/dataRetentionSettings",
                 self.admin_base_url
@@ -527,6 +584,7 @@ impl AnalyticsApiClient {
         );
 
         self.post_json(
+            DATA_API,
             &format!("{}/v1beta/{property}:runReport", self.data_base_url),
             Value::Object(payload),
         )
@@ -541,6 +599,7 @@ impl AnalyticsApiClient {
         let payload = build_run_conversions_report_payload(request);
 
         self.post_json(
+            DATA_API,
             &format!("{}/v1alpha/{property}:runReport", self.data_base_url),
             Value::Object(payload),
         )
@@ -555,6 +614,7 @@ impl AnalyticsApiClient {
         let payload = build_run_funnel_report_payload(request);
 
         self.post_json(
+            DATA_API,
             &format!("{}/v1alpha/{property}:runFunnelReport", self.data_base_url),
             Value::Object(payload),
         )
@@ -580,6 +640,7 @@ impl AnalyticsApiClient {
         });
 
         self.post_json(
+            DATA_API,
             &format!(
                 "{}/v1beta/{property}:checkCompatibility",
                 self.data_base_url
@@ -594,7 +655,7 @@ impl AnalyticsApiClient {
         request: RunRealtimeReportRequest,
     ) -> Result<Value, AnalyticsError> {
         let (url, payload) = build_run_realtime_report_request(&self.data_base_url, request)?;
-        self.post_json(&url, payload).await
+        self.post_json(DATA_API, &url, payload).await
     }
 
     pub async fn run_pivot_report(
@@ -659,6 +720,7 @@ impl AnalyticsApiClient {
         }
 
         self.post_json(
+            DATA_API,
             &format!("{}/v1beta/{property}:runPivotReport", self.data_base_url),
             Value::Object(payload),
         )
@@ -690,6 +752,7 @@ impl AnalyticsApiClient {
             .collect::<Vec<_>>();
 
         self.post_json(
+            DATA_API,
             &format!("{}/v1beta/{property}:batchRunReports", self.data_base_url),
             json!({ "requests": requests }),
         )
@@ -704,6 +767,7 @@ impl AnalyticsApiClient {
         let property = property_id.to_resource_name()?;
         let payload = build_access_report_payload(request);
         self.post_json(
+            ADMIN_API,
             &format!("{}/v1beta/{property}:runAccessReport", self.admin_base_url),
             Value::Object(payload),
         )
@@ -718,6 +782,7 @@ impl AnalyticsApiClient {
         let account = account_id.to_resource_name()?;
         let payload = build_access_report_payload(request);
         self.post_json(
+            ADMIN_API,
             &format!("{}/v1beta/{account}:runAccessReport", self.admin_base_url),
             Value::Object(payload),
         )
@@ -731,6 +796,7 @@ impl AnalyticsApiClient {
         let property = property_id.to_resource_name()?;
         let metadata = self
             .get_json(
+                DATA_API,
                 &format!("{}/v1beta/{property}/metadata", self.data_base_url),
                 &[],
             )
@@ -788,7 +854,7 @@ impl AnalyticsApiClient {
             if let Some(token) = &next_page_token {
                 query.push(("pageToken", token.clone()));
             }
-            let payload = self.get_json(url, &query).await?;
+            let payload = self.get_json(ADMIN_API, url, &query).await?;
             if let Some(rows) = payload.get(array_key).and_then(Value::as_array) {
                 items.extend(rows.iter().cloned());
             }
@@ -816,7 +882,12 @@ impl AnalyticsApiClient {
         ))
     }
 
-    async fn get_json(&self, url: &str, query: &[(&str, String)]) -> Result<Value, AnalyticsError> {
+    async fn get_json(
+        &self,
+        api: &'static str,
+        url: &str,
+        query: &[(&str, String)],
+    ) -> Result<Value, AnalyticsError> {
         let token = self.access_token().await?;
 
         let url = parse_https_upstream_url(url)?;
@@ -828,10 +899,15 @@ impl AnalyticsApiClient {
             request = request.query(query);
         }
 
-        self.send_json(request).await
+        self.send_json(api, request).await
     }
 
-    async fn post_json(&self, url: &str, body: Value) -> Result<Value, AnalyticsError> {
+    async fn post_json(
+        &self,
+        api: &'static str,
+        url: &str,
+        body: Value,
+    ) -> Result<Value, AnalyticsError> {
         let token = self.access_token().await?;
 
         let url = parse_https_upstream_url(url)?;
@@ -844,16 +920,23 @@ impl AnalyticsApiClient {
             request = request.header("x-goog-user-project", quota_project.as_ref());
         }
 
-        self.send_json(request).await
+        self.send_json(api, request).await
     }
 
-    async fn send_json(&self, request: RequestBuilder) -> Result<Value, AnalyticsError> {
+    async fn send_json(
+        &self,
+        api: &'static str,
+        request: RequestBuilder,
+    ) -> Result<Value, AnalyticsError> {
         let response = request.send().await.map_err(AnalyticsError::Transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(AnalyticsError::Transport)?;
 
         if !status.is_success() {
             let message = String::from_utf8_lossy(&bytes).trim().to_string();
+            if let Some(error) = classify_api_failure(api, status.as_u16(), &message) {
+                return Err(error);
+            }
             return Err(AnalyticsError::UpstreamApi {
                 status: status.as_u16(),
                 message: if message.is_empty() {
@@ -1065,11 +1148,87 @@ impl AnalyticsApiClient {
     }
 }
 
+/// Reuse the toolkit's Google auth classifier; retain provider-specific
+/// remediation here without exposing arbitrary upstream authorization bodies.
+fn classify_api_failure(api: &'static str, status: u16, body: &str) -> Option<AnalyticsError> {
+    if status != 401 && status != 403 && status != 429 && status < 500 {
+        return None;
+    }
+    let config = GoogleProviderAuthConfig::new("Google Analytics API", vec![])
+        .with_api_service_name(api);
+    let diagnostic = classify_google_provider_auth_error(status, body, &config);
+    let quota_denied = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.pointer("/error/details").and_then(Value::as_array).cloned())
+        .is_some_and(|details| {
+            details.iter().any(|detail| {
+                detail.get("domain").and_then(Value::as_str) == Some("googleapis.com")
+                    && detail.get("reason").and_then(Value::as_str) == Some("USER_PROJECT_DENIED")
+            })
+        });
+    let (reason, message, hint) = if status == 429 {
+        ("rate_limited", "rate limit exceeded", "Retry with bounded exponential backoff.")
+    } else if status >= 500 {
+        ("upstream_unavailable", "upstream unavailable", "Retry with bounded exponential backoff.")
+    } else if quota_denied {
+        ("quota_project_denied", "quota project permission denied", "Check serviceusage.services.use on the quota project and use the correct Google identity.")
+    } else {
+        match diagnostic.kind {
+            GoogleProviderAuthFailureKind::ApiDisabled => (
+                "api_disabled",
+                "API disabled (SERVICE_DISABLED)",
+                if api == ADMIN_API {
+                    "Enable analyticsadmin.googleapis.com only for administrative reads. For reporting, use run_report with an explicit property ID or get_custom_dimensions_and_metrics. Admin settings and access reports have no Data API equivalent."
+                } else {
+                    "Enable analyticsdata.googleapis.com on the quota project."
+                },
+            ),
+            GoogleProviderAuthFailureKind::MissingScope => (
+                "missing_scope",
+                "insufficient authentication scopes",
+                "Reauthorize the existing analytics.readonly scope; do not add broader scopes.",
+            ),
+            GoogleProviderAuthFailureKind::MissingQuotaProject => (
+                "missing_quota_project",
+                "local ADC requires a quota project",
+                "Configure the quota project and serviceusage.services.use permission.",
+            ),
+            GoogleProviderAuthFailureKind::PermissionDenied => (
+                "permission_denied",
+                "permission denied",
+                if api == ADMIN_API {
+                    "Check account/property permissions and quota project IAM. Access reports require the Administrator role. For reporting, try run_report with an explicit property ID or get_custom_dimensions_and_metrics; these do not require Admin API access."
+                } else {
+                    "Check GA4 property permissions, quota project IAM and OAuth scope."
+                },
+            ),
+            _ => (
+                "authentication_failed",
+                "authentication or authorization failed",
+                "Check the configured Google identity and read-only OAuth credentials.",
+            ),
+        }
+    };
+    Some(AnalyticsError::GoogleApiFailure {
+        api,
+        status,
+        reason,
+        message,
+        hint,
+    })
+}
+
 fn parse_https_upstream_url(raw: &str) -> Result<Url, AnalyticsError> {
     let url = Url::parse(raw).map_err(|err| AnalyticsError::InvalidArgument {
         field: "upstream_url",
         message: format!("invalid upstream URL: {err}"),
     })?;
+    // Actual HTTP fixtures are restricted to loopback in test builds.
+    // Production retains the unconditional HTTPS requirement.
+    #[cfg(test)]
+    if url.scheme() == "http" && url.host_str() == Some("127.0.0.1") {
+        return Ok(url);
+    }
     if url.scheme() != "https" {
         return Err(AnalyticsError::InvalidArgument {
             field: "upstream_url",

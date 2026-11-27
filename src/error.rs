@@ -41,6 +41,15 @@ pub enum AnalyticsError {
     #[error("upstream API request failed with status {status}: {message}")]
     UpstreamApi { status: u16, message: String },
 
+    #[error("Google API {api} request failed with status {status}: {message}")]
+    GoogleApiFailure {
+        api: &'static str,
+        status: u16,
+        reason: &'static str,
+        message: &'static str,
+        hint: &'static str,
+    },
+
     #[error("scratchpad engine error: {0}")]
     ScratchpadEngine(String),
 
@@ -84,8 +93,12 @@ impl AnalyticsError {
             | Self::MalformedRequestAccessToken { .. } => "AUTHENTICATION_FAILED",
             Self::Transport(_) => "UPSTREAM_TRANSPORT_ERROR",
             Self::UpstreamJson(_) => "UPSTREAM_RESPONSE_PARSE_ERROR",
-            Self::UpstreamApi { status, .. } if *status >= 500 => "UPSTREAM_UNAVAILABLE",
-            Self::UpstreamApi { .. } => "UPSTREAM_REJECTED",
+            Self::UpstreamApi { status, .. } | Self::GoogleApiFailure { status, .. }
+                if *status >= 500 =>
+            {
+                "UPSTREAM_UNAVAILABLE"
+            }
+            Self::UpstreamApi { .. } | Self::GoogleApiFailure { .. } => "UPSTREAM_REJECTED",
             Self::ScratchpadEngine(_) => "SCRATCHPAD_ENGINE_ERROR",
             Self::ScratchpadLimitExceeded { .. } => "SCRATCHPAD_LIMIT_EXCEEDED",
             Self::ScratchpadSqlRejected { .. } => "SCRATCHPAD_SQL_REJECTED",
@@ -109,6 +122,7 @@ impl AnalyticsError {
             Self::UpstreamJson(_) => "upstream_response_invalid",
             Self::UpstreamApi { status, .. } if *status >= 500 => "upstream_unavailable",
             Self::UpstreamApi { .. } => "upstream_rejected",
+            Self::GoogleApiFailure { reason, .. } => reason,
             Self::ScratchpadLimitExceeded { .. } => "scratchpad_limit_exceeded",
             Self::ScratchpadEngine(_) => "scratchpad_engine_error",
             Self::ScratchpadSqlRejected { .. } => "scratchpad_sql_restricted",
@@ -122,7 +136,9 @@ impl AnalyticsError {
 
     pub fn status_code(&self) -> Option<u16> {
         match self {
-            Self::UpstreamApi { status, .. } => Some(*status),
+            Self::UpstreamApi { status, .. } | Self::GoogleApiFailure { status, .. } => {
+                Some(*status)
+            }
             _ => None,
         }
     }
@@ -137,7 +153,7 @@ impl AnalyticsError {
             | Self::MalformedRequestAccessToken { .. } => "auth",
             Self::Transport(_) => "transport",
             Self::UpstreamJson(_) => "upstream_parse",
-            Self::UpstreamApi { .. } => "upstream_api",
+            Self::UpstreamApi { .. } | Self::GoogleApiFailure { .. } => "upstream_api",
             Self::ScratchpadLimitExceeded { .. } => "scratchpad",
             Self::ScratchpadEngine(_) => "scratchpad",
             Self::ScratchpadSqlRejected { .. } => "scratchpad",
@@ -151,7 +167,9 @@ impl AnalyticsError {
 
     pub fn engine_code(&self) -> Option<String> {
         match self {
-            Self::UpstreamApi { status, .. } => Some(format!("http_{status}")),
+            Self::UpstreamApi { status, .. } | Self::GoogleApiFailure { status, .. } => {
+                Some(format!("http_{status}"))
+            }
             Self::ScratchpadEngine(_) => Some("duckdb".to_string()),
             Self::ScratchpadSqlRejected { policy_code, .. } => {
                 Some(policy_code.as_str().to_string())
@@ -162,6 +180,7 @@ impl AnalyticsError {
 
     pub fn detail(&self) -> Option<String> {
         match self {
+            Self::GoogleApiFailure { api, .. } => Some(format!("api={api}")),
             Self::InvalidArgument { field, .. } => Some(format!("field={field}")),
             Self::InvalidCursor(message) => Some(message.clone()),
             Self::ScratchpadLimitExceeded { field, .. } => Some(format!("field={field}")),
@@ -200,6 +219,7 @@ impl AnalyticsError {
             Self::UpstreamJson(_) => {
                 Some("Retry later; upstream payload may be transiently malformed.")
             }
+            Self::GoogleApiFailure { hint, .. } => Some(hint),
             Self::UpstreamApi { status, .. } if *status == 403 => {
                 Some("Verify property access and OAuth scope permissions.")
             }

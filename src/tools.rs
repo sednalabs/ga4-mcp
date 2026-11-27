@@ -962,9 +962,9 @@ impl AnalyticsMcp {
                     "For the lowest-friction local or loopback HTTP service, use GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header_or_config and GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER=authorization.",
                     "For a hosted per-user service, keep GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE=request_header so each client supplies its own Google token.",
                     "By default ga4-mcp auth login writes a GA4-specific ADC file so sibling Google MCPs keep their own tokens and scopes.",
-                    "If verification says local ADC requires a quota project, enable analyticsadmin.googleapis.com and analyticsdata.googleapis.com on that project, then rerun ga4-mcp auth login --quota-project YOUR_PROJECT.",
+                    "If verification says local ADC requires a quota project, enable analyticsdata.googleapis.com (Admin API analyticsadmin.googleapis.com is optional) on that project, then rerun ga4-mcp auth login --quota-project YOUR_PROJECT.",
                     format!("If Google blocks the bundled gcloud OAuth app during login, create a Desktop OAuth client and rerun ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json."),
-                    "Call get_account_summaries to discover accessible GA4 accounts and properties."
+                    "Use an explicit GA4 property ID for reporting; optionally call get_account_summaries if the Admin API is available."
                 ],
                 "credential_options": [
                     {
@@ -975,7 +975,7 @@ impl AnalyticsMcp {
                         "client_id_file_command": format!("ga4-mcp auth login --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
                         "client_id_file_headless_command": format!("ga4-mcp auth login --headless --quota-project {quota_project} --client-id-file /path/to/client_id.json"),
                         "quota_project_command": "ga4-mcp auth command --quota-project YOUR_PROJECT",
-                        "quota_project_note": "Only needed when Google reports local ADC requires a quota project; the project must have the Analytics Admin and Data APIs enabled.",
+                        "quota_project_note": "Only needed when Google reports local ADC requires a quota project; the project must have the Analytics Data API enabled for reporting. The Admin API is optional.",
                         "client_id_file_note": "Use a Desktop OAuth client JSON when Google blocks the bundled gcloud OAuth app. Without --shared-adc, ga4-mcp handles browser OAuth directly and writes its GA4-specific credential file.",
                         "env": [],
                         "shared_adc_escape_hatch": "add --shared-adc only when intentionally creating the conventional shared gcloud ADC file; set GOOGLE_ANALYTICS_MCP_SHARED_ADC=true when the runtime should use it"
@@ -1003,12 +1003,12 @@ impl AnalyticsMcp {
                     }
                 ],
                 "safe_starter_tools": [
-                    "get_account_summaries",
-                    "get_property_details",
                     "run_report",
+                    "get_custom_dimensions_and_metrics",
                     "preview_report_request",
                     "check_report_compatibility"
                 ],
+                "optional_admin_tools": ["get_account_summaries", "get_property_details"],
                 "scratchpad_note": "Scratchpad tools require GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE=scratchpad or --capability-profile scratchpad."
             }),
             started,
@@ -1025,13 +1025,14 @@ impl AnalyticsMcp {
         Parameters(args): Parameters<AuthStatusArgs>,
     ) -> Result<CallToolResult, crate::McpError> {
         let started = Instant::now();
+        let mut data_api = crate::ga_client::api_probe_status(None, false);
+        let mut admin_api = crate::ga_client::api_probe_status(None, true);
         let token_check = if args.verify_token {
-            let result =
-                if self.client.upstream_token_source() == UpstreamTokenSource::RequestHeader {
-                    self.client.verify_config_token().await
-                } else {
-                    self.client.verify_token().await
-                };
+            // Use the request identity in MCP request-header mode, not configured credentials.
+            let result = self.client.verify_token().await;
+            data_api = crate::ga_client::api_probe_status(Some(&result), false);
+            let admin_result = self.client.probe_admin_api(false).await;
+            admin_api = crate::ga_client::api_probe_status(Some(&admin_result), true);
             match result {
                 Ok(()) => json!({ "checked": true, "ok": true }),
                 Err(err) => json!({
@@ -1073,6 +1074,9 @@ impl AnalyticsMcp {
                 "credential_material_detected": credential_material_detected,
                 "detected_env": auth_env_presence(),
                 "token_check": token_check,
+                "data_api": data_api,
+                "admin_api": admin_api,
+                "verification_note": "A successful Data API probe does not verify authorization for a specific property.",
                 "next_steps": auth_next_steps(self.client.upstream_token_source(), self.client.analytics_scope(), args.verify_token, token_ok),
                 "secrets_returned": false
             }),
@@ -1212,7 +1216,7 @@ impl AnalyticsMcp {
                     "No token or client secret is returned by this tool."
                 ],
                 "client_id_file_hint": "If Google blocks the bundled gcloud OAuth app for Analytics scopes, pass client_id_file from a Desktop OAuth client; headless mode will ask for the redirected loopback callback URL.",
-                "quota_project_hint": "If verification says local ADC requires a quota project, enable analyticsadmin.googleapis.com and analyticsdata.googleapis.com on that project, run the quota_project_command, then verify again.",
+                "quota_project_hint": "If verification says local ADC requires a quota project, enable analyticsdata.googleapis.com (Admin API analyticsadmin.googleapis.com is optional) on that project, run the quota_project_command, then verify again.",
                 "local_http_env": {
                     "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE": "request_header_or_config",
                     "GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_HEADER": "authorization"
@@ -7091,7 +7095,7 @@ fn auth_next_steps(
             if upstream_token_source == UpstreamTokenSource::RequestHeader {
                 steps.push("For local ADC fallback, switch GOOGLE_ANALYTICS_MCP_UPSTREAM_TOKEN_SOURCE to request_header_or_config; keep request_header for hosted per-user services.".to_string());
             }
-            steps.push("Call get_account_summaries after auth is verified to discover accessible GA4 account/property ids.".to_string());
+            steps.push("After auth verification, use an explicit property ID or optionally discover properties via the Admin API.".to_string());
             steps
         }
         (true, Some(true)) => {
@@ -7107,7 +7111,7 @@ fn auth_next_steps(
                     .to_string(),
             );
             steps.push(
-                "Call get_account_summaries to discover accessible GA4 accounts and properties."
+                "Use an explicit GA4 property ID for reporting; optionally call get_account_summaries if the Admin API is available."
                     .to_string(),
             );
             steps
@@ -7129,7 +7133,7 @@ fn auth_next_steps(
                 steps.insert(
                     1,
                     format!(
-                        "Enable the required Analytics APIs with `{}`.",
+                        "Enable the required Analytics Data API with `{}`.",
                         api_enable.shell
                     ),
                 );
