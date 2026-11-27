@@ -179,7 +179,12 @@ The default #45 containment remains unchanged. An explicitly enabled
 `GA4_MCP_ENABLE_HOSTED_SCRATCHPAD=true` deployment requires the scratchpad
 profile, native TLS, strict JWKS verification with issuer, audience and
 required scopes, an HTTPS MCP resource URL, request-only Google tokens in a
-separate header, official upstream origins and a maximum 900-second idle TTL.
+separate header, official upstream origins, an explicit operator-configured
+`GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT` (or `--quota-project`), and a maximum
+900-second idle TTL. Both authority discovery and Analytics API calls use the
+same fixed quota project. Request-only mode never derives a project from
+local ADC, and caller-provided quota headers are not forwarded. Google UserInfo
+does not receive the quota header.
 It forces stateless POST routing and disallows legacy MCP session IDs, global
 runtime-limit mutation and server credential fallback. The operator controls
 `GA4_MCP_HOSTED_MAX_SESSIONS_PER_PRINCIPAL` (default at most four).

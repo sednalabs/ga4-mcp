@@ -162,6 +162,7 @@ pub(crate) async fn verify_hosted_mcp_request(
 
 pub(crate) struct HostedScratchpadVerifier {
     client: Client,
+    quota_project: reqwest::header::HeaderValue,
     max_sessions_per_principal: usize,
 }
 
@@ -189,6 +190,9 @@ impl HostedScratchpadVerifier {
             || server
                 .upstream_token_header()
                 .eq_ignore_ascii_case("proxy-authorization")
+            || server
+                .upstream_token_header()
+                .eq_ignore_ascii_case("x-goog-user-project")
             || !server.client.uses_official_google_origins()
             || settings.allow_local_single_user_scratchpad_http
             || settings.tls_files().is_none()
@@ -212,6 +216,13 @@ impl HostedScratchpadVerifier {
                 "hosted scratchpad requires strict authenticated JWKS with issuer, audience and scopes, native TLS, HTTPS MCP resource, separate request-only Google credentials, official Google origins, no local-single-user opt-in and a session TTL at most 900 seconds"
             ));
         }
+        let quota_project = server
+            .client
+            .quota_project()
+            .filter(|project| !project.trim().is_empty())
+            .ok_or_else(|| anyhow!("hosted scratchpad requires an operator-configured quota project"))?;
+        let quota_project = reqwest::header::HeaderValue::from_str(quota_project)
+            .map_err(|_| anyhow!("invalid hosted scratchpad quota project"))?;
         let limit = match std::env::var("GA4_MCP_HOSTED_MAX_SESSIONS_PER_PRINCIPAL") {
             Ok(s) => s
                 .parse::<usize>()
@@ -232,6 +243,7 @@ impl HostedScratchpadVerifier {
             .build()?;
         Ok(Some(Self {
             client,
+            quota_project,
             max_sessions_per_principal: limit,
         }))
     }
@@ -314,6 +326,7 @@ impl HostedScratchpadVerifier {
                 .client
                 .get(ACCOUNT_SUMMARIES)
                 .bearer_auth(token)
+                .header("x-goog-user-project", self.quota_project.clone())
                 .query(&[
                     ("pageSize", "100"),
                     (
@@ -466,6 +479,7 @@ mod tests {
                 Some("openidconnect.googleapis.com") => {
                     assert_eq!(request.url().path(), "/v1/userinfo");
                     assert!(request.url().query().is_none());
+                    assert!(!request.headers().contains_key("x-goog-user-project"));
                     let subject = match authorization {
                         "Bearer fixture-a" => "google-a",
                         "Bearer fixture-b" => "google-b",
@@ -477,6 +491,10 @@ mod tests {
                 }
                 Some("analyticsadmin.googleapis.com") => {
                     assert_eq!(request.url().path(), "/v1beta/accountSummaries");
+                    assert_eq!(
+                        request.headers().get("x-goog-user-project").unwrap(),
+                        "operator-fixture"
+                    );
                     let query: HashMap<_, _> = request.url().query_pairs().collect();
                     assert_eq!(query.get("pageSize").map(|s| s.as_ref()), Some("100"));
                     assert_eq!(
@@ -513,6 +531,7 @@ mod tests {
                 .timeout(Duration::from_secs(2))
                 .build()
                 .unwrap(),
+            quota_project: reqwest::header::HeaderValue::from_static("operator-fixture"),
             max_sessions_per_principal: 4,
         };
         let (subject, props) = verifier

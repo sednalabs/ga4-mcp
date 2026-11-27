@@ -308,10 +308,11 @@ impl AnalyticsApiClient {
 
         let auth_mode = select_auth_mode(settings)?;
 
-        let quota_project = settings
-            .quota_project
-            .clone()
-            .or_else(|| adc_quota_project_id_for_auth_mode(&auth_mode, settings.shared_adc));
+        let quota_project = select_quota_project(
+            settings.upstream_token_source,
+            settings.quota_project.clone(),
+            || adc_quota_project_id_for_auth_mode(&auth_mode, settings.shared_adc),
+        );
 
         Ok(Self {
             http,
@@ -1830,6 +1831,21 @@ pub(crate) fn sort_object(value: Value) -> Value {
     }
 }
 
+// Request-only credentials must never inherit an unrelated local ADC quota project.
+fn select_quota_project(
+    token_source: UpstreamTokenSource,
+    configured: Option<String>,
+    adc: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    configured.or_else(|| {
+        if token_source == UpstreamTokenSource::RequestHeader {
+            None
+        } else {
+            adc()
+        }
+    })
+}
+
 fn adc_quota_project_id_for_auth_mode(
     auth_mode: &UpstreamAuthMode,
     shared_adc: bool,
@@ -2249,6 +2265,30 @@ mod tests {
         let root = PathBuf::from("target").join("ga4-mcp-test-fixtures");
         std::fs::create_dir_all(&root).expect("fixture root should be writable");
         root.join(name)
+    }
+
+    #[test]
+    fn request_only_quota_never_uses_ambient_adc() {
+        assert_eq!(
+            select_quota_project(UpstreamTokenSource::RequestHeader, None, || {
+                panic!("request-only mode must not consult ADC")
+            }),
+            None
+        );
+        assert_eq!(
+            select_quota_project(
+                UpstreamTokenSource::RequestHeader,
+                Some("operator-project".to_owned()),
+                || panic!("explicit project must not consult ADC"),
+            ),
+            Some("operator-project".to_owned())
+        );
+        assert_eq!(
+            select_quota_project(UpstreamTokenSource::Config, None, || {
+                Some("local-adc-project".to_owned())
+            }),
+            Some("local-adc-project".to_owned())
+        );
     }
 
     #[test]
