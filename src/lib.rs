@@ -18,6 +18,7 @@
 
 pub mod auth_ux;
 mod change_history;
+mod mutations;
 pub mod config;
 pub mod contract;
 pub mod error;

@@ -168,3 +168,25 @@ The audit profile requires the exact single configured edit scope. Google
 still validates the effective request credential and account permissions.
 Do not widen the deployment's grant to unrelated scopes for convenience.
 Provider errors retain status-level diagnostics, not raw response bodies.
+
+## Guarded configuration creations
+
+The optional `mutation` profile permits three create-only operations: reporting
+annotations, custom dimensions and key events. The default read-only, audit and
+scratchpad profiles cannot discover or dispatch these writes. The mutation profile
+requires the exact edit scope, config-only Google credentials, and the official
+Google Admin API origin. HTTP startup rejects the profile. Use a dedicated trusted
+local stdio client that presents approval requests to its human operator.
+
+The server validates and displays the exact property, operation and provider
+payload, then requires an explicit accepted client elicitation. MCP versions
+before 2026-07-28 use the existing request/response elicitation mechanism;
+newer versions use multi-round-trip requests and the toolkit's scoped, bounded,
+120-second, single-use continuation store. Tool arguments cannot approve their
+own mutation. Wrong payload, cancellation, replay, unsupported clients and missing
+approval fail closed. The local trusted client is responsible for truthful human
+approval; a client that fabricates approval cannot be trusted. No raw credential
+is included in approval state. The creation client disables retry and redirect,
+uses the same token for create and bounded readback, and reports an unconfirmed
+readback without retrying creation. Inspect resources after ambiguous failures.
+No deletion, patching, arbitrary Admin API paths or live write tests are provided.

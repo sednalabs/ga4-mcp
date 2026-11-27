@@ -229,6 +229,191 @@
       "name": "check_report_compatibility"
     },
     {
+      "description": "Create one GA4 custom dimension after explicit client approval (local mutation profile only).",
+      "inputSchema": {
+        "$defs": {
+          "PropertyId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "default": null,
+            "description": "Optional description (up to 150 characters).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disallow_ads_personalization": {
+            "default": null,
+            "description": "Optional ads personalization restriction, supported only for USER scope.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "display_name": {
+            "description": "Dimension display name.",
+            "type": "string"
+          },
+          "parameter_name": {
+            "description": "Tagging parameter name.",
+            "type": "string"
+          },
+          "property_id": {
+            "$ref": "#/$defs/PropertyId",
+            "description": "The Google Analytics property id as integer or \"properties/<id>\"."
+          },
+          "scope": {
+            "description": "Dimension scope: EVENT, USER or ITEM.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id",
+          "parameter_name",
+          "display_name",
+          "scope"
+        ],
+        "type": "object"
+      },
+      "name": "create_custom_dimension"
+    },
+    {
+      "description": "Create one GA4 key event after explicit client approval (local mutation profile only).",
+      "inputSchema": {
+        "$defs": {
+          "PropertyId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "counting_method": {
+            "description": "ONCE_PER_EVENT or ONCE_PER_SESSION.",
+            "type": "string"
+          },
+          "default_currency_code": {
+            "default": null,
+            "description": "Optional three-letter ISO 4217 currency code; requires default_numeric_value.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_numeric_value": {
+            "default": null,
+            "description": "Optional finite default numeric value; requires default_currency_code.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "event_name": {
+            "description": "GA4 event name.",
+            "type": "string"
+          },
+          "property_id": {
+            "$ref": "#/$defs/PropertyId",
+            "description": "The Google Analytics property id as integer or \"properties/<id>\"."
+          }
+        },
+        "required": [
+          "property_id",
+          "event_name",
+          "counting_method"
+        ],
+        "type": "object"
+      },
+      "name": "create_key_event"
+    },
+    {
+      "description": "Create one GA4 reporting annotation after explicit client approval (local mutation profile only).",
+      "inputSchema": {
+        "$defs": {
+          "PropertyId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "description": "One of PURPLE, BROWN, BLUE, GREEN, RED or CYAN.",
+            "type": "string"
+          },
+          "description": {
+            "default": null,
+            "description": "Optional description (up to 500 characters).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_date": {
+            "default": null,
+            "description": "Optional inclusive end date, YYYY-MM-DD.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "property_id": {
+            "$ref": "#/$defs/PropertyId",
+            "description": "The Google Analytics property id as integer or \"properties/<id>\"."
+          },
+          "start_date": {
+            "description": "Inclusive Gregorian start date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Annotation title (nonblank, up to 100 characters).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id",
+          "title",
+          "color",
+          "start_date"
+        ],
+        "type": "object"
+      },
+      "name": "create_reporting_data_annotation"
+    },
+    {
       "description": "Return copyable Google Analytics auth login commands, including direct browser OAuth when a client id file is supplied.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

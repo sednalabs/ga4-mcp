@@ -291,6 +291,8 @@ and `GA4_MCP_ALLOW_LOCAL_SINGLE_USER_SCRATCHPAD_HTTP=1`. Never share or proxy
 that loopback scratchpad endpoint to other users. Other HTTP scratchpad
 configurations fail at startup; the read-only profile is unaffected.
 
+- `mutation`: trusted local stdio only, exact `analytics.edit`, config-only credentials, and per-operation client approval. No HTTP exposure. See the security model.
+
 Example enabling scratchpad:
 
 ```bash

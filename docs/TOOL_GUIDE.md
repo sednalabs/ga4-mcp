@@ -179,3 +179,13 @@ scope, not a broader mixed-scope configuration. Provider rejection messages
 are replaced with status-specific guidance to avoid reflecting actor filters
 or sensitive upstream values. An unexpectedly oversized provider page fails
 closed rather than silently dropping audit events or breaching the row bound.
+
+## Optional configuration creation
+
+In a dedicated local stdio process with `mutation` capability profile, exact
+`analytics.edit` scope and `config` upstream token source, the following tools
+are exposed: `create_reporting_data_annotation`, `create_custom_dimension`, and
+`create_key_event`. Each validates its arguments and requires an independent
+client-mediated approval of the exact property and payload. See SECURITY_MODEL.md
+for limitations. A successful POST is returned even when readback is unconfirmed;
+never blindly retry an ambiguous create. No live Google mutations are used in tests.

@@ -13,7 +13,9 @@ use duckdb::arrow::datatypes::DataType as DuckDataType;
 use duckdb::types::Value as DuckValue;
 use mcp_toolkit_observability::{EventContext, Level, emit_event, safe_error, safe_text};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::CallToolResult;
+use rmcp::model::{CallToolResponse, CallToolResult};
+use rmcp::handler::server::tool::{InputResponses, RequestState};
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::tool;
 use rmcp::tool_router;
 use schemars::JsonSchema;
@@ -1269,6 +1271,51 @@ impl AnalyticsMcp {
             Ok(data) => Ok(contract_success(sort_object(data), started)),
             Err(err) => Ok(contract_error(err, started)),
         }
+    }
+
+    #[tool(
+        name = "create_reporting_data_annotation",
+        description = "Create one GA4 reporting annotation after explicit client approval (local mutation profile only).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn create_reporting_data_annotation(
+        &self,
+        context: RequestContext<RoleServer>,
+        RequestState(state): RequestState,
+        InputResponses(responses): InputResponses,
+        Parameters(args): Parameters<crate::mutations::AnnotationArgs>,
+    ) -> Result<CallToolResponse, crate::McpError> {
+        Ok(crate::mutations::execute(self, args.plan(), context, state, responses).await)
+    }
+
+    #[tool(
+        name = "create_custom_dimension",
+        description = "Create one GA4 custom dimension after explicit client approval (local mutation profile only).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn create_custom_dimension(
+        &self,
+        context: RequestContext<RoleServer>,
+        RequestState(state): RequestState,
+        InputResponses(responses): InputResponses,
+        Parameters(args): Parameters<crate::mutations::CustomDimensionArgs>,
+    ) -> Result<CallToolResponse, crate::McpError> {
+        Ok(crate::mutations::execute(self, args.plan(), context, state, responses).await)
+    }
+
+    #[tool(
+        name = "create_key_event",
+        description = "Create one GA4 key event after explicit client approval (local mutation profile only).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn create_key_event(
+        &self,
+        context: RequestContext<RoleServer>,
+        RequestState(state): RequestState,
+        InputResponses(responses): InputResponses,
+        Parameters(args): Parameters<crate::mutations::KeyEventArgs>,
+    ) -> Result<CallToolResponse, crate::McpError> {
+        Ok(crate::mutations::execute(self, args.plan(), context, state, responses).await)
     }
 
     /// Search account configuration history using the elevated audit profile.

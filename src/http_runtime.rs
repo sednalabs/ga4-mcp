@@ -37,6 +37,9 @@ struct GuardState {
 /// # Errors
 /// Returns an error when binding or HTTP serving fails.
 pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Result<()> {
+    if server.capability_profile() == crate::config::CapabilityProfile::Mutation {
+        return Err(anyhow!("the mutation capability profile is restricted to trusted local stdio"));
+    }
     settings.validate_scratchpad_profile(
         server.capability_profile(),
         server.accepts_upstream_request_tokens(),
