@@ -194,10 +194,16 @@ fn scratchpad_ingest_rejects_rows_beyond_session_bound() {
 fn shared_toolkit_scope_keeps_identical_session_names_separate() {
     let root = test_manager("scoped-adoption", 10_000, 128, Duration::from_secs(3));
     let a = root
-        .for_scope(ScratchpadScope::new("issuer/a", "google/account").expect("scope"), 2)
+        .for_scope(
+            ScratchpadScope::new("issuer/a", "google/account").expect("scope"),
+            2,
+        )
         .expect("scope a");
     let b = root
-        .for_scope(ScratchpadScope::new("issuer/b", "google/account").expect("scope"), 2)
+        .for_scope(
+            ScratchpadScope::new("issuer/b", "google/account").expect("scope"),
+            2,
+        )
         .expect("scope b");
     a.open_session("same").expect("session a");
     b.open_session("same").expect("session b");

@@ -5328,8 +5328,8 @@ fn execute_scratchpad_projection(
                 let row_count_total =
                     query_row_count(conn, &count_sql).map_err(projection_scratchpad_error)?;
                 let page_sql = wrap_query_for_page(sql, offset, page_size);
-                let (columns, rows) =
-                    execute_duckdb_query_rows(conn, &page_sql).map_err(projection_scratchpad_error)?;
+                let (columns, rows) = execute_duckdb_query_rows(conn, &page_sql)
+                    .map_err(projection_scratchpad_error)?;
 
                 Ok(ScratchpadTabularProjection {
                     rows,
@@ -5591,9 +5591,11 @@ fn duck_value_to_json(value: DuckValue) -> Result<Value, AnalyticsError> {
             "days": days,
             "nanos": nanos
         }),
-        DuckValue::List(raw) | DuckValue::Array(raw) => {
-            Value::Array(raw.into_iter().map(duck_value_to_json).collect::<Result<_, _>>()?)
-        }
+        DuckValue::List(raw) | DuckValue::Array(raw) => Value::Array(
+            raw.into_iter()
+                .map(duck_value_to_json)
+                .collect::<Result<_, _>>()?,
+        ),
         DuckValue::Struct(raw) => Value::Object(
             raw.iter()
                 .map(|(key, value)| Ok((key.clone(), duck_value_to_json(value.clone())?)))
@@ -9115,8 +9117,8 @@ mod tests {
 
     #[test]
     fn duck_value_to_json_preserves_unsigned_128_bit_precision() {
-        let value = duck_value_to_json(DuckValue::UHugeInt(u128::MAX))
-            .expect("unsigned huge integer");
+        let value =
+            duck_value_to_json(DuckValue::UHugeInt(u128::MAX)).expect("unsigned huge integer");
         assert_eq!(value, Value::String(u128::MAX.to_string()));
     }
 
