@@ -328,7 +328,7 @@ impl AnalyticsApiClient {
             oauth_token_provider: Arc::new(OnceCell::new()),
             cached_oauth_token: Arc::new(RwLock::new(None)),
             analytics_scope: settings.analytics_scope.clone().into(),
-            admin_base_url: settings.admin_base_url.clone().into(),
+            admin_base_url: settings.admin_base_url.trim_end_matches('/').into(),
             data_base_url: settings.data_base_url.clone().into(),
             quota_project: quota_project.as_deref().map(Arc::<str>::from),
             max_page_size: settings.max_page_size,

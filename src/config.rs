@@ -741,6 +741,9 @@ mod tests {
         cli.analytics_scope = ANALYTICS_EDIT_SCOPE.to_string();
         cli.upstream_token_source = UpstreamTokenSource::Config;
         assert!(Settings::from_cli(cli.clone()).is_ok());
+        cli.admin_base_url = format!("{DEFAULT_ADMIN_BASE_URL}/");
+        let settings = Settings::from_cli(cli.clone()).expect("official origin with trailing slash");
+        assert_eq!(settings.admin_base_url, DEFAULT_ADMIN_BASE_URL);
         cli.upstream_token_source = UpstreamTokenSource::RequestHeader;
         assert!(Settings::from_cli(cli.clone()).is_err());
         cli.upstream_token_source = UpstreamTokenSource::Config;
