@@ -7,6 +7,7 @@
 ## Operating intent
 
 - Keep GA4 integration modular and read-only.
+- Keep the canonical public agent skill at `skills/ga4-mcp/SKILL.md`; keep portable Power manifests consistent with the tool contract.
 - Preserve parity of core tool names with the Google Analytics MCP implementation where practical.
 - Keep runtime fast for spawn-per-request workflows.
 - Keep response envelopes in Contract V1 form (`ok/data/meta` or `ok/error/meta`) for all tools.

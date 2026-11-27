@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "ga4": {
+      "type": "stdio",
+      "command": "ga4-mcp",
+      "env": {
+        "GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE": "read_only",
+        "GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT": "${GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT}"
+      }
+    }
+  }
+}

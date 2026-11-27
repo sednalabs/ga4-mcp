@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ga4-mcp",
+  "version": "0.1.0",
+  "description": "Read-only Google Analytics 4 reporting and diagnostics, including traffic, conversion, funnel and realtime reports.",
+  "author": {
+    "name": "Sedna Labs"
+  },
+  "keywords": [
+    "ga4",
+    "google analytics",
+    "analytics",
+    "traffic",
+    "sessions",
+    "conversions",
+    "funnel",
+    "realtime"
+  ]
+}
