@@ -464,6 +464,57 @@
       "name": "get_property_details"
     },
     {
+      "description": "Lists BigQuery export links for a GA4 property, including linked project, location and export settings. Does not query BigQuery.",
+      "inputSchema": {
+        "$defs": {
+          "PropertyId": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_pages": {
+            "default": null,
+            "description": "Optional max pages to fetch before stopping.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "page_size": {
+            "default": null,
+            "description": "Optional page size used during pagination. Defaults to server max.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "property_id": {
+            "$ref": "#/$defs/PropertyId",
+            "description": "The Google Analytics property id as integer or \"properties/<id>\"."
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "type": "object"
+      },
+      "name": "list_bigquery_links"
+    },
+    {
       "description": "Returns a list of links to Google Ads accounts for a property.",
       "inputSchema": {
         "$defs": {
