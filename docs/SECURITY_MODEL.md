@@ -192,5 +192,8 @@ approval fail closed. The local trusted client is responsible for truthful human
 approval; a client that fabricates approval cannot be trusted. No raw credential
 is included in approval state. The creation client disables retry and redirect,
 uses the same token for create and bounded readback, and reports an unconfirmed
-readback without retrying creation. Inspect resources after ambiguous failures.
+readback without retrying creation. Unconfirmed creates return Contract V1 code
+`MUTATION_OUTCOME_UNKNOWN` with `retry_safe=false` in error detail and the HTTP
+status when available. Do not automatically resubmit; inspect and reconcile the
+resource before any separately approved submission.
 No deletion, patching, arbitrary Admin API paths or live write tests are provided.

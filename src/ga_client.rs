@@ -1248,11 +1248,15 @@ where
         request = request.header("x-goog-user-project", project);
     }
     // No retry or redirect: a transport failure after submission is ambiguous.
-    let created = dispatch(request).await?;
+    let created = dispatch(request)
+        .await
+        .map_err(|err| AnalyticsError::MutationOutcomeUnknown {
+            status: err.status_code(),
+        })?;
     let prefix = format!("{}/{}/", plan.parent, plan.collection);
     let name = created.get("name").and_then(Value::as_str)
         .filter(|name| name.strip_prefix(&prefix).is_some_and(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')))
-        .ok_or_else(|| AnalyticsError::Internal("GA4 creation may have succeeded but returned an invalid resource name; inspect before retrying".to_string()))?;
+        .ok_or(AnalyticsError::MutationOutcomeUnknown { status: None })?;
     let mut readback = client
         .get(format!(
             "https://analyticsadmin.googleapis.com/{}/{}",
@@ -2109,8 +2113,37 @@ mod tests {
                 })
             })
             .await;
-            assert!(result.is_err());
+            let error = result.unwrap_err();
+            assert_eq!(error.code(), "MUTATION_OUTCOME_UNKNOWN");
             assert_eq!(calls, 1);
+        }
+        for status in [429, 500, 503] {
+            let mut calls = 0;
+            let error = dispatch_mutation(&client, &plan, "fixture-only", None, |builder| {
+                calls += 1;
+                assert_eq!(builder.build().unwrap().method(), Method::POST);
+                std::future::ready(Err(AnalyticsError::UpstreamApi {
+                    status,
+                    message: "fixture provider rejection".into(),
+                }))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(calls, 1);
+            let payload = crate::contract::error(error, 0)
+                .structured_content
+                .unwrap();
+            assert_eq!(payload["ok"], false);
+            assert_eq!(payload["error"]["code"], "MUTATION_OUTCOME_UNKNOWN");
+            assert_eq!(payload["error"]["reason"], "mutation_outcome_unknown");
+            assert_eq!(payload["error"]["status_code"], status);
+            assert_eq!(payload["error"]["detail"], "retry_safe=false");
+            assert!(
+                payload["error"]["hint"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Do not automatically resubmit.")
+            );
         }
         let mut calls = 0;
         let result = dispatch_mutation(&client, &plan, "fixture-only", None, |builder| {
