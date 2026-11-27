@@ -494,6 +494,7 @@ impl BigQueryExportClient {
         let mut warnings = false;
         let mut seen = HashSet::new();
         for i in 0..MAX_PAGES {
+            verify_job_reference(&page, &job)?;
             check_query_page(&page)?;
             warnings |= has_query_warnings(&page)?;
             complete = page
@@ -599,12 +600,16 @@ fn has_query_warnings(page: &Value) -> Result<bool, AnalyticsError> {
     }
 }
 
-// jobs.get is authoritative for terminal failure (status.errorResult), while
-// errors[] in query-result responses is not by itself a terminal verdict.
-fn verify_completed_job(status: &Value, expected: &Value) -> Result<(), AnalyticsError> {
-    let actual = status.get("jobReference").ok_or_else(bad_provider)?;
+// Every query result page must belong to the original, validated job.
+fn verify_job_reference(response: &Value, expected: &Value) -> Result<(), AnalyticsError> {
+    let actual = response.get("jobReference").ok_or_else(bad_provider)?;
     for key in ["jobId", "projectId"] {
-        if actual.get(key).and_then(Value::as_str) != expected.get(key).and_then(Value::as_str) {
+        let expected = expected
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(bad_provider)?;
+        if actual.get(key).and_then(Value::as_str) != Some(expected) {
             return Err(bad_provider());
         }
     }
@@ -615,11 +620,20 @@ fn verify_completed_job(status: &Value, expected: &Value) -> Result<(), Analytic
             expected
                 .get("location")
                 .and_then(Value::as_str)
-                .is_some_and(|expected| location.eq_ignore_ascii_case(expected))
+                .is_some_and(|expected| {
+                    !expected.is_empty() && location.eq_ignore_ascii_case(expected)
+                })
         })
     {
         return Err(bad_provider());
     }
+    Ok(())
+}
+
+// jobs.get is authoritative for terminal failure (status.errorResult), while
+// errors[] in query-result responses is not by itself a terminal verdict.
+fn verify_completed_job(status: &Value, expected: &Value) -> Result<(), AnalyticsError> {
+    verify_job_reference(status, expected)?;
     check_query_page(status)?;
     if status.pointer("/status/state").and_then(Value::as_str) != Some("DONE") {
         return Err(bad_provider());
@@ -860,7 +874,7 @@ mod tests {
             "GET",
             "/bigquery/v2/projects/billing-fixture/queries/job_1",
             None,
-            json!({"jobComplete":true,"schema":{"fields":[{"name":"event_date"},{"name":"observed_sessions"}]},"rows":[{"f":[{"v":"20261101"},{"v":"42"}]}],"pageToken":"next"}),
+            json!({"jobReference":reference,"jobComplete":true,"schema":{"fields":[{"name":"event_date"},{"name":"observed_sessions"}]},"rows":[{"f":[{"v":"20261101"},{"v":"42"}]}],"pageToken":"next"}),
         ));
         steps.push(step(
             "GET",
@@ -872,7 +886,7 @@ mod tests {
             "GET",
             "/bigquery/v2/projects/billing-fixture/queries/job_1",
             None,
-            json!({"jobComplete":true,"rows":[{"f":[{"v":"20261102"},{"v":"43"}]}]}),
+            json!({"jobReference":reference,"jobComplete":true,"rows":[{"f":[{"v":"20261102"},{"v":"43"}]}]}),
         ));
         let output = query_fixture(steps).await.unwrap();
         assert_eq!(output["executed"], true);
@@ -882,6 +896,53 @@ mod tests {
         assert_eq!(output["pages_fetched"], 2);
         assert_eq!(output["rows"][0]["observed_sessions"], "42");
         assert_eq!(output["rows"][1]["observed_sessions"], "43");
+    }
+
+    #[tokio::test]
+    async fn provider_fixture_rejects_mismatched_poll_and_later_page_identity() {
+        let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+        for late_page in [false, true] {
+            for wrong in [
+                Value::Null,
+                json!({"jobId":"job_2","projectId":"billing-fixture","location":"US"}),
+                json!({"jobId":"job_1","projectId":"other-project","location":"US"}),
+                json!({"jobId":"job_1","projectId":"billing-fixture","location":"EU"}),
+            ] {
+                let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+                steps.push(step(
+                    "POST",
+                    "/bigquery/v2/projects/billing-fixture/queries",
+                    Some(false),
+                    json!({"jobReference":reference,"jobComplete":false}),
+                ));
+                if late_page {
+                    steps.push(step(
+                        "GET",
+                        "/bigquery/v2/projects/billing-fixture/queries/job_1",
+                        None,
+                        json!({"jobReference":reference,"jobComplete":true,"schema":{"fields":[{"name":"event_date"},{"name":"observed_sessions"}]},"rows":[{"f":[{"v":"20261101"},{"v":"42"}]}],"pageToken":"next"}),
+                    ));
+                    steps.push(step(
+                        "GET",
+                        "/bigquery/v2/projects/billing-fixture/jobs/job_1",
+                        None,
+                        json!({"jobReference":reference,"status":{"state":"DONE"}}),
+                    ));
+                }
+                let mut page =
+                    json!({"jobComplete":true,"rows":[{"f":[{"v":"20261102"},{"v":"43"}]}]});
+                if !wrong.is_null() {
+                    page["jobReference"] = wrong;
+                }
+                steps.push(step(
+                    "GET",
+                    "/bigquery/v2/projects/billing-fixture/queries/job_1",
+                    None,
+                    page,
+                ));
+                assert!(query_fixture(steps).await.is_err());
+            }
+        }
     }
 
     #[tokio::test]
