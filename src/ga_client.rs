@@ -1154,12 +1154,16 @@ fn classify_api_failure(api: &'static str, status: u16, body: &str) -> Option<An
     if status != 401 && status != 403 && status != 429 && status < 500 {
         return None;
     }
-    let config = GoogleProviderAuthConfig::new("Google Analytics API", vec![])
-        .with_api_service_name(api);
+    let config =
+        GoogleProviderAuthConfig::new("Google Analytics API", vec![]).with_api_service_name(api);
     let diagnostic = classify_google_provider_auth_error(status, body, &config);
     let quota_denied = serde_json::from_str::<Value>(body)
         .ok()
-        .and_then(|v| v.pointer("/error/details").and_then(Value::as_array).cloned())
+        .and_then(|v| {
+            v.pointer("/error/details")
+                .and_then(Value::as_array)
+                .cloned()
+        })
         .is_some_and(|details| {
             details.iter().any(|detail| {
                 detail.get("domain").and_then(Value::as_str) == Some("googleapis.com")

@@ -1503,37 +1503,34 @@ mod tests {
         let router = Router::new()
             .fallback(
                 |State(calls): State<Arc<AtomicUsize>>, uri: Uri| async move {
-                    let (status, body): (StatusCode, Value) =
-                        if uri.path().starts_with("/admin/") {
-                            calls.fetch_add(1, Ordering::SeqCst);
-                            (
-                                StatusCode::FORBIDDEN,
-                                json!({"error": {
-                                    "status": "PERMISSION_DENIED",
-                                    "details": [{
-                                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                                        "domain": "googleapis.com",
-                                        "reason": "SERVICE_DISABLED"
-                                    }]
-                                }}),
-                            )
-                        } else if uri.path() == "/data/v1beta/properties/0/metadata" {
-                            (StatusCode::OK, json!({"dimensions": [], "metrics": []}))
-                        } else if uri.path() == "/data/v1beta/properties/123:runReport" {
-                            (
-                                StatusCode::OK,
-                                json!({"rowCount": 1, "rows": [{"metricValues": [{"value": "42"}]}]}),
-                            )
-                        } else {
-                            (StatusCode::NOT_FOUND, json!({}))
-                        };
+                    let (status, body): (StatusCode, Value) = if uri.path().starts_with("/admin/") {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::FORBIDDEN,
+                            json!({"error": {
+                                "status": "PERMISSION_DENIED",
+                                "details": [{
+                                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                                    "domain": "googleapis.com",
+                                    "reason": "SERVICE_DISABLED"
+                                }]
+                            }}),
+                        )
+                    } else if uri.path() == "/data/v1beta/properties/0/metadata" {
+                        (StatusCode::OK, json!({"dimensions": [], "metrics": []}))
+                    } else if uri.path() == "/data/v1beta/properties/123:runReport" {
+                        (
+                            StatusCode::OK,
+                            json!({"rowCount": 1, "rows": [{"metricValues": [{"value": "42"}]}]}),
+                        )
+                    } else {
+                        (StatusCode::NOT_FOUND, json!({}))
+                    };
                     (status, Json(body))
                 },
             )
             .with_state(admin_calls.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
