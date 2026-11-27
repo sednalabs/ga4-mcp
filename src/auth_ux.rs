@@ -24,7 +24,7 @@ use crate::config::{
     conventional_cloudsdk_config_dir, server_adc_credentials_path, server_cloudsdk_config_dir,
 };
 use crate::contract::redact_secret_text;
-use crate::ga_client::{AnalyticsApiClient, AuthSource, api_probe_status};
+use crate::ga_client::{AnalyticsApiClient, ApiProbeStatus, AuthSource, api_probe_status};
 
 const ANALYTICS_API_NAME: &str = "Google Analytics API";
 const ANALYTICS_DATA_API_SERVICE: &str = "analyticsdata.googleapis.com";
@@ -43,8 +43,8 @@ struct AuthReport {
     quota_project: QuotaProjectStatus,
     detected: CredentialDetection,
     verification: VerificationReport,
-    data_api: serde_json::Value,
-    admin_api: serde_json::Value,
+    data_api: ApiProbeStatus,
+    admin_api: ApiProbeStatus,
     ready: bool,
     next_steps: Vec<String>,
 }
@@ -585,12 +585,9 @@ fn print_human_report(report: &AuthReport, doctor: bool) {
             println!("Error: {error}");
         }
     }
-    println!(
-        "Data API: {}",
-        report.data_api["status"].as_str().unwrap_or("unknown")
-    );
-    let admin_status = report.admin_api["status"].as_str().unwrap_or("unknown");
-    if report.admin_api["severity"].as_str() == Some("warning") {
+    println!("Data API: {}", report.data_api.status);
+    let admin_status = report.admin_api.status;
+    if report.admin_api.severity == Some("warning") {
         println!(
             "Admin API: warning ({admin_status}); reporting can still work with an explicit property ID."
         );
@@ -1583,9 +1580,12 @@ mod tests {
             );
             let doctor = build_auth_report(&settings, true).await;
             assert!(doctor.ready);
-            assert_eq!(doctor.data_api["status"], "verified");
-            assert_eq!(doctor.admin_api["status"], "api_disabled");
-            assert_eq!(doctor.admin_api["severity"], "warning");
+            assert_eq!(doctor.data_api.status, "verified");
+            assert_eq!(doctor.admin_api.status, "api_disabled");
+            assert_eq!(doctor.admin_api.severity, Some("warning"));
+            let serialized = serde_json::to_value(&doctor).unwrap();
+            assert_eq!(serialized["data_api"]["status"], "verified");
+            assert_eq!(serialized["admin_api"]["severity"], "warning");
             assert_eq!(admin_calls.load(Ordering::SeqCst), 2);
         })
         .await;
@@ -1594,8 +1594,8 @@ mod tests {
 
     #[test]
     fn optional_admin_status_does_not_claim_unverified_access() {
-        assert_eq!(api_probe_status(None, true)["status"], "not_checked");
-        assert_eq!(api_probe_status(None, false)["status"], "not_checked");
+        assert_eq!(api_probe_status(None, true).status, "not_checked");
+        assert_eq!(api_probe_status(None, false).status, "not_checked");
     }
 
     fn test_settings(scope: &str) -> Settings {

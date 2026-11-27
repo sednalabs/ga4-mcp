@@ -35,22 +35,44 @@ pub(crate) const ADMIN_API: &str = "analyticsadmin.googleapis.com";
 pub(crate) const DATA_API: &str = "analyticsdata.googleapis.com";
 
 /// A probe verifies an endpoint, not authorization for a specific property.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ApiProbeStatus {
+    pub(crate) status: &'static str,
+    pub(crate) optional: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) severity: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) hint: Option<&'static str>,
+}
+
 pub(crate) fn api_probe_status(
     result: Option<&Result<(), AnalyticsError>>,
     optional: bool,
-) -> Value {
+) -> ApiProbeStatus {
+    let mut probe = ApiProbeStatus {
+        status: "not_checked",
+        optional,
+        severity: None,
+        code: None,
+        status_code: None,
+        hint: None,
+    };
     match result {
-        None => json!({"status": "not_checked", "optional": optional}),
-        Some(Ok(())) => json!({"status": "verified", "optional": optional}),
-        Some(Err(err)) => json!({
-            "status": err.reason(),
-            "optional": optional,
-            "severity": if optional { "warning" } else { "error" },
-            "code": err.code(),
-            "status_code": err.status_code(),
-            "hint": err.hint(),
-        }),
+        None => {}
+        Some(Ok(())) => probe.status = "verified",
+        Some(Err(err)) => {
+            probe.status = err.reason();
+            probe.severity = Some(if optional { "warning" } else { "error" });
+            probe.code = Some(err.code());
+            probe.status_code = err.status_code();
+            probe.hint = err.hint();
+        }
     }
+    probe
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -1159,16 +1181,16 @@ fn classify_api_failure(api: &'static str, status: u16, body: &str) -> Option<An
     let diagnostic = classify_google_provider_auth_error(status, body, &config);
     let quota_denied = serde_json::from_str::<Value>(body)
         .ok()
-        .and_then(|v| {
+        .is_some_and(|v| {
             v.pointer("/error/details")
                 .and_then(Value::as_array)
-                .cloned()
-        })
-        .is_some_and(|details| {
-            details.iter().any(|detail| {
-                detail.get("domain").and_then(Value::as_str) == Some("googleapis.com")
-                    && detail.get("reason").and_then(Value::as_str) == Some("USER_PROJECT_DENIED")
-            })
+                .is_some_and(|details| {
+                    details.iter().any(|detail| {
+                        detail.get("domain").and_then(Value::as_str) == Some("googleapis.com")
+                            && detail.get("reason").and_then(Value::as_str)
+                                == Some("USER_PROJECT_DENIED")
+                    })
+                })
         });
     let (reason, message, hint) = if status == 429 {
         (

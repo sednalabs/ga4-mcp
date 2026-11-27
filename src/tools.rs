@@ -1008,7 +1008,18 @@ impl AnalyticsMcp {
                     "preview_report_request",
                     "check_report_compatibility"
                 ],
-                "optional_admin_tools": ["get_account_summaries", "get_property_details"],
+                "optional_admin_tools": [
+                    "get_account_summaries",
+                    "get_property_details",
+                    "get_account_data_sharing_settings",
+                    "get_property_data_retention_settings",
+                    "list_google_ads_links",
+                    "list_key_events",
+                    "list_bigquery_links",
+                    "list_property_annotations",
+                    "run_property_access_report",
+                    "run_account_access_report"
+                ],
                 "scratchpad_note": "Scratchpad tools require GOOGLE_ANALYTICS_MCP_CAPABILITY_PROFILE=scratchpad or --capability-profile scratchpad."
             }),
             started,
