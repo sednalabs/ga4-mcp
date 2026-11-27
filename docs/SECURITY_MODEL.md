@@ -101,3 +101,14 @@ Keep OAuth client JSON files and ADC files outside the repository.
 
 See [../SECURITY.md](../SECURITY.md) for how to report suspected security
 issues.
+
+## Toolkit and MCP transport dependency custody
+
+The runtime migration uses an immutable, previously validated toolkit revision
+and the same reviewed RMCP patch as its root workspace. The HTTP service uses
+the toolkit's bounded local session runtime, rather than creating an unbounded
+raw session manager. Live discovery is capability-profile filtered; the CLI
+schema snapshot remains a full developer catalogue. The RMCP response adapter
+preserves Contract V1 complete results. The migration must pass fresh lockfile
+resolution, dependency governance, legacy/current protocol and container tests
+before production use. Scratchpad HTTP containment is unchanged.

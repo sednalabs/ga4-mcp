@@ -11,6 +11,12 @@
 - Keep runtime fast for spawn-per-request workflows.
 - Keep response envelopes in Contract V1 form (`ok/data/meta` or `ok/error/meta`) for all tools.
 
+## Toolkit-first development
+
+- Inspect current `sednalabs/mcp-toolkit-rs` contracts before implementing shared auth, transport, policy, scratchpad, pagination, observability or testing functionality.
+- Consume validated immutable toolkit revisions and upstream provider-neutral improvements. Keep provider-specific API contracts in GA4.
+- Regenerate the dependency lockfile, verify dependency governance and qualify all protocol/transport and container paths on toolkit upgrades.
+
 ## Architecture boundaries
 
 - `main.rs`: process bootstrap and transport wiring only.
