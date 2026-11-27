@@ -776,7 +776,9 @@ mod tests {
             write.flush().await.unwrap();
         }
 
-        async fn receive(read: &mut BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>) -> Value {
+        async fn receive(
+            read: &mut BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+        ) -> Value {
             tokio::time::timeout(Duration::from_secs(10), async {
                 let mut line = String::new();
                 assert_ne!(read.read_line(&mut line).await.unwrap(), 0);
@@ -867,7 +869,10 @@ mod tests {
             );
             let error = &result["result"]["structuredContent"]["error"];
             assert_eq!(error["code"], "POLICY_DENIED", "{result}");
-            assert!(error["message"].as_str().unwrap().contains(expected), "{result}");
+            assert!(
+                error["message"].as_str().unwrap().contains(expected),
+                "{result}"
+            );
         }
 
         drop(write);
