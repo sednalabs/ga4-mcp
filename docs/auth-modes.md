@@ -66,11 +66,11 @@ GA4-specific ADC file. On a headless host, copy the final
 `http://127.0.0.1:...` browser address-bar URL and paste it back into the
 terminal if the browser cannot reach the remote loopback listener.
 
-If Google says local ADC needs a quota project, enable the Analytics APIs on a
+If Google says local ADC needs a quota project, enable the Analytics Data API on a
 Google Cloud project and rerun login with the quota project:
 
 ```bash
-gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+gcloud services enable analyticsdata.googleapis.com --project YOUR_PROJECT
 ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
@@ -303,7 +303,7 @@ Fix:
 - If this is a hosted per-user service, confirm clients are sending request
   tokens and the server is in `request_header` mode.
 - If using ADC or `request_header_or_config`, run
-  `gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT`
+  `gcloud services enable analyticsdata.googleapis.com --project YOUR_PROJECT`
   and `ga4-mcp auth login --quota-project YOUR_PROJECT`, then
   rerun `ga4-mcp auth status --verify-token`.
 
@@ -311,7 +311,11 @@ Fix:
 
 Meaning:
 
-- Google identity lacks GA property/account permissions.
+- Check `error.reason`, `error.hint`, and the API identified in `error.detail`.
+  A 403 can indicate disabled API, insufficient scope, quota-project access,
+  or resource permissions; it is not necessarily a GA property role failure.
+- Admin API denial alone does not prohibit Data API reports. Supply the known
+  property ID directly and enable Admin only if its specific tools are needed.
 
 Fix:
 

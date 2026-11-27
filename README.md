@@ -28,7 +28,7 @@ described here are local `ga4-mcp` semantics.
 The server also includes:
 
 - additional GA Admin/Data API coverage (pivot, batch, access reports, annotations, retention, sharing settings)
-- local request preflight helpers (`preview_report_request`, `check_report_compatibility`)
+- local request preview (`preview_report_request`) and Data API compatibility checks (`check_report_compatibility`)
 - Contract V1-only envelopes (`ok/data/meta` and `ok/error/meta`)
 - profile-gated DuckDB scratchpad tools (`read_only` vs `scratchpad`)
 - streamable HTTP transport with host/IP/TLS guardrails and optional inbound OAuth resource-server mode
@@ -48,6 +48,7 @@ The server also includes:
 - `get_property_details`
 - `get_property_data_retention_settings`
 - `list_google_ads_links`
+- `list_bigquery_links`
 - `list_property_annotations`
 - `list_key_events`
 - `get_custom_dimensions_and_metrics`
@@ -126,9 +127,24 @@ Credentials file at
 Google MCPs keep their own tokens and scopes. Use `--shared-adc` only when you
 intentionally want the conventional shared gcloud ADC file.
 
-`YOUR_PROJECT` should be a Google Cloud project where both
-`analyticsadmin.googleapis.com` and `analyticsdata.googleapis.com` are enabled
-and where your Google account is allowed to use the project for quota.
+`YOUR_PROJECT` should be a Google Cloud project with
+`analyticsdata.googleapis.com` enabled and where your Google account is allowed
+to use the project for quota (`serviceusage.services.use`). The Analytics Admin
+API (`analyticsadmin.googleapis.com`) is optional: enable it only for account
+and property discovery, configuration metadata, and access reports. See the
+[API dependency map](docs/TOOL_GUIDE.md#api-dependency-map).
+
+If Admin is unavailable, obtain the numeric GA4 property ID from the property
+selector, your administrator or existing configuration and supply
+`properties/<id>` directly. Core reporting, compatibility checks and custom
+dimension/metric metadata do not require Admin access. Access reports require
+the appropriate Analytics Administrator role; see [Google's access report documentation](https://developers.google.com/analytics/devguides/config/admin/v1/access-api).
+
+`auth status --verify-token`, `auth doctor --verify-token` and verified
+`ga4_auth_status` distinguish Data API verification from the optional Admin
+probe. A successful universal Data metadata probe verifies API access, not
+permission to any particular property. Verify that with a report. Admin-only
+failure is a warning and does not prevent successful Data API verification.
 
 Result: if a client sends `Authorization: Bearer <google_access_token>`, the
 server uses that token. If the client sends no token, the server uses the local
@@ -168,12 +184,12 @@ ga4-mcp auth status --json --verify-token
 ```
 
 If verification says local ADC needs a quota project, enable the Analytics
-Admin and Data APIs on a Google Cloud project, then rerun login with
+Data API on a Google Cloud project, then rerun login with
 `--quota-project` or run `ga4-mcp auth command --quota-project YOUR_PROJECT`
 and execute the printed quota-project command:
 
 ```bash
-gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project YOUR_PROJECT
+gcloud services enable analyticsdata.googleapis.com --project YOUR_PROJECT
 ga4-mcp auth login --quota-project YOUR_PROJECT
 ga4-mcp auth status --verify-token
 ```
@@ -464,6 +480,10 @@ GA4_LIVE_SMOKE_PROPERTY_ID=properties/<YOUR_PROPERTY_ID> \
 GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT=<YOUR_GCP_PROJECT_ID> \
 cargo test --test live_google_auth_smoke -- --nocapture
 ```
+
+For a project with only the Data API enabled, also set
+`GA4_LIVE_DATA_ONLY=1`. That smoke path requires an explicit property ID and
+skips Admin discovery.
 
 Build-helper presets:
 

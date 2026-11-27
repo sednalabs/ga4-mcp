@@ -4,6 +4,42 @@
 scratchpad analysis tools. All responses use Contract V1 envelopes:
 `ok/data/meta` for success and `ok/error/meta` for failure.
 
+## API dependency map
+
+This map reflects the client methods and actual API hosts, not the tool names.
+The Data API alone supports reporting with an explicit property ID. Admin
+discovery is optional and a Data metadata probe does not establish access to a
+specific property.
+
+| Tool | API dependency |
+|---|---|
+| `ga4_get_started`, `ga4_auth_login_command` | Local only |
+| `ga4_auth_status` | Local by default; with verification: Data v1beta universal metadata, optional Admin v1beta account summaries |
+| `get_account_summaries`, `get_property_details` | Admin v1beta |
+| `get_account_data_sharing_settings`, `get_property_data_retention_settings` | Admin v1beta |
+| `list_google_ads_links`, `list_key_events` | Admin v1beta |
+| `list_property_annotations`, `list_bigquery_links` | Admin v1alpha |
+| `run_property_access_report`, `run_account_access_report` | Admin v1beta; appropriate Analytics Administrator role required |
+| `run_report`, `run_pivot_report`, `batch_run_reports`, `run_realtime_report` | Data v1beta |
+| `get_custom_dimensions_and_metrics` | Data v1beta `getMetadata` |
+| `check_report_compatibility` | Data v1beta `checkCompatibility` and `getMetadata` |
+| `run_funnel_report`, `run_conversions_report` | Data v1alpha |
+| `preview_report_request` | Local only |
+| `scratchpad_ingest_report`, `scratchpad_ingest_realtime_report` | Data v1beta and local DuckDB |
+| `scratchpad_open_session`, `scratchpad_close_session`, `scratchpad_list_sessions` | Local only |
+| `scratchpad_get_runtime_limits`, `scratchpad_set_runtime_limits` | Local only |
+| `scratchpad_list_tables`, `scratchpad_drop_table`, `scratchpad_query` | Local only |
+| `scratchpad_describe_table`, `scratchpad_summarize_table` | Local only |
+| `scratchpad_release_regression_report`, `scratchpad_landing_param_shift_report`, `scratchpad_export_evidence_bundle` | Local only |
+
+If an Admin call is denied, use a known property ID for Data reports and
+`get_custom_dimensions_and_metrics` for reportable custom fields. The latter
+already uses Data API metadata; it does not require Admin custom-definition
+endpoints. There is no equivalent Data API for administrative settings,
+account discovery or access audit reports. See
+[Google's access report documentation](https://developers.google.com/analytics/devguides/config/admin/v1/access-api)
+for role requirements.
+
 ## Core GA Tools
 
 | Tool | Purpose |
@@ -15,7 +51,7 @@ scratchpad analysis tools. All responses use Contract V1 envelopes:
 | `list_google_ads_links` | List Google Ads links for one property. |
 | `list_property_annotations` | List annotations for one property. |
 | `list_key_events` | List configured key-event definitions (including counting method and default value). |
-| `get_custom_dimensions_and_metrics` | List custom definitions for one property. |
+| `get_custom_dimensions_and_metrics` | List reportable custom dimensions and metrics from Data API metadata. |
 
 ## Report Tools
 
@@ -147,7 +183,11 @@ Account ids may be passed as either an integer id or `accounts/<id>`.
 Clients should branch on `ok` first. When `ok=false`, inspect
 `error.reason`, `error.code`, and `error.status_code` if present. Authentication
 and upstream Google failures are reported through the same Contract V1 shape as
-validation and policy failures.
+validation and policy failures. For classified Google API failures, the
+contract also identifies the required API and provides a remediation hint.
+Distinguish disabled services, scope, quota-project permission, resource
+permission, authentication, throttling and upstream failures. Do not retry a
+permanent 403 blindly.
 
 ## BigQuery export discovery
 
