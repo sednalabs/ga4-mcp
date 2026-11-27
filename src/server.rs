@@ -31,6 +31,7 @@ use crate::scratchpad::SharedScratchpadSessionManager;
 pub struct AnalyticsMcp {
     pub client: Arc<AnalyticsApiClient>,
     pub scratchpad_sessions: SharedScratchpadSessionManager,
+    pub(crate) mutation_approvals: Arc<mcp_toolkit_core::scoped_cursor::ScopedCursorStore>,
     pub(crate) hosted_scratchpad: Option<Arc<crate::hosted_scratchpad::HostedScratchpadVerifier>>,
     capability_profile: CapabilityProfile,
     upstream_token_source: UpstreamTokenSource,
@@ -49,6 +50,7 @@ impl AnalyticsMcp {
         Self {
             client,
             scratchpad_sessions,
+            mutation_approvals: Arc::new(crate::mutations::approval_store()),
             hosted_scratchpad: None,
             capability_profile,
             upstream_token_source,

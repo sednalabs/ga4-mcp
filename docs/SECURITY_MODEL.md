@@ -173,6 +173,31 @@ Provider errors retain status-level diagnostics, not raw response bodies.
 
 The dedicated `bigquery` capability is currently local stdio only with configured credentials, official API origins, exact read-only scopes, operator-defined export project ID/number, billing project, region and byte limit. Before any dry run or execution, the same token must establish the configured GA property link and matching dataset identity/location. The only query templates are fixed aggregate SELECTs over daily tables; no arbitrary query or raw user identifiers. Provider scalar responses, pages and bytes are bounded. Execution is disabled by default and requires explicit caller opt-in plus operator enablement, a successful dry run and provider-enforced maximum bytes billed. A read-only credential cannot remotely cancel a job; timeout is best effort. Do not use these tools on exports with PII in custom event, medium or item labels. IAM and tenant-scoped credentials remain the operator's responsibility.
 
+## Guarded configuration creations
+
+The optional `mutation` profile permits three create-only operations: reporting
+annotations, custom dimensions and key events. The default read-only, audit and
+scratchpad profiles cannot discover or dispatch these writes. The mutation profile
+requires the exact edit scope, config-only Google credentials, and the official
+Google Admin API origin. HTTP startup rejects the profile. Use a dedicated trusted
+local stdio client that presents approval requests to its human operator.
+
+The server validates and displays the exact property, operation and provider
+payload, then requires an explicit accepted client elicitation. MCP versions
+before 2026-07-28 use the existing request/response elicitation mechanism;
+newer versions use multi-round-trip requests and the toolkit's scoped, bounded,
+120-second, single-use continuation store. Tool arguments cannot approve their
+own mutation. Wrong payload, cancellation, replay, unsupported clients and missing
+approval fail closed. The local trusted client is responsible for truthful human
+approval; a client that fabricates approval cannot be trusted. No raw credential
+is included in approval state. The creation client disables retry and redirect,
+uses the same token for create and bounded readback, and reports an unconfirmed
+readback without retrying creation. Unconfirmed creates return Contract V1 code
+`MUTATION_OUTCOME_UNKNOWN` with `retry_safe=false` in error detail and the HTTP
+status when available. Do not automatically resubmit; inspect and reconcile the
+resource before any separately approved submission.
+No deletion, patching, arbitrary Admin API paths or live write tests are provided.
+
 ## Opt-in hosted scratchpad request isolation
 
 The default #45 containment remains unchanged. An explicitly enabled

@@ -33,6 +33,7 @@ pub enum CapabilityProfile {
     Scratchpad,
     Audit,
     BigQuery,
+    Mutation,
 }
 
 impl CapabilityProfile {
@@ -42,12 +43,19 @@ impl CapabilityProfile {
             Self::Scratchpad => "scratchpad",
             Self::Audit => "audit",
             Self::BigQuery => "bigquery",
+            Self::Mutation => "mutation",
         }
     }
 
     pub fn allows_tool(self, tool_name: &str) -> bool {
         if tool_name == "query_bigquery_export" {
             return self == Self::BigQuery;
+        }
+        if matches!(
+            tool_name,
+            "create_reporting_data_annotation" | "create_custom_dimension" | "create_key_event"
+        ) {
+            return self == Self::Mutation;
         }
         if tool_name == "search_change_history_events" {
             return self == Self::Audit;
@@ -427,6 +435,16 @@ impl Settings {
             ));
         }
 
+        if cli.capability_profile == CapabilityProfile::Mutation
+            && (analytics_scope != ANALYTICS_EDIT_SCOPE
+                || cli.upstream_token_source != UpstreamTokenSource::Config
+                || cli.admin_base_url.trim_end_matches('/') != DEFAULT_ADMIN_BASE_URL)
+        {
+            return Err(anyhow!(
+                "mutation profile requires analytics.edit, config-only credentials and the official Admin API origin"
+            ));
+        }
+
         if cli.http_timeout_ms == 0 {
             return Err(anyhow!("http timeout must be greater than zero"));
         }
@@ -730,6 +748,43 @@ mod tests {
         assert!(CapabilityProfile::Audit.allows_tool("search_change_history_events"));
         assert!(CapabilityProfile::Audit.allows_tool("run_report"));
         assert!(!CapabilityProfile::Audit.allows_tool("scratchpad_query"));
+    }
+
+    #[test]
+    fn mutation_profile_requires_edit_scope_and_config_credentials() {
+        let mut cli = sample_cli();
+        cli.capability_profile = CapabilityProfile::Mutation;
+        assert!(Settings::from_cli(cli.clone()).is_err());
+        cli.analytics_scope = ANALYTICS_EDIT_SCOPE.to_string();
+        cli.upstream_token_source = UpstreamTokenSource::Config;
+        assert!(Settings::from_cli(cli.clone()).is_ok());
+        cli.admin_base_url = format!("{DEFAULT_ADMIN_BASE_URL}/");
+        let settings =
+            Settings::from_cli(cli.clone()).expect("official origin with trailing slash");
+        assert_eq!(settings.admin_base_url, DEFAULT_ADMIN_BASE_URL);
+        cli.upstream_token_source = UpstreamTokenSource::RequestHeader;
+        assert!(Settings::from_cli(cli.clone()).is_err());
+        cli.upstream_token_source = UpstreamTokenSource::Config;
+        cli.admin_base_url = "https://elsewhere.example".to_string();
+        assert!(Settings::from_cli(cli).is_err());
+        for name in [
+            "create_reporting_data_annotation",
+            "create_custom_dimension",
+            "create_key_event",
+        ] {
+            for profile in [
+                CapabilityProfile::ReadOnly,
+                CapabilityProfile::Scratchpad,
+                CapabilityProfile::Audit,
+                CapabilityProfile::BigQuery,
+            ] {
+                assert!(!profile.allows_tool(name));
+            }
+            assert!(CapabilityProfile::Mutation.allows_tool(name));
+        }
+        assert!(!CapabilityProfile::Mutation.allows_tool("scratchpad_query"));
+        assert!(!CapabilityProfile::Mutation.allows_tool("query_bigquery_export"));
+        assert!(!CapabilityProfile::Mutation.allows_tool("search_change_history_events"));
     }
 
     #[test]

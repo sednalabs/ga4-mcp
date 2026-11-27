@@ -26,6 +26,7 @@ pub mod ga_client;
 mod hosted_scratchpad;
 pub mod http_config;
 pub mod http_runtime;
+mod mutations;
 pub mod scratchpad;
 pub mod server;
 pub mod sql_safety;
