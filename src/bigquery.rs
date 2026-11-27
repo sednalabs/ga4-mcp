@@ -468,7 +468,8 @@ impl BigQueryExportClient {
         {
             return Err(bad_provider());
         }
-        let results_url = google_endpoint(BQ, &["projects", &self.billing_project, "queries", job_id])?;
+        let results_url =
+            google_endpoint(BQ, &["projects", &self.billing_project, "queries", job_id])?;
         let mut rows = Vec::new();
         let mut complete = false;
         let mut truncated = false;
