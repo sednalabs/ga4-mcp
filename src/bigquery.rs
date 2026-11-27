@@ -461,6 +461,23 @@ impl BigQueryExportClient {
             output["execution_blocked_by_estimate"] = json!(estimate > plan.maximum_bytes);
             return Ok(output);
         }
+        // From the first paid submission onward, even a transport or response
+        // validation failure may have incurred cost. Never expose read-path
+        // retry advice for an execution that cannot be confirmed.
+        self.execute_verified(plan, token, url, output)
+            .await
+            .map_err(|error| AnalyticsError::BigQueryExecutionUnconfirmed {
+                status: error.status_code(),
+            })
+    }
+
+    async fn execute_verified(
+        &self,
+        plan: ExportPlan,
+        token: &str,
+        url: Url,
+        mut output: Value,
+    ) -> Result<Value, AnalyticsError> {
         let mut page = self
             .response(
                 self.http
@@ -856,7 +873,7 @@ mod tests {
         steps.push(step("GET", "/bigquery/v2/projects/billing-fixture/jobs/job_1", None,
             json!({"jobReference":reference,"status":{"state":"DONE","errorResult":{"message":"private fixture"}}})));
         let error = query_fixture(steps).await.unwrap_err();
-        assert_eq!(error.code(), "UPSTREAM_REJECTED");
+        assert_eq!(error.code(), "BIGQUERY_EXECUTION_UNCONFIRMED");
         assert!(!error.to_string().contains("private fixture"));
     }
 
@@ -963,7 +980,59 @@ mod tests {
             )),
         });
         let error = query_fixture(steps).await.unwrap_err();
-        assert!(error.to_string().contains("submitted job may still run"));
+        assert_eq!(error.code(), "BIGQUERY_EXECUTION_UNCONFIRMED");
+        assert!(error.hint().unwrap().contains("submitted job may still run"));
+    }
+
+    #[tokio::test]
+    async fn paid_submission_and_poll_failures_never_recommend_resubmission() {
+        for status in [429, 500, 503] {
+            for after_submission in [false, true] {
+                let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+                if after_submission {
+                    steps.push(step(
+                        "POST",
+                        "/bigquery/v2/projects/billing-fixture/queries",
+                        Some(false),
+                        json!({"jobReference":{"jobId":"job_1","projectId":"billing-fixture","location":"US"},"jobComplete":false}),
+                    ));
+                }
+                steps.push(ExpectedRequest {
+                    method: if after_submission { "GET" } else { "POST" },
+                    path: if after_submission {
+                        "/bigquery/v2/projects/billing-fixture/queries/job_1"
+                    } else {
+                        "/bigquery/v2/projects/billing-fixture/queries"
+                    },
+                    dry_run: if after_submission { None } else { Some(false) },
+                    reply: Err(AnalyticsError::UpstreamApi {
+                        status,
+                        message: "private provider fixture".to_string(),
+                    }),
+                });
+                let result = crate::contract::error(query_fixture(steps).await.unwrap_err(), 0);
+                let payload = result.structured_content.unwrap();
+                assert_eq!(payload["error"]["code"], "BIGQUERY_EXECUTION_UNCONFIRMED");
+                assert_eq!(payload["error"]["status_code"], status);
+                assert_eq!(payload["error"]["detail"], "retry_safe=false");
+                let hint = payload["error"]["hint"].as_str().unwrap();
+                assert!(hint.contains("Do not automatically resubmit"));
+                assert!(!hint.contains("backoff"));
+                assert!(!payload.to_string().contains("private provider fixture"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_dry_run_does_not_enter_paid_execution_boundary() {
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        steps.last_mut().unwrap().reply = Err(AnalyticsError::UpstreamApi {
+            status: 429,
+            message: "fixture rate limit".to_string(),
+        });
+        let error = query_fixture(steps).await.unwrap_err();
+        assert_eq!(error.code(), "UPSTREAM_REJECTED");
+        assert_eq!(error.hint(), Some("Retry with exponential backoff."));
     }
 
     #[test]
