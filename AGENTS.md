@@ -3,6 +3,7 @@
 ## Scope
 
 - Applies to this repository.
+- For reporting through a configured server, use the [GA4 MCP agent skill](.kiro/skills/ga4-mcp/SKILL.md).
 
 ## Operating intent
 

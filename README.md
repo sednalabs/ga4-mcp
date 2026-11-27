@@ -13,6 +13,7 @@ workflow for analysis-heavy use cases.
 - [Tool guide](docs/TOOL_GUIDE.md)
 - [Auth modes](docs/auth-modes.md)
 - [Payload Contract V1](docs/payload-contract-v1.md)
+- [GA4 MCP agent skill](.kiro/skills/ga4-mcp/SKILL.md) for reporting through a configured server. Invoke `/ga4-mcp` in Kiro or import the skill folder into another Agent Skills-compatible client.
 
 ## Reference Alignment
 
