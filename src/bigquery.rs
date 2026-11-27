@@ -1,6 +1,6 @@
 //! Fixed, cost-bounded aggregate queries over a verified daily GA4 export.
 //! No arbitrary SQL, project selection, raw user output or ambient billing authority.
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use reqwest::{Client, RequestBuilder, Url};
 use schemars::JsonSchema;
@@ -47,6 +47,8 @@ pub(crate) struct BigQueryExportClient {
     location: String,
     maximum_bytes: u64,
     allow_execution: bool,
+    #[cfg(test)]
+    fixture: Option<std::sync::Arc<std::sync::Mutex<tests::ProviderFixture>>>,
 }
 
 pub(crate) struct ExportPlan {
@@ -218,6 +220,8 @@ impl BigQueryExportClient {
             location,
             maximum_bytes,
             allow_execution,
+            #[cfg(test)]
+            fixture: None,
         })
     }
 
@@ -340,6 +344,14 @@ impl BigQueryExportClient {
         })
     }
 
+    async fn response(&self, request: RequestBuilder) -> Result<Value, AnalyticsError> {
+        #[cfg(test)]
+        if let Some(fixture) = &self.fixture {
+            return fixture.lock().unwrap().respond(request);
+        }
+        response(request).await
+    }
+
     async fn verify_link(&self, plan: &ExportPlan, token: &str) -> Result<(), AnalyticsError> {
         let expected = format!("projects/{}", self.export_project_number);
         let property_id = plan
@@ -348,6 +360,7 @@ impl BigQueryExportClient {
             .ok_or_else(bad_provider)?;
         let url = google_endpoint(ADMIN, &["properties", property_id, "bigQueryLinks"])?;
         let mut page_token: Option<String> = None;
+        let mut seen = HashSet::new();
         for _ in 0..MAX_LINK_PAGES {
             let mut req = self
                 .http
@@ -357,7 +370,7 @@ impl BigQueryExportClient {
             if let Some(page) = &page_token {
                 req = req.query(&[("pageToken", page)]);
             }
-            let page = response(req).await?;
+            let page = self.response(req).await?;
             if page
                 .get("bigqueryLinks")
                 .and_then(Value::as_array)
@@ -377,7 +390,7 @@ impl BigQueryExportClient {
             {
                 return Ok(());
             }
-            page_token = bounded_page_token(&page)?;
+            page_token = unique_page_token(&page, &mut seen)?;
             if page_token.is_none() {
                 break;
             }
@@ -394,7 +407,7 @@ impl BigQueryExportClient {
         token: &str,
     ) -> Result<Value, AnalyticsError> {
         self.verify_link(&plan, token).await?;
-        let dataset = response(
+        let dataset = self.response(
             self.http
                 .get(google_endpoint(
                     BQ,
@@ -417,7 +430,7 @@ impl BigQueryExportClient {
             ));
         }
         let url = google_endpoint(BQ, &["projects", &self.billing_project, "queries"])?;
-        let dry = response(
+        let dry = self.response(
             self.http
                 .post(url.clone())
                 .bearer_auth(token)
@@ -446,7 +459,7 @@ impl BigQueryExportClient {
             output["execution_blocked_by_estimate"] = json!(estimate > plan.maximum_bytes);
             return Ok(output);
         }
-        let mut page = response(
+        let mut page = self.response(
             self.http
                 .post(url)
                 .bearer_auth(token)
@@ -476,6 +489,7 @@ impl BigQueryExportClient {
         let mut fetched = 0;
         let mut verified = false;
         let mut warnings = false;
+        let mut seen = HashSet::new();
         for i in 0..MAX_PAGES {
             check_query_page(&page)?;
             warnings |= has_query_warnings(&page)?;
@@ -485,7 +499,7 @@ impl BigQueryExportClient {
                 .ok_or_else(bad_provider)?;
             if complete {
                 if !verified {
-                    let status = response(
+                    let status = self.response(
                         self.http
                             .get(google_endpoint(
                                 BQ,
@@ -502,7 +516,7 @@ impl BigQueryExportClient {
                 fetched += 1;
             }
             let next = if complete {
-                bounded_page_token(&page)?
+                unique_page_token(&page, &mut seen)?
             } else {
                 None
             };
@@ -524,10 +538,14 @@ impl BigQueryExportClient {
             }
             // A failed getQueryResults request is not an empty successful report.
             // Propagate the sanitized error; never submit a replacement job.
-            page = response(req).await?;
+            page = self.response(req).await?;
         }
         output["executed"] = json!(true);
-        output["job_reference"] = job;
+        output["job_reference"] = json!({
+            "jobId": job_id,
+            "projectId": self.billing_project,
+            "location": self.location,
+        });
         output["job_complete"] = json!(complete);
         output["job_status_verified"] = json!(verified);
         output["provider_diagnostics_present"] = json!(warnings);
@@ -615,6 +633,17 @@ fn bounded_page_token(page: &Value) -> Result<Option<String>, AnalyticsError> {
     }
 }
 
+fn unique_page_token(
+    page: &Value,
+    seen: &mut HashSet<String>,
+) -> Result<Option<String>, AnalyticsError> {
+    let token = bounded_page_token(page)?;
+    if token.as_ref().is_some_and(|token| !seen.insert(token.clone())) {
+        return Err(bad_provider());
+    }
+    Ok(token)
+}
+
 fn append_rows(
     page: &Value,
     plan: &ExportPlan,
@@ -679,6 +708,94 @@ async fn response(request: RequestBuilder) -> Result<Value, AnalyticsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::{collections::VecDeque, sync::{Arc, Mutex}};
+
+    struct ExpectedRequest {
+        method: &'static str,
+        path: &'static str,
+        dry_run: Option<bool>,
+        reply: Result<Value, AnalyticsError>,
+    }
+
+    pub(super) struct ProviderFixture(VecDeque<ExpectedRequest>);
+
+    impl ProviderFixture {
+        pub(super) fn respond(&mut self, builder: RequestBuilder) -> Result<Value, AnalyticsError> {
+            let expected = self.0.pop_front().expect("unexpected additional provider call");
+            let request = builder.build().unwrap();
+            assert_eq!(request.method().as_str(), expected.method);
+            assert_eq!(request.url().scheme(), "https");
+            assert_eq!(request.url().path(), expected.path);
+            assert_eq!(request.headers().get("authorization").unwrap(), "Bearer fixture-token");
+            if let Some(dry) = expected.dry_run {
+                let body: Value = serde_json::from_slice(
+                    request.body().and_then(reqwest::Body::as_bytes).unwrap(),
+                ).unwrap();
+                assert_eq!(body["dryRun"], dry);
+                assert_eq!(body["maximumBytesBilled"], "100000");
+                assert_eq!(body["location"], "US");
+                assert_eq!(body["useLegacySql"], false);
+                assert_eq!(body["parameterMode"], "NAMED");
+                assert_eq!(body["queryParameters"][0]["parameterValue"]["value"], "20261101");
+            }
+            expected.reply
+        }
+    }
+
+    fn step(method: &'static str, path: &'static str, dry_run: Option<bool>, reply: Value) -> ExpectedRequest {
+        ExpectedRequest { method, path, dry_run, reply: Ok(reply) }
+    }
+
+    fn provider_fixture(dry: Value) -> Vec<ExpectedRequest> {
+        vec![
+            step("GET", "/v1alpha/properties/42/bigQueryLinks", None,
+                json!({"bigqueryLinks":[{"project":"projects/12345","datasetLocation":"US","dailyExportEnabled":true}]})),
+            step("GET", "/bigquery/v2/projects/export-fixture/datasets/analytics_42", None,
+                json!({"datasetReference":{"projectId":"export-fixture","datasetId":"analytics_42"},"location":"US"})),
+            step("POST", "/bigquery/v2/projects/billing-fixture/queries", Some(true), dry),
+        ]
+    }
+
+    async fn query_fixture(steps: Vec<ExpectedRequest>) -> Result<Value, AnalyticsError> {
+        let mut client = fixture(true);
+        let provider = Arc::new(Mutex::new(ProviderFixture(steps.into())));
+        client.fixture = Some(provider.clone());
+        let plan = client.plan(args("daily_sessions", true)).unwrap();
+        let result = client.query(plan, "fixture-token").await;
+        assert!(provider.lock().unwrap().0.is_empty(), "missing expected provider call");
+        result
+    }
+
+    #[tokio::test]
+    async fn provider_fixture_blocks_over_budget_and_diagnostic_dry_runs() {
+        let output = query_fixture(provider_fixture(json!({"totalBytesProcessed":"100001"}))).await.unwrap();
+        assert_eq!(output["executed"], false);
+        assert_eq!(output["execution_blocked_by_estimate"], true);
+        assert!(query_fixture(provider_fixture(json!({"totalBytesProcessed":"1","errors":[{"reason":"warning"}]}))).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_fixture_terminal_failure_never_retries_or_returns_rows() {
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+        steps.push(step("POST", "/bigquery/v2/projects/billing-fixture/queries", Some(false),
+            json!({"jobReference":reference,"jobComplete":true})));
+        steps.push(step("GET", "/bigquery/v2/projects/billing-fixture/jobs/job_1", None,
+            json!({"jobReference":reference,"status":{"state":"DONE","errorResult":{"message":"private fixture"}}})));
+        let error = query_fixture(steps).await.unwrap_err();
+        assert_eq!(error.code(), "UPSTREAM_REJECTED");
+        assert!(!error.to_string().contains("private fixture"));
+    }
+
+    #[test]
+    fn repeated_provider_page_tokens_fail_closed() {
+        let mut seen = HashSet::new();
+        let page = json!({"pageToken":"repeat"});
+        assert_eq!(unique_page_token(&page, &mut seen).unwrap().as_deref(), Some("repeat"));
+        assert!(unique_page_token(&page, &mut seen).is_err());
+        assert!(unique_page_token(&json!({}), &mut seen).unwrap().is_none());
+    }
 
     fn fixture(execute: bool) -> BigQueryExportClient {
         BigQueryExportClient::new(
