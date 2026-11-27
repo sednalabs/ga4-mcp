@@ -163,6 +163,7 @@ Postgres-specific fields are not required by this contract.
 - `list_google_ads_links`
 - `list_bigquery_links`
 - `list_property_annotations`
+- `list_key_events`
 - `get_custom_dimensions_and_metrics`
 - `check_report_compatibility`
 - `preview_report_request`
