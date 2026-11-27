@@ -57,6 +57,7 @@ verification.
 - `get_property_data_retention_settings`
 - `list_google_ads_links`
 - `list_property_annotations`
+- `list_key_events`
 - `run_account_access_report`
 - `batch_run_reports`
 - `preview_report_request`

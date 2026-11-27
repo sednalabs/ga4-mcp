@@ -49,6 +49,7 @@ The server also includes:
 - `get_property_data_retention_settings`
 - `list_google_ads_links`
 - `list_property_annotations`
+- `list_key_events`
 - `get_custom_dimensions_and_metrics`
 - `run_report`
 - `run_conversions_report`
@@ -63,6 +64,8 @@ The server also includes:
 v1alpha endpoints. Alpha features can change and conversion reporting may not
 be enabled for every property. Both tools remain read-only and use the same
 `analytics.readonly` OAuth scope as the other report tools.
+`list_key_events` reads configured key-event definitions. Realtime reports
+and realtime scratchpad ingest support up to two named minute ranges.
 
 ### Request preflight and compatibility tools
 
