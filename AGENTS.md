@@ -11,6 +11,12 @@
 - Keep runtime fast for spawn-per-request workflows.
 - Keep response envelopes in Contract V1 form (`ok/data/meta` or `ok/error/meta`) for all tools.
 
+## Toolkit-first development
+
+- Reuse current `sednalabs/mcp-toolkit-rs` authentication, transport, session, SQL policy, scratchpad, cursor and testing primitives before implementing local equivalents.
+- Upstream reusable improvements through validated toolkit PRs and consume immutable landed revisions. Keep RMCP's matching immutable transport security patch in the consumer manifest; Cargo does not inherit workspace patches.
+- Commit generated Cargo.lock and qualify dependency governance, protocol compatibility and all existing Contract V1 behaviour before landing migration work.
+
 ## Architecture boundaries
 
 - `main.rs`: process bootstrap and transport wiring only.

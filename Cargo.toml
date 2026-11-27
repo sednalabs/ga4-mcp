@@ -2,35 +2,41 @@
 name = "ga4-mcp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
 license = "Apache-2.0"
 description = "Google Analytics 4 MCP server with read/report tools and local scratchpad support."
 repository = "https://github.com/sednalabs/ga4-mcp"
 readme = "README.md"
 
 [dependencies]
-anyhow = "1.0.103"
-axum = "0.8.8"
+anyhow = "1.0.104"
+axum = "0.8.9"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 clap = { version = "4.5.60", features = ["derive", "env"] }
-duckdb = { version = "1.4.4", default-features = false, features = ["bundled"] }
-gcp_auth = "0.12.6"
-ipnet = "2.11.0"
-mcp-toolkit-http = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "0837a1c34d7f41b14907f08f2414d96f115cda56", package = "mcp-toolkit-http" }
-mcp-toolkit-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "0837a1c34d7f41b14907f08f2414d96f115cda56", package = "mcp-toolkit-core" }
-mcp-toolkit-auth = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "0837a1c34d7f41b14907f08f2414d96f115cda56", package = "mcp-toolkit-auth" }
-mcp-toolkit-observability = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "0837a1c34d7f41b14907f08f2414d96f115cda56", package = "mcp-toolkit-observability", features = ["tracing-bridge"] }
-mcp-toolkit-policy-core = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "0837a1c34d7f41b14907f08f2414d96f115cda56", package = "mcp-toolkit-policy-core" }
-mcp-toolkit-policy-runtime = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "0837a1c34d7f41b14907f08f2414d96f115cda56", package = "mcp-toolkit-policy-runtime" }
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "http2", "query", "rustls"] }
-rmcp = { version = "=2.1.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
-rustls = { version = "0.23.36", features = ["ring"] }
-schemars = "1.2.1"
+duckdb = { version = "~1.10506.1", default-features = false, features = ["bundled"] }
+gcp_auth = "0.12.7"
+ipnet = "2.12.2"
+mcp-toolkit-http = { version = "=0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-http", features = ["session"] }
+mcp-toolkit-core = { version = "=0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-core" }
+mcp-toolkit-auth = { version = "=0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-auth" }
+mcp-toolkit-observability = { version = "=0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-observability", features = ["tracing-bridge"] }
+mcp-toolkit-policy-core = { version = "=0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-policy-core" }
+mcp-toolkit-policy-runtime = { version = "=0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-policy-runtime" }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "http2", "query", "rustls"] }
+rmcp = { version = "=3.9.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
+rustls = { version = "0.23.46", features = ["ring"] }
+schemars = "1.2.3"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-thiserror = "2.0.18"
-tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal", "time"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
-mcp-toolkit-testing = { git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "0837a1c34d7f41b14907f08f2414d96f115cda56", package = "mcp-toolkit-testing" }
+mcp-toolkit-testing = { version = "=0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "6720c05f66876ddaa2e3c1c12f464e1e2b8b9f20", package = "mcp-toolkit-testing" }
+
+# Cargo does not inherit the toolkit workspace's immutable RMCP security patch.
+[patch.crates-io]
+rmcp = { git = "https://github.com/sednalabs/rust-sdk", rev = "31e83f4f752001d2afc386254a4d17b5eab5f419" } # DevSkim: ignore DS173237 because this immutable public commit ID is source identity, not a credential.
+rmcp-macros = { git = "https://github.com/sednalabs/rust-sdk", rev = "31e83f4f752001d2afc386254a4d17b5eab5f419" } # DevSkim: ignore DS173237 because this immutable public commit ID is source identity, not a credential.

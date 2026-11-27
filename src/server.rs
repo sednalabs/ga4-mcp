@@ -14,8 +14,8 @@ use mcp_toolkit_observability::{
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -82,7 +82,7 @@ impl AnalyticsMcp {
 }
 
 impl ServerHandler for AnalyticsMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         rmcp_models::server_info(
             ProtocolVersion::V_2024_11_05,
             ServerCapabilities::builder().enable_tools().build(),
@@ -100,18 +100,14 @@ impl ServerHandler for AnalyticsMcp {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
         let tools = self.tool_router.list_all();
-        std::future::ready(Ok(ListToolsResult {
-            meta: None,
-            tools,
-            next_cursor: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
     fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_ {
+    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_ {
         let tool_name = request.name.to_string();
         let token_source = self.upstream_token_source;
         let token_header = self.upstream_token_header.clone();
@@ -135,7 +131,7 @@ impl ServerHandler for AnalyticsMcp {
                 let err =
                     AnalyticsError::policy_denied(self.capability_profile.as_str(), tool_name);
                 let result = contract::error(err, 0);
-                return Ok(result);
+                return Ok(result.into());
             }
 
             emit_event(
@@ -170,7 +166,7 @@ impl ServerHandler for AnalyticsMcp {
             .await;
 
             match &result {
-                Ok(tool_result) => {
+                Ok(CallToolResponse::Complete(tool_result)) => {
                     emit_event(
                         Level::INFO,
                         "ga4_mcp.tool.finish",
@@ -179,6 +175,12 @@ impl ServerHandler for AnalyticsMcp {
                     );
                     emit_contract_observability(&tool_name, tool_result);
                 }
+                Ok(_) => emit_event(
+                    Level::WARN,
+                    "ga4_mcp.tool.unexpected_intermediate_response",
+                    &EventContext::new().with_tool_name(&tool_name),
+                    &[safe_text("tool", &tool_name)],
+                ),
                 Err(err) => emit_event(
                     Level::WARN,
                     "ga4_mcp.tool.error",
