@@ -41,7 +41,9 @@ pub enum AnalyticsError {
     #[error("upstream API request failed with status {status}: {message}")]
     UpstreamApi { status: u16, message: String },
 
-    #[error("BigQuery execution not confirmed; inspect the billing project before any new submission")]
+    #[error(
+        "BigQuery execution not confirmed; inspect the billing project before any new submission"
+    )]
     BigQueryExecutionUnconfirmed { status: Option<u16> },
 
     #[error("scratchpad engine error: {0}")]
