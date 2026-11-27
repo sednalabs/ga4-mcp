@@ -51,7 +51,16 @@ async fn live_google_auth_and_ga_tool_calls_succeed() {
         .expect("google auth bootstrap should succeed");
 
     let data_only = std::env::var("GA4_LIVE_DATA_ONLY").as_deref() == Ok("1");
-    if !data_only {
+    if data_only {
+        assert!(
+            std::env::var(PROPERTY_ENV).is_ok_and(|value| !value.trim().is_empty()),
+            "Data-only smoke requires an explicit {PROPERTY_ENV}"
+        );
+        client
+            .verify_token()
+            .await
+            .expect("Data API verification should succeed without Admin discovery");
+    } else {
         let summaries = client
             .get_account_summaries(PaginationOptions {
                 page_size: Some(5),

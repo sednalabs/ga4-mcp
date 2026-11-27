@@ -450,7 +450,7 @@ impl AnalyticsApiClient {
             &format!("{}/v1beta/{property}", self.admin_base_url),
             &[],
         )
-            .await
+        .await
     }
 
     pub async fn get_account_data_sharing_settings(
@@ -1167,11 +1167,23 @@ fn classify_api_failure(api: &'static str, status: u16, body: &str) -> Option<An
             })
         });
     let (reason, message, hint) = if status == 429 {
-        ("rate_limited", "rate limit exceeded", "Retry with bounded exponential backoff.")
+        (
+            "rate_limited",
+            "rate limit exceeded",
+            "Retry with bounded exponential backoff.",
+        )
     } else if status >= 500 {
-        ("upstream_unavailable", "upstream unavailable", "Retry with bounded exponential backoff.")
+        (
+            "upstream_unavailable",
+            "upstream unavailable",
+            "Retry with bounded exponential backoff.",
+        )
     } else if quota_denied {
-        ("quota_project_denied", "quota project permission denied", "Check serviceusage.services.use on the quota project and use the correct Google identity.")
+        (
+            "quota_project_denied",
+            "quota project permission denied",
+            "Check serviceusage.services.use on the quota project and use the correct Google identity.",
+        )
     } else {
         match diagnostic.kind {
             GoogleProviderAuthFailureKind::ApiDisabled => (

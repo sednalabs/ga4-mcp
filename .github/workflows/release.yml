@@ -12,6 +12,8 @@ on:
       - "skills/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "src/**"
+      - "spec/**"
   push:
     tags: ["v*"]
 
