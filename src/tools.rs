@@ -1379,6 +1379,22 @@ impl AnalyticsMcp {
         }
     }
 
+    /// Query aggregate daily GA4 BigQuery event-export tables with a bounded cost estimate.
+    #[tool(
+        name = "query_bigquery_export",
+        description = "Dry-run or execute a bounded predefined GA4 BigQuery daily-export report. Requires the local BigQuery profile. No arbitrary SQL or raw user identifiers."
+    )]
+    async fn query_bigquery_export(
+        &self,
+        Parameters(args): Parameters<crate::bigquery::ExportQueryArgs>,
+    ) -> Result<CallToolResult, crate::McpError> {
+        let started = Instant::now();
+        match self.client.query_bigquery_export(args).await {
+            Ok(data) => Ok(contract_success(data, started)),
+            Err(err) => Ok(contract_error(err, started)),
+        }
+    }
+
     /// Discover configured BigQuery export links for a GA4 property.
     #[tool(
         name = "list_bigquery_links",
