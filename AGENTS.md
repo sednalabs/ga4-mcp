@@ -13,9 +13,9 @@
 
 ## Toolkit-first development
 
-- Inspect current `sednalabs/mcp-toolkit-rs` contracts before implementing shared auth, transport, policy, scratchpad, pagination, observability or testing functionality.
-- Consume validated immutable toolkit revisions and upstream provider-neutral improvements. Keep provider-specific API contracts in GA4.
-- Regenerate the dependency lockfile, verify dependency governance and qualify all protocol/transport and container paths on toolkit upgrades.
+- Inspect current `sednalabs/mcp-toolkit-rs` capabilities and its published contracts before implementing common authentication, HTTP transport, session lifecycle, SQL policy, scratchpad, cursor, observability or testing machinery.
+- Reuse suitable toolkit components via an immutable, validated revision. Upstream provider-neutral improvements first; consume their landed revisions in GA4 and keep provider-specific behaviour here.
+- Treat toolkit upgrades as explicit compatibility work: qualify RMCP and dependency pins, regenerate the lockfile and schemas, and run full validation. Do not duplicate a generic subsystem to avoid migration effort or weaken safety gates.
 
 ## Architecture boundaries
 

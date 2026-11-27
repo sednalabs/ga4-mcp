@@ -72,6 +72,16 @@ impl AnalyticsMcp {
         tool_allowed_for_profile(self.capability_profile, tool_name)
     }
 
+    /// Return the upstream token source used by request dispatch.
+    pub fn upstream_token_source(&self) -> UpstreamTokenSource {
+        self.upstream_token_source
+    }
+
+    /// Return the upstream token header used by request dispatch.
+    pub fn upstream_token_header(&self) -> &str {
+        &self.upstream_token_header
+    }
+
     pub fn accepts_upstream_request_tokens(&self) -> bool {
         self.upstream_token_source.uses_request_header()
     }
