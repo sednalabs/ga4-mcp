@@ -7,13 +7,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock rust-toolchain.toml README.md LICENSE ./
+# The official compiler image is version-pinned; do not trigger a rustup
+# component download from the developer toolchain file in the build stage.
+COPY Cargo.toml Cargo.lock README.md LICENSE ./
 COPY src/ ./src/
 COPY spec/ ./spec/
 
 # DuckDB's bundled C++ build is memory intensive on small CI runners.
 ENV CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 CMAKE_BUILD_PARALLEL_LEVEL=2
-RUN cargo build --locked --release --bins
+RUN rustc --version && cargo build --locked --release --bins
 
 FROM debian:bookworm-slim AS runtime
 
