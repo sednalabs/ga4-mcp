@@ -545,7 +545,9 @@ mod tests {
         );
     }
 
-    async fn offline_mutation_server() -> AnalyticsMcp {
+    async fn offline_mutation_server(
+        requests: Option<crate::ga_client::MutationFixtureRequests>,
+    ) -> AnalyticsMcp {
         use crate::config::{Cli, Settings};
         use crate::ga_client::AnalyticsApiClient;
         use crate::scratchpad::{
@@ -565,9 +567,16 @@ mod tests {
             "config",
         ]))
         .unwrap();
-        settings.capability_profile = CapabilityProfile::ReadOnly;
-        settings.admin_base_url = "https://fixture.invalid".to_string();
-        let client = Arc::new(AnalyticsApiClient::from_settings(&settings).await.unwrap());
+        if requests.is_none() {
+            settings.capability_profile = CapabilityProfile::ReadOnly;
+            settings.admin_base_url = "https://fixture.invalid".to_string();
+        }
+        settings.quota_project = Some("fixture-project".to_string());
+        let mut client = AnalyticsApiClient::from_settings(&settings).await.unwrap();
+        if let Some(requests) = requests {
+            client.install_mutation_fixture(requests);
+        }
+        let client = Arc::new(client);
         let engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
         let sessions = Arc::new(
             ScratchpadSessionManager::new(
@@ -585,16 +594,47 @@ mod tests {
         )
     }
 
-    // Exercise the actual RMCP line transport and tool router. The client is
-    // deliberately constructed without a mutation transport and with a
-    // non-Google Admin origin after CLI validation, so even an approved
-    // request must stop before credential resolution or network I/O. Separate provider fixtures
-    // exercise the exact POST and readback request shapes.
+    // Exercise the actual RMCP line transport and tool router, both with
+    // the provider gate disabled and with a test-only, non-network dispatch.
     #[tokio::test]
     async fn modern_stdio_approval_is_required_bound_and_single_use() {
+        modern_stdio_approval(None).await;
+    }
+
+    #[tokio::test]
+    async fn modern_stdio_approval_dispatches_only_the_approved_mutation() {
+        use std::sync::{Arc, Mutex};
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        modern_stdio_approval(Some(requests.clone())).await;
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let post = &requests[0];
+        let get = &requests[1];
+        for request in [post, get] {
+            assert_eq!(request.url().scheme(), "https");
+            assert_eq!(
+                request.url().host_str(),
+                Some("analyticsadmin.googleapis.com")
+            );
+            assert_eq!(request.headers()["authorization"], "Bearer fixture-only");
+            assert_eq!(request.headers()["x-goog-user-project"], "fixture-project");
+        }
+        assert_eq!(post.method(), reqwest::Method::POST);
+        assert_eq!(post.url().path(), "/v1beta/properties/123/keyEvents");
+        assert_eq!(
+            serde_json::from_slice::<Value>(post.body().unwrap().as_bytes().unwrap()).unwrap(),
+            json!({"eventName":"purchase","countingMethod":"ONCE_PER_EVENT"})
+        );
+        assert_eq!(get.method(), reqwest::Method::GET);
+        assert_eq!(get.url().path(), "/v1beta/properties/123/keyEvents/456");
+        assert!(get.body().is_none());
+    }
+
+    async fn modern_stdio_approval(requests: Option<crate::ga_client::MutationFixtureRequests>) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-        let server = offline_mutation_server().await;
+        let server = offline_mutation_server(requests.clone()).await;
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
             let service = rmcp::serve_server(server, server_io).await.unwrap();
@@ -729,6 +769,9 @@ mod tests {
 
         let third = exchange(&mut read, &mut write, 8, params("purchase", true)).await;
         let state = approval_state(&third);
+        if let Some(requests) = &requests {
+            assert!(requests.lock().unwrap().is_empty());
+        }
         let accepted = exchange(
             &mut read,
             &mut write,
@@ -737,7 +780,19 @@ mod tests {
         )
         .await;
         // Only a correctly approved call can reach the independent provider gate.
-        assert_denied(&accepted, "mutation_disabled");
+        if let Some(requests) = &requests {
+            let content = &accepted["structuredContent"];
+            assert_eq!(content["ok"], true, "{accepted}");
+            assert_eq!(
+                content["data"]["resource_name"],
+                "properties/123/keyEvents/456"
+            );
+            assert_eq!(content["data"]["readback_verified"], true);
+            assert_eq!(content["data"]["retry_safe"], false);
+            assert_eq!(requests.lock().unwrap().len(), 2);
+        } else {
+            assert_denied(&accepted, "mutation_disabled");
+        }
         let replay = exchange(
             &mut read,
             &mut write,
@@ -746,6 +801,9 @@ mod tests {
         )
         .await;
         assert_denied(&replay, "mutation_approval_required");
+        if let Some(requests) = &requests {
+            assert_eq!(requests.lock().unwrap().len(), 2);
+        }
 
         drop(write);
         drop(read);
@@ -759,7 +817,7 @@ mod tests {
     async fn legacy_stdio_approval_requires_a_fresh_server_prompt() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-        let server = offline_mutation_server().await;
+        let server = offline_mutation_server(None).await;
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
             let service = rmcp::serve_server(server, server_io).await.unwrap();
