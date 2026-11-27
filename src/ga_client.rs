@@ -1179,19 +1179,17 @@ fn classify_api_failure(api: &'static str, status: u16, body: &str) -> Option<An
     let config =
         GoogleProviderAuthConfig::new("Google Analytics API", vec![]).with_api_service_name(api);
     let diagnostic = classify_google_provider_auth_error(status, body, &config);
-    let quota_denied = serde_json::from_str::<Value>(body)
-        .ok()
-        .is_some_and(|v| {
-            v.pointer("/error/details")
-                .and_then(Value::as_array)
-                .is_some_and(|details| {
-                    details.iter().any(|detail| {
-                        detail.get("domain").and_then(Value::as_str) == Some("googleapis.com")
-                            && detail.get("reason").and_then(Value::as_str)
-                                == Some("USER_PROJECT_DENIED")
-                    })
+    let quota_denied = serde_json::from_str::<Value>(body).ok().is_some_and(|v| {
+        v.pointer("/error/details")
+            .and_then(Value::as_array)
+            .is_some_and(|details| {
+                details.iter().any(|detail| {
+                    detail.get("domain").and_then(Value::as_str) == Some("googleapis.com")
+                        && detail.get("reason").and_then(Value::as_str)
+                            == Some("USER_PROJECT_DENIED")
                 })
-        });
+            })
+    });
     let (reason, message, hint) = if status == 429 {
         (
             "rate_limited",
