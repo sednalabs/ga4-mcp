@@ -37,6 +37,11 @@ struct GuardState {
 /// # Errors
 /// Returns an error when binding or HTTP serving fails.
 pub async fn run_http_server(mut server: AnalyticsMcp, mut settings: HttpSettings) -> Result<()> {
+    if server.capability_profile() == crate::config::CapabilityProfile::BigQuery {
+        return Err(anyhow!(
+            "the BigQuery export profile is currently restricted to trusted local stdio"
+        ));
+    }
     let hosted = crate::hosted_scratchpad::HostedScratchpadVerifier::from_env(&settings, &server)?;
     if hosted.is_none() {
         settings.validate_scratchpad_profile(
