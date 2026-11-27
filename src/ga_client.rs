@@ -18,7 +18,7 @@ use mcp_toolkit_auth::upstream_oauth::{
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Client, Method, RequestBuilder, Url};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::{OnceCell, RwLock};
 
@@ -178,6 +178,20 @@ pub struct RunFunnelReportRequest {
     pub return_property_quota: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RealtimeMinuteRange {
+    /// Optional range name; must not use a reserved prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Inclusive starting minute, 0–59; defaults to 29 when omitted.
+    #[serde(alias = "startMinutesAgo", skip_serializing_if = "Option::is_none")]
+    pub start_minutes_ago: Option<u64>,
+    /// Inclusive ending minute, 0–59; defaults to 0 when omitted.
+    #[serde(alias = "endMinutesAgo", skip_serializing_if = "Option::is_none")]
+    pub end_minutes_ago: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RunRealtimeReportRequest {
     pub property_id: PropertyId,
@@ -187,7 +201,7 @@ pub struct RunRealtimeReportRequest {
     pub metric_filter: Option<Value>,
     pub order_bys: Option<Vec<Value>>,
     pub limit: Option<u64>,
-    pub minute_ranges: Option<Vec<Value>>,
+    pub minute_ranges: Option<Vec<RealtimeMinuteRange>>,
     pub return_property_quota: bool,
 }
 
@@ -1531,7 +1545,9 @@ pub(crate) fn snake_to_camel_json(value: Value) -> Value {
 
 // Normalize the provider's optional ranges before constructing any HTTP request.
 // Property-specific eligibility for minutes 30–59 is left to Google.
-fn normalize_realtime_minute_ranges(ranges: Vec<Value>) -> Result<Vec<Value>, AnalyticsError> {
+fn normalize_realtime_minute_ranges(
+    ranges: Vec<RealtimeMinuteRange>,
+) -> Result<Vec<Value>, AnalyticsError> {
     if ranges.len() > 2 {
         return Err(AnalyticsError::invalid(
             "minute_ranges",
@@ -1541,53 +1557,21 @@ fn normalize_realtime_minute_ranges(ranges: Vec<Value>) -> Result<Vec<Value>, An
     ranges
         .into_iter()
         .map(|range| {
-            let object = range.as_object().ok_or_else(|| {
-                AnalyticsError::invalid("minute_ranges", "each minute range must be an object")
-            })?;
-            let mut normalized = Map::new();
-            for (key, value) in object {
-                let provider_key = match key.as_str() {
-                    "start_minutes_ago" | "startMinutesAgo" => "startMinutesAgo",
-                    "end_minutes_ago" | "endMinutesAgo" => "endMinutesAgo",
-                    "name" => "name",
-                    _ => {
-                        return Err(AnalyticsError::invalid(
-                            "minute_ranges",
-                            "unknown minute range field",
-                        ));
-                    }
-                };
-                if normalized
-                    .insert(provider_key.to_string(), value.clone())
-                    .is_some()
-                {
-                    return Err(AnalyticsError::invalid(
-                        "minute_ranges",
-                        "duplicate minute range field",
-                    ));
-                }
+            let start = range.start_minutes_ago.unwrap_or(29);
+            let end = range.end_minutes_ago.unwrap_or(0);
+            if start > 59 || end > 59 {
+                return Err(AnalyticsError::invalid(
+                    "minute_ranges",
+                    "minute offsets must be integers between 0 and 59",
+                ));
             }
-            let minute = |key: &str, default: u64| -> Result<u64, AnalyticsError> {
-                match normalized.get(key) {
-                    None => Ok(default),
-                    Some(value) => value.as_u64().filter(|v| *v <= 59).ok_or_else(|| {
-                        AnalyticsError::invalid(
-                            "minute_ranges",
-                            "minute offsets must be integers between 0 and 59",
-                        )
-                    }),
-                }
-            };
-            if minute("startMinutesAgo", 29)? < minute("endMinutesAgo", 0)? {
+            if start < end {
                 return Err(AnalyticsError::invalid(
                     "minute_ranges",
                     "start_minutes_ago must be greater than or equal to end_minutes_ago",
                 ));
             }
-            if let Some(name) = normalized.get("name") {
-                let name = name.as_str().ok_or_else(|| {
-                    AnalyticsError::invalid("minute_ranges", "range name must be a string")
-                })?;
+            if let Some(name) = &range.name {
                 if name.trim().is_empty()
                     || name.len() > 256
                     || name.starts_with("date_range_")
@@ -1599,7 +1583,10 @@ fn normalize_realtime_minute_ranges(ranges: Vec<Value>) -> Result<Vec<Value>, An
                     ));
                 }
             }
-            Ok(Value::Object(normalized))
+
+            serde_json::to_value(range)
+                .map(snake_to_camel_json)
+                .map_err(|_| AnalyticsError::invalid("minute_ranges", "invalid range"))
         })
         .collect()
 }
@@ -1802,7 +1789,12 @@ mod tests {
 
     #[test]
     fn realtime_minute_ranges_normalize_and_reject_invalid_values() {
-        let ranges = normalize_realtime_minute_ranges(vec![
+        let normalize = |input: Vec<Value>| -> Result<Vec<Value>, AnalyticsError> {
+            let ranges = serde_json::from_value(Value::Array(input))
+                .map_err(|_| AnalyticsError::invalid("minute_ranges", "invalid range shape"))?;
+            normalize_realtime_minute_ranges(ranges)
+        };
+        let ranges = normalize(vec![
             json!({"name": "recent", "start_minutes_ago": 9, "end_minutes_ago": 0}),
             json!({"startMinutesAgo": 59, "endMinutesAgo": 30}),
         ])
@@ -1823,8 +1815,11 @@ mod tests {
             vec![json!({"start_minutes_ago": 10, "startMinutesAgo": 10})],
             vec![json!({"name": "date_range_0"})],
             vec![json!({"unknown": true})],
+            vec![json!({"start_minutes_ago": "5"})],
+            vec![json!({"endMinutesAgo": 1.5})],
+            vec![json!({"name": 123})],
         ] {
-            assert!(normalize_realtime_minute_ranges(invalid).is_err());
+            assert!(normalize(invalid).is_err());
         }
     }
 
@@ -1840,7 +1835,11 @@ mod tests {
                 metric_filter: None,
                 order_bys: None,
                 limit: Some(10),
-                minute_ranges: Some(vec![json!({"start_minutes_ago": 4, "end_minutes_ago": 0})]),
+                minute_ranges: Some(vec![RealtimeMinuteRange {
+                    name: None,
+                    start_minutes_ago: Some(4),
+                    end_minutes_ago: Some(0),
+                }]),
                 return_property_quota: true,
             },
         )

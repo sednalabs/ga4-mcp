@@ -32,8 +32,8 @@ use crate::contract;
 use crate::error::AnalyticsError;
 use crate::ga_client::{
     AccountId, AuthSource, BatchRunReportItemRequest, BatchRunReportsRequest, PaginationOptions,
-    PropertyId, RunAccessReportRequest, RunConversionsReportRequest, RunFunnelReportRequest,
-    RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
+    PropertyId, RealtimeMinuteRange, RunAccessReportRequest, RunConversionsReportRequest,
+    RunFunnelReportRequest, RunPivotReportRequest, RunRealtimeReportRequest, RunReportRequest,
     build_run_conversions_report_payload, build_run_funnel_report_payload, normalize_funnel_step,
     snake_to_camel_json, sort_object,
 };
@@ -541,7 +541,7 @@ pub struct RunRealtimeReportArgs {
     pub limit: Option<u64>,
     /// Optional Google realtime minute ranges (up to two objects with name, start_minutes_ago and end_minutes_ago; camelCase also accepted).
     #[serde(default)]
-    pub minute_ranges: Option<Vec<Value>>,
+    pub minute_ranges: Option<Vec<RealtimeMinuteRange>>,
     /// Realtime API requests accept a result limit but do not support offset pagination.
     #[serde(default)]
     pub offset: Option<u64>,
@@ -7217,7 +7217,14 @@ mod tests {
         let mut ranged_request = request;
         ranged_request["minute_ranges"] = json!([{"start_minutes_ago": 4, "end_minutes_ago": 0}]);
         let ranged_args: RunRealtimeReportArgs =
-            serde_json::from_value(ranged_request).expect("ranged request");
+            serde_json::from_value(ranged_request.clone()).expect("ranged request");
+        ranged_request["minute_ranges"] = json!([{"startMinutesAgo": 4, "endMinutesAgo": 0}]);
+        let alias_args: RunRealtimeReportArgs =
+            serde_json::from_value(ranged_request).expect("alias request");
+        assert_eq!(
+            run_realtime_query_hash(&ranged_args).expect("ranged hash"),
+            run_realtime_query_hash(&alias_args).expect("alias hash")
+        );
         assert_ne!(
             run_realtime_query_hash(&default_args).expect("default hash"),
             run_realtime_query_hash(&ranged_args).expect("ranged hash")

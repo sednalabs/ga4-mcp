@@ -1747,6 +1747,37 @@
               }
             ]
           },
+          "RealtimeMinuteRange": {
+            "additionalProperties": false,
+            "properties": {
+              "end_minutes_ago": {
+                "description": "Inclusive ending minute, 0–59; defaults to 0 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "description": "Optional range name; must not use a reserved prefix.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "start_minutes_ago": {
+                "description": "Inclusive starting minute, 0–59; defaults to 29 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
           "TabularOutputMode": {
             "enum": [
               "rows",
@@ -1819,7 +1850,9 @@
           "minute_ranges": {
             "default": null,
             "description": "Optional Google realtime minute ranges (up to two objects with name, start_minutes_ago and end_minutes_ago; camelCase also accepted).",
-            "items": true,
+            "items": {
+              "$ref": "#/$defs/RealtimeMinuteRange"
+            },
             "type": [
               "array",
               "null"
@@ -2224,6 +2257,37 @@
               }
             ]
           },
+          "RealtimeMinuteRange": {
+            "additionalProperties": false,
+            "properties": {
+              "end_minutes_ago": {
+                "description": "Inclusive ending minute, 0–59; defaults to 0 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "description": "Optional range name; must not use a reserved prefix.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "start_minutes_ago": {
+                "description": "Inclusive starting minute, 0–59; defaults to 29 when omitted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
           "TabularOutputMode": {
             "enum": [
               "rows",
@@ -2301,7 +2365,9 @@
           "minute_ranges": {
             "default": null,
             "description": "Optional Google realtime minute ranges (up to two objects with name, start_minutes_ago and end_minutes_ago; camelCase also accepted).",
-            "items": true,
+            "items": {
+              "$ref": "#/$defs/RealtimeMinuteRange"
+            },
             "type": [
               "array",
               "null"

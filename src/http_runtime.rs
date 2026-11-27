@@ -36,6 +36,10 @@ struct GuardState {
 /// # Errors
 /// Returns an error when binding or HTTP serving fails.
 pub async fn run_http_server(server: AnalyticsMcp, settings: HttpSettings) -> Result<()> {
+    settings.validate_scratchpad_profile(
+        server.capability_profile(),
+        server.accepts_upstream_request_tokens(),
+    )?;
     let server_factory = server.clone();
     let mcp_service: StreamableHttpService<AnalyticsMcp, LocalSessionManager> =
         StreamableHttpService::new(

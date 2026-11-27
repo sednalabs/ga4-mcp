@@ -280,3 +280,25 @@ fn tool_snapshot_exposes_key_events_and_realtime_minute_ranges() {
         assert!(keys.iter().any(|name| name == "minute_ranges"));
     }
 }
+
+#[test]
+fn realtime_minute_ranges_use_typed_schema() {
+    let expected = serde_json::to_value(schemars::schema_for!(
+        ga4_mcp::ga_client::RealtimeMinuteRange
+    ))
+    .expect("generated range schema");
+    let snapshot: Value =
+        serde_json::from_str(include_str!("../spec/tool_schema_snapshot.v1.json"))
+            .expect("valid schema snapshot");
+    for name in ["run_realtime_report", "scratchpad_ingest_realtime_report"] {
+        let schema = tool_input_schema(&snapshot, name);
+        assert_eq!(
+            schema["properties"]["minute_ranges"]["items"]["$ref"],
+            "#/$defs/RealtimeMinuteRange"
+        );
+        let actual = &schema["$defs"]["RealtimeMinuteRange"];
+        for key in ["type", "additionalProperties", "properties"] {
+            assert_eq!(actual[key], expected[key], "{name}: {key}");
+        }
+    }
+}
