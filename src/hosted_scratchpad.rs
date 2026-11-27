@@ -669,7 +669,7 @@ mod tests {
             "-----BEGIN PRIVATE KEY-----\n",
             "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt\n",
             "kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n",
-            "950IxEzvw/x5BMENRMrXLBJhqzO9Bm+Q6JbqA21YQmd1Kt4RzLJR1W+\n",
+            "950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+\n",
             "-----END PRIVATE KEY-----\n"
         );
         fn signed_token(subject: &str, scopes: &str) -> String {
