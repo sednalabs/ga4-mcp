@@ -1248,14 +1248,25 @@ where
         request = request.header("x-goog-user-project", project);
     }
     // No retry or redirect: a transport failure after submission is ambiguous.
-    let created = dispatch(request)
-        .await
-        .map_err(|err| AnalyticsError::MutationOutcomeUnknown {
-            status: err.status_code(),
-        })?;
+    let created =
+        dispatch(request)
+            .await
+            .map_err(|err| AnalyticsError::MutationOutcomeUnknown {
+                status: err.status_code(),
+            })?;
     let prefix = format!("{}/{}/", plan.parent, plan.collection);
-    let name = created.get("name").and_then(Value::as_str)
-        .filter(|name| name.strip_prefix(&prefix).is_some_and(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')))
+    let name = created
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| {
+            name.strip_prefix(&prefix).is_some_and(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            })
+        })
         .ok_or(AnalyticsError::MutationOutcomeUnknown { status: None })?;
     let mut readback = client
         .get(format!(
@@ -2130,9 +2141,7 @@ mod tests {
             .await
             .unwrap_err();
             assert_eq!(calls, 1);
-            let payload = crate::contract::error(error, 0)
-                .structured_content
-                .unwrap();
+            let payload = crate::contract::error(error, 0).structured_content.unwrap();
             assert_eq!(payload["ok"], false);
             assert_eq!(payload["error"]["code"], "MUTATION_OUTCOME_UNKNOWN");
             assert_eq!(payload["error"]["reason"], "mutation_outcome_unknown");
