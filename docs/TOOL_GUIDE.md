@@ -152,3 +152,9 @@ with the same filters. Actor emails and allowlisted configuration snapshots are
 omitted by default. Secret-bearing resources and unrecognised fields are never
 included in snapshots. The API exposes only Google's supported change history,
 not necessarily the complete UI audit log.
+
+The audit runtime deliberately accepts the exact explicit `analytics.edit`
+scope, not a broader mixed-scope configuration. Provider rejection messages
+are replaced with status-specific guidance to avoid reflecting actor filters
+or sensitive upstream values. An unexpectedly oversized provider page fails
+closed rather than silently dropping audit events or breaching the row bound.

@@ -423,7 +423,7 @@ impl AnalyticsApiClient {
                 .map_err(|err| match err {
                     AnalyticsError::UpstreamApi { status, .. } => AnalyticsError::UpstreamApi {
                         status,
-                        message: "change-history request rejected by Google".to_string(),
+                        message: change_history_rejection_message(status).to_string(),
                     },
                     other => other,
                 })?;
@@ -1090,6 +1090,20 @@ impl AnalyticsApiClient {
             value: access_token,
             refresh_after: Instant::now() + Duration::from_secs(refresh_in),
         })
+    }
+}
+
+// Do not echo provider messages: change-history errors can include actor email
+// filters or sensitive configuration data. Retain useful status-level guidance.
+fn change_history_rejection_message(status: u16) -> &'static str {
+    match status {
+        400 => "Google rejected the change-history filters or page token",
+        401 => "Google rejected the access token; authenticate again",
+        403 => "Google denied account access or the analytics.edit scope",
+        404 => "Google could not find the requested account or property",
+        429 => "Google change-history quota exhausted; retry with backoff",
+        500..=599 => "Google change-history service unavailable; retry with backoff",
+        _ => "change-history request rejected by Google",
     }
 }
 
@@ -2036,6 +2050,14 @@ mod tests {
             None
         );
         assert_eq!(parse_adc_quota_project_id("not-json"), None);
+    }
+
+    #[test]
+    fn change_history_rejections_preserve_status_guidance_without_raw_provider_data() {
+        assert!(change_history_rejection_message(403).contains("analytics.edit"));
+        assert!(change_history_rejection_message(400).contains("filters or page token"));
+        assert!(change_history_rejection_message(429).contains("backoff"));
+        assert!(change_history_rejection_message(503).contains("unavailable"));
     }
 
     #[test]

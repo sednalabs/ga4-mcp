@@ -102,3 +102,8 @@ tool discovery and dispatch enforce the profile; the developer schema snapshot
 remains the full registered catalogue. The audit tool does not return raw
 provider snapshots: actor email is opt-in and scalar snapshot fields are
 allowlisted. Treat even projected audit data as sensitive.
+
+The audit profile requires the exact single configured edit scope. Google
+still validates the effective request credential and account permissions.
+Do not widen the deployment's grant to unrelated scopes for convenience.
+Provider errors retain status-level diagnostics, not raw response bodies.
