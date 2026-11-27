@@ -846,6 +846,65 @@ mod tests {
         assert!(!error.to_string().contains("private fixture"));
     }
 
+    #[tokio::test]
+    async fn provider_fixture_polls_and_paginates_only_the_verified_job() {
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+        steps.push(step(
+            "POST",
+            "/bigquery/v2/projects/billing-fixture/queries",
+            Some(false),
+            json!({"jobReference":reference,"jobComplete":false}),
+        ));
+        steps.push(step(
+            "GET",
+            "/bigquery/v2/projects/billing-fixture/queries/job_1",
+            None,
+            json!({"jobComplete":true,"schema":{"fields":[{"name":"event_date"},{"name":"observed_sessions"}]},"rows":[{"f":[{"v":"20261101"},{"v":"42"}]}],"pageToken":"next"}),
+        ));
+        steps.push(step(
+            "GET",
+            "/bigquery/v2/projects/billing-fixture/jobs/job_1",
+            None,
+            json!({"jobReference":reference,"status":{"state":"DONE"}}),
+        ));
+        steps.push(step(
+            "GET",
+            "/bigquery/v2/projects/billing-fixture/queries/job_1",
+            None,
+            json!({"jobComplete":true,"rows":[{"f":[{"v":"20261102"},{"v":"43"}]}]}),
+        ));
+        let output = query_fixture(steps).await.unwrap();
+        assert_eq!(output["executed"], true);
+        assert_eq!(output["job_complete"], true);
+        assert_eq!(output["job_status_verified"], true);
+        assert_eq!(output["truncated"], false);
+        assert_eq!(output["pages_fetched"], 2);
+        assert_eq!(output["rows"][0]["observed_sessions"], "42");
+        assert_eq!(output["rows"][1]["observed_sessions"], "43");
+    }
+
+    #[tokio::test]
+    async fn interrupted_poll_never_submits_a_replacement_job() {
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        steps.push(step(
+            "POST",
+            "/bigquery/v2/projects/billing-fixture/queries",
+            Some(false),
+            json!({"jobReference":{"jobId":"job_1","projectId":"billing-fixture","location":"US"},"jobComplete":false}),
+        ));
+        steps.push(ExpectedRequest {
+            method: "GET",
+            path: "/bigquery/v2/projects/billing-fixture/queries/job_1",
+            dry_run: None,
+            reply: Err(AnalyticsError::Internal(
+                "fixture interrupted; submitted job may still run".to_string(),
+            )),
+        });
+        let error = query_fixture(steps).await.unwrap_err();
+        assert!(error.to_string().contains("submitted job may still run"));
+    }
+
     #[test]
     fn repeated_provider_page_tokens_fail_closed() {
         let mut seen = HashSet::new();
