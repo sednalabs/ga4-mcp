@@ -264,6 +264,8 @@ pub struct AnalyticsApiClient {
     mutation_http: Option<Client>,
     #[cfg(test)]
     mutation_fixture_requests: Option<MutationFixtureRequests>,
+    #[cfg(test)]
+    report_fixture_origin: Option<Url>,
     auth_mode: UpstreamAuthMode,
     token_source: UpstreamTokenSource,
     token_header: Arc<str>,
@@ -341,6 +343,8 @@ impl AnalyticsApiClient {
             mutation_http,
             #[cfg(test)]
             mutation_fixture_requests: None,
+            #[cfg(test)]
+            report_fixture_origin: None,
             auth_mode,
             token_source: settings.upstream_token_source,
             token_header: settings.upstream_token_header.clone().into(),
@@ -1039,7 +1043,41 @@ impl AnalyticsApiClient {
         self.send_json(request).await
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_report_fixture(&mut self, origin: &str) {
+        let origin = Url::parse(origin).unwrap();
+        assert_eq!(origin.scheme(), "http");
+        assert_eq!(origin.host_str(), Some("127.0.0.1"));
+        assert!(origin.port().is_some());
+        self.report_fixture_origin = Some(origin);
+        self.http = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+    }
+
     async fn send_json(&self, request: RequestBuilder) -> Result<Value, AnalyticsError> {
+        #[cfg(test)]
+        let response = if let Some(origin) = &self.report_fixture_origin {
+            let mut request = request.build().map_err(AnalyticsError::Transport)?;
+            let url = request.url();
+            assert_eq!(url.scheme(), "https");
+            assert_eq!(url.host_str(), Some("analyticsdata.googleapis.com"));
+            assert_eq!(request.method(), Method::POST);
+            assert_eq!(url.path(), "/v1beta/properties/42:runReport");
+            let mut destination = origin.clone();
+            destination.set_path(url.path());
+            destination.set_query(url.query());
+            *request.url_mut() = destination;
+            // Execute only the explicitly installed loopback fixture.
+            self.http.execute(request).await
+        } else {
+            request.send().await
+        }
+        .map_err(AnalyticsError::Transport)?;
+        #[cfg(not(test))]
         let response = request.send().await.map_err(AnalyticsError::Transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(AnalyticsError::Transport)?;
