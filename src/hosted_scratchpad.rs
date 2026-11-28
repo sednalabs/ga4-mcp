@@ -652,7 +652,6 @@ mod tests {
     #[tokio::test]
     async fn actual_http_dispatch_isolates_verified_principals_and_rejects_limit_changes() {
         use axum::{Json, Router, middleware, routing::get, routing::post};
-        use std::sync::atomic::AtomicUsize;
         use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use mcp_toolkit_auth::{
             AuthConfig,
@@ -662,6 +661,7 @@ mod tests {
             LocalStreamableHttpServiceConfig, build_local_streamable_http_service,
         };
         use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
+        use std::sync::atomic::AtomicUsize;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         const ISSUER: &str = "https://issuer.fixture.test";
@@ -746,39 +746,41 @@ mod tests {
         surface.allow_insecure_http = true;
         let auth_layer = AuthSurfaceLayer::from_config(surface).unwrap();
 
-        // Real report ingestion uses only this loopback provider. The separate
-        // identity/entitlement fixture above never sends its HTTPS requests.
+        // Report ingestion uses the real HTTPS request builder, with a test-only
+        // transport remap to this loopback provider. No Google traffic is sent.
         let report_calls = Arc::new(AtomicUsize::new(0));
         let fixture_calls = report_calls.clone();
         let provider = Router::new().route(
             "/v1beta/properties/{report}",
-            post(move |headers: axum::http::HeaderMap,
-                       axum::extract::Path(report): axum::extract::Path<String>,
-                       Json(body): Json<Value>| {
-                let calls = fixture_calls.clone();
-                async move {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    assert_eq!(report, "42:runReport");
-                    assert_eq!(
-                        headers.get("x-goog-user-project").unwrap(),
-                        "operator-fixture"
-                    );
-                    let marker = match headers.get("authorization").unwrap().to_str().unwrap() {
-                        "Bearer fixture-google-a" => "only-a",
-                        "Bearer fixture-google-b" => "only-b",
-                        _ => panic!("unexpected report credential"),
-                    };
-                    assert_eq!(body["dimensions"], json!([{"name":"country"}]));
-                    assert_eq!(body["metrics"], json!([{"name":"activeUsers"}]));
-                    Json(json!({
-                        "dimensionHeaders":[{"name":"country"}],
-                        "metricHeaders":[{"name":"activeUsers","type":"TYPE_INTEGER"}],
-                        "rows":[{"dimensionValues":[{"value":marker}],
-                                 "metricValues":[{"value":"1"}]}],
-                        "rowCount":1
-                    }))
-                }
-            }),
+            post(
+                move |headers: axum::http::HeaderMap,
+                      axum::extract::Path(report): axum::extract::Path<String>,
+                      Json(body): Json<Value>| {
+                    let calls = fixture_calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(report, "42:runReport");
+                        assert_eq!(
+                            headers.get("x-goog-user-project").unwrap(),
+                            "operator-fixture"
+                        );
+                        let marker = match headers.get("authorization").unwrap().to_str().unwrap() {
+                            "Bearer fixture-google-a" => "only-a",
+                            "Bearer fixture-google-b" => "only-b",
+                            _ => panic!("unexpected report credential"),
+                        };
+                        assert_eq!(body["dimensions"], json!([{"name":"country"}]));
+                        assert_eq!(body["metrics"], json!([{"name":"activeUsers"}]));
+                        Json(json!({
+                            "dimensionHeaders":[{"name":"country"}],
+                            "metricHeaders":[{"name":"activeUsers","type":"TYPE_INTEGER"}],
+                            "rows":[{"dimensionValues":[{"value":marker}],
+                                     "metricValues":[{"value":"1"}]}],
+                            "rowCount":1
+                        }))
+                    }
+                },
+            ),
         );
         let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_url = format!("http://{}", provider_listener.local_addr().unwrap());
@@ -787,8 +789,8 @@ mod tests {
 
         let settings = crate::config::Settings {
             analytics_scope: crate::config::DEFAULT_ANALYTICS_SCOPE.to_owned(),
-            admin_base_url: provider_url.clone(),
-            data_base_url: provider_url,
+            admin_base_url: "https://analyticsadmin.googleapis.com".to_owned(),
+            data_base_url: "https://analyticsdata.googleapis.com".to_owned(),
             http_timeout: Duration::from_secs(2),
             max_page_size: 100,
             max_pages: 2,
@@ -811,11 +813,11 @@ mod tests {
             print_tool_schema: false,
             command: None,
         };
-        let client = Arc::new(
-            crate::ga_client::AnalyticsApiClient::from_settings(&settings)
-                .await
-                .unwrap(),
-        );
+        let mut client = crate::ga_client::AnalyticsApiClient::from_settings(&settings)
+            .await
+            .unwrap();
+        client.install_report_fixture(&provider_url);
+        let client = Arc::new(client);
         let engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
         let root = Arc::new(
             ScratchpadSessionManager::new(
@@ -871,23 +873,24 @@ mod tests {
             .build()
             .unwrap();
 
-        let call_at = |url: &str, token: String, google: &'static str, tool: &'static str, args: Value| {
-            http.post(url)
-                .bearer_auth(token)
-                .header("x-google-token", google)
-                .header("accept", "application/json, text/event-stream")
-                .header("mcp-protocol-version", "2026-07-28")
-                .header("mcp-method", "tools/call")
-                .header("mcp-name", tool)
-                .json(&json!({
-                    "jsonrpc":"2.0","id":1,"method":"tools/call",
-                    "params":{"name":tool,"arguments":args,"_meta":{
-                        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
-                        "io.modelcontextprotocol/clientInfo":{"name":"fixture","version":"1"},
-                        "io.modelcontextprotocol/clientCapabilities":{}
-                    }}
-                }))
-        };
+        let call_at =
+            |url: &str, token: String, google: &'static str, tool: &'static str, args: Value| {
+                http.post(url)
+                    .bearer_auth(token)
+                    .header("x-google-token", google)
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "tools/call")
+                    .header("mcp-name", tool)
+                    .json(&json!({
+                        "jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name":tool,"arguments":args,"_meta":{
+                            "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                            "io.modelcontextprotocol/clientInfo":{"name":"fixture","version":"1"},
+                            "io.modelcontextprotocol/clientCapabilities":{}
+                        }}
+                    }))
+            };
         let call = |token, google, tool, args| call_at(&endpoint, token, google, tool, args);
         async fn payload(request: RequestBuilder) -> Value {
             let response = request.send().await.unwrap();
@@ -1064,11 +1067,16 @@ mod tests {
         ))
         .await;
         assert_eq!(invalid_google["ok"], false);
-        let legacy = call(a.clone(), "fixture-google-a", "scratchpad_list_sessions", json!({}))
-            .header("mcp-session-id", "not-authority")
-            .send()
-            .await
-            .unwrap();
+        let legacy = call(
+            a.clone(),
+            "fixture-google-a",
+            "scratchpad_list_sessions",
+            json!({}),
+        )
+        .header("mcp-session-id", "not-authority")
+        .send()
+        .await
+        .unwrap();
         assert_eq!(legacy.status(), StatusCode::METHOD_NOT_ALLOWED);
 
         // Independent runtime and fresh manager: never resurrect process-local
@@ -1084,11 +1092,11 @@ mod tests {
             .unwrap(),
         );
         server.scratchpad_sessions = fresh_root;
-        server.client = Arc::new(
-            crate::ga_client::AnalyticsApiClient::from_settings(&settings)
-                .await
-                .unwrap(),
-        );
+        let mut fresh_client = crate::ga_client::AnalyticsApiClient::from_settings(&settings)
+            .await
+            .unwrap();
+        fresh_client.install_report_fixture(&provider_url);
+        server.client = Arc::new(fresh_client);
         let fresh_app = build_app(server);
         let fresh_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fresh_endpoint = format!("http://{}/mcp", fresh_listener.local_addr().unwrap());
