@@ -32,6 +32,7 @@ pub struct AnalyticsMcp {
     pub client: Arc<AnalyticsApiClient>,
     pub scratchpad_sessions: SharedScratchpadSessionManager,
     pub(crate) mutation_approvals: Arc<mcp_toolkit_core::scoped_cursor::ScopedCursorStore>,
+    pub(crate) hosted_scratchpad: Option<Arc<crate::hosted_scratchpad::HostedScratchpadVerifier>>,
     capability_profile: CapabilityProfile,
     upstream_token_source: UpstreamTokenSource,
     upstream_token_header: String,
@@ -50,6 +51,7 @@ impl AnalyticsMcp {
             client,
             scratchpad_sessions,
             mutation_approvals: Arc::new(crate::mutations::approval_store()),
+            hosted_scratchpad: None,
             capability_profile,
             upstream_token_source,
             upstream_token_header,
@@ -72,6 +74,7 @@ impl AnalyticsMcp {
 
     fn is_tool_allowed(&self, tool_name: &str) -> bool {
         tool_allowed_for_profile(self.capability_profile, tool_name)
+            && !(self.hosted_scratchpad.is_some() && tool_name == "scratchpad_set_runtime_limits")
     }
 
     /// Return the upstream token source used by request dispatch.
@@ -140,7 +143,6 @@ impl ServerHandler for AnalyticsMcp {
             self.upstream_token_source,
             &self.upstream_token_header,
         );
-        let tool_context = ToolCallContext::new(self, request, context);
         async move {
             if !self.is_tool_allowed(&tool_name) {
                 emit_event(
@@ -183,9 +185,31 @@ impl ServerHandler for AnalyticsMcp {
                 ],
             );
 
+            // A hosted scratchpad tool never receives the root manager. Resolve
+            // both verified identities and the current provider authority before
+            // constructing the request-specific handler.
+            let mut scoped = self.clone();
+            if let Some(verifier) = &self.hosted_scratchpad
+                && tool_name.starts_with("scratchpad_")
+            {
+                match verifier
+                    .manager_for_request(
+                        self.scratchpad_sessions.as_ref(),
+                        &context,
+                        &request,
+                        request_token.as_deref(),
+                        &token_header,
+                    )
+                    .await
+                {
+                    Ok(manager) => scoped.scratchpad_sessions = Arc::new(manager),
+                    Err(error) => return Ok(contract::error(error, 0).into()),
+                }
+            }
+            let tool_context = ToolCallContext::new(&scoped, request, context);
             let result = with_request_access_token_override(
                 request_token,
-                self.tool_router.call(tool_context),
+                scoped.tool_router.call(tool_context),
             )
             .await;
 

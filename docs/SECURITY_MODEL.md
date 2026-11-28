@@ -197,3 +197,39 @@ readback without retrying creation. Unconfirmed creates return Contract V1 code
 status when available. Do not automatically resubmit; inspect and reconcile the
 resource before any separately approved submission.
 No deletion, patching, arbitrary Admin API paths or live write tests are provided.
+
+## Hosted scratchpad request isolation (activation blocked)
+
+The default #45 containment remains unchanged. The hosted implementation is
+available to offline qualification fixtures only. Setting
+`GA4_MCP_ENABLE_HOSTED_SCRATCHPAD=true` fails startup until native TLS and
+deployment isolation have been qualified and the activation gate is removed.
+The eventual explicitly enabled deployment requires the scratchpad
+profile, native TLS, strict JWKS verification with issuer, audience and
+required scopes, an HTTPS MCP resource URL, request-only Google tokens in a
+separate header, official upstream origins, an explicit operator-configured
+`GOOGLE_ANALYTICS_MCP_QUOTA_PROJECT` (or `--quota-project`), and a maximum
+900-second idle TTL. Both authority discovery and Analytics API calls use the
+same fixed quota project. Request-only mode never derives a project from
+local ADC, and caller-provided quota headers are not forwarded. Google UserInfo
+does not receive the quota header.
+It forces stateless POST routing and disallows legacy MCP session IDs, global
+runtime-limit mutation and server credential fallback. The operator controls
+`GA4_MCP_HOSTED_MAX_SESSIONS_PER_PRINCIPAL` (default at most four).
+
+Each scratchpad dispatch consumes a one-use request-bound MCP identity witness
+and verifies the Google access token using Google's HTTPS OIDC UserInfo and
+GA Admin account summaries (requires OpenID/profile and Analytics read access).
+The complete bounded property set, verified Google subject and digest of the
+current Google credential define a scoped toolkit manager; no raw tokens or
+identities are stored in paths or emitted in diagnostics. Ingest is restricted
+to a property in that snapshot. Switching Google accounts, rotating tokens or
+changing the accessible-property set creates a different namespace; existing
+sessions are not silently inherited. Cached results are not proof of live
+metric-level permissions: use short TTLs, and do not expose the mode where
+stricter per-field revocation is required. The mode will remain opt-in after deployment qualification; it cannot currently be enabled in production.
+Scratchpad state and quota counters are process-local: do not load-balance this
+profile across replicas or treat per-process limits as deployment-wide quotas.
+The offline dispatch fixture exercises the production router and independently
+constructed replicas; it does not qualify native TLS deployment, distributed
+quota custody, or shared storage.

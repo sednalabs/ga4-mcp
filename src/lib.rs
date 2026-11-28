@@ -23,6 +23,7 @@ pub mod config;
 pub mod contract;
 pub mod error;
 pub mod ga_client;
+mod hosted_scratchpad;
 pub mod http_config;
 pub mod http_runtime;
 mod mutations;

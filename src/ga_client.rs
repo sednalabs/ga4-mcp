@@ -264,6 +264,8 @@ pub struct AnalyticsApiClient {
     mutation_http: Option<Client>,
     #[cfg(test)]
     mutation_fixture_requests: Option<MutationFixtureRequests>,
+    #[cfg(test)]
+    report_fixture_origin: Option<Url>,
     auth_mode: UpstreamAuthMode,
     token_source: UpstreamTokenSource,
     token_header: Arc<str>,
@@ -329,10 +331,11 @@ impl AnalyticsApiClient {
 
         let auth_mode = select_auth_mode(settings)?;
 
-        let quota_project = settings
-            .quota_project
-            .clone()
-            .or_else(|| adc_quota_project_id_for_auth_mode(&auth_mode, settings.shared_adc));
+        let quota_project = select_quota_project(
+            settings.upstream_token_source,
+            settings.quota_project.clone(),
+            || adc_quota_project_id_for_auth_mode(&auth_mode, settings.shared_adc),
+        );
 
         Ok(Self {
             http,
@@ -340,6 +343,8 @@ impl AnalyticsApiClient {
             mutation_http,
             #[cfg(test)]
             mutation_fixture_requests: None,
+            #[cfg(test)]
+            report_fixture_origin: None,
             auth_mode,
             token_source: settings.upstream_token_source,
             token_header: settings.upstream_token_header.clone().into(),
@@ -373,6 +378,11 @@ impl AnalyticsApiClient {
 
     pub fn upstream_token_header(&self) -> &str {
         self.token_header.as_ref()
+    }
+
+    pub(crate) fn uses_official_google_origins(&self) -> bool {
+        self.admin_base_url.as_ref() == "https://analyticsadmin.googleapis.com"
+            && self.data_base_url.as_ref() == "https://analyticsdata.googleapis.com"
     }
 
     pub fn quota_project_configured(&self) -> bool {
@@ -1033,7 +1043,41 @@ impl AnalyticsApiClient {
         self.send_json(request).await
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_report_fixture(&mut self, origin: &str) {
+        let origin = Url::parse(origin).unwrap();
+        assert_eq!(origin.scheme(), "http");
+        assert_eq!(origin.host_str(), Some("127.0.0.1"));
+        assert!(origin.port().is_some());
+        self.report_fixture_origin = Some(origin);
+        self.http = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+    }
+
     async fn send_json(&self, request: RequestBuilder) -> Result<Value, AnalyticsError> {
+        #[cfg(test)]
+        let response = if let Some(origin) = &self.report_fixture_origin {
+            let mut request = request.build().map_err(AnalyticsError::Transport)?;
+            let url = request.url();
+            assert_eq!(url.scheme(), "https");
+            assert_eq!(url.host_str(), Some("analyticsdata.googleapis.com"));
+            assert_eq!(request.method(), Method::POST);
+            assert_eq!(url.path(), "/v1beta/properties/42:runReport");
+            let mut destination = origin.clone();
+            destination.set_path(url.path());
+            destination.set_query(url.query());
+            *request.url_mut() = destination;
+            // Execute only the explicitly installed loopback fixture.
+            self.http.execute(request).await
+        } else {
+            request.send().await
+        }
+        .map_err(AnalyticsError::Transport)?;
+        #[cfg(not(test))]
         let response = request.send().await.map_err(AnalyticsError::Transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(AnalyticsError::Transport)?;
@@ -1507,7 +1551,7 @@ fn validate_oauth_token_uri(token_uri: &str) -> Result<(), AnalyticsError> {
     Ok(())
 }
 
-fn parse_request_token_header_value(
+pub(crate) fn parse_request_token_header_value(
     raw_value: Option<&str>,
     header_name: &str,
 ) -> Result<Option<String>, AnalyticsError> {
@@ -1996,6 +2040,21 @@ pub(crate) fn sort_object(value: Value) -> Value {
         Value::Array(values) => Value::Array(values.into_iter().map(sort_object).collect()),
         other => other,
     }
+}
+
+// Request-only credentials must never inherit an unrelated local ADC quota project.
+fn select_quota_project(
+    token_source: UpstreamTokenSource,
+    configured: Option<String>,
+    adc: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    configured.or_else(|| {
+        if token_source == UpstreamTokenSource::RequestHeader {
+            None
+        } else {
+            adc()
+        }
+    })
 }
 
 fn adc_quota_project_id_for_auth_mode(
@@ -2575,6 +2634,30 @@ mod tests {
         let root = PathBuf::from("target").join("ga4-mcp-test-fixtures");
         std::fs::create_dir_all(&root).expect("fixture root should be writable");
         root.join(name)
+    }
+
+    #[test]
+    fn request_only_quota_never_uses_ambient_adc() {
+        assert_eq!(
+            select_quota_project(UpstreamTokenSource::RequestHeader, None, || {
+                panic!("request-only mode must not consult ADC")
+            }),
+            None
+        );
+        assert_eq!(
+            select_quota_project(
+                UpstreamTokenSource::RequestHeader,
+                Some("operator-project".to_owned()),
+                || panic!("explicit project must not consult ADC"),
+            ),
+            Some("operator-project".to_owned())
+        );
+        assert_eq!(
+            select_quota_project(UpstreamTokenSource::Config, None, || {
+                Some("local-adc-project".to_owned())
+            }),
+            Some("local-adc-project".to_owned())
+        );
     }
 
     #[test]
