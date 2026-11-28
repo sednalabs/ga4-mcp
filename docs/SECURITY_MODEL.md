@@ -198,10 +198,13 @@ status when available. Do not automatically resubmit; inspect and reconcile the
 resource before any separately approved submission.
 No deletion, patching, arbitrary Admin API paths or live write tests are provided.
 
-## Opt-in hosted scratchpad request isolation
+## Hosted scratchpad request isolation (activation blocked)
 
-The default #45 containment remains unchanged. An explicitly enabled
-`GA4_MCP_ENABLE_HOSTED_SCRATCHPAD=true` deployment requires the scratchpad
+The default #45 containment remains unchanged. The hosted implementation is
+available to offline qualification fixtures only. Setting
+`GA4_MCP_ENABLE_HOSTED_SCRATCHPAD=true` fails startup until native TLS and
+deployment isolation have been qualified and the activation gate is removed.
+The eventual explicitly enabled deployment requires the scratchpad
 profile, native TLS, strict JWKS verification with issuer, audience and
 required scopes, an HTTPS MCP resource URL, request-only Google tokens in a
 separate header, official upstream origins, an explicit operator-configured
@@ -224,7 +227,7 @@ to a property in that snapshot. Switching Google accounts, rotating tokens or
 changing the accessible-property set creates a different namespace; existing
 sessions are not silently inherited. Cached results are not proof of live
 metric-level permissions: use short TTLs, and do not expose the mode where
-stricter per-field revocation is required. The mode remains opt-in and requires deployment qualification before production use.
+stricter per-field revocation is required. The mode will remain opt-in after deployment qualification; it cannot currently be enabled in production.
 Scratchpad state and quota counters are process-local: do not load-balance this
 profile across replicas or treat per-process limits as deployment-wide quotas.
 The offline dispatch fixture exercises the production router and independently
