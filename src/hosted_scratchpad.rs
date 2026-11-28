@@ -938,6 +938,22 @@ mod tests {
             payload.clone()
         }
 
+        // The auth layer can return metadata and challenges without calling
+        // the inner service. A disallowed Host must still be rejected first.
+        for path in ["/mcp", "/.well-known/oauth-protected-resource/mcp"] {
+            let url = format!("{}{}", endpoint.strip_suffix("/mcp").unwrap(), path);
+            let denied = http
+                .get(url)
+                .header("host", "untrusted.fixture.test")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                denied.status(),
+                mcp_toolkit_http::host::HostValidationError::NotAllowed.status_code()
+            );
+        }
+
         let a = signed_token("mcp-a", "analytics:read");
         let b = signed_token("mcp-b", "analytics:read");
         let session = json!({"session_id":"same"});
