@@ -175,6 +175,13 @@ pub(crate) fn build_http_router(
             guard_state.clone(),
             inbound_auth_guard,
         ))
+        .with_state(guard_state.clone());
+    if let Some((auth_layer, _)) = auth_layer {
+        router = router.layer(auth_layer);
+    }
+    // Axum executes the last-added layer first. Transport admission must
+    // precede auth, including discovery responses handled by AuthSurfaceLayer.
+    router = router
         .layer(middleware::from_fn_with_state(
             guard_state.clone(),
             host_guard,
@@ -183,14 +190,10 @@ pub(crate) fn build_http_router(
             guard_state.clone(),
             client_ip_guard,
         ))
-        .with_state(guard_state.clone());
-    if let Some((auth_layer, _)) = auth_layer {
-        router = router.layer(auth_layer);
-    }
-    router = router.layer(middleware::from_fn_with_state(
-        guard_state.clone(),
-        request_audit,
-    ));
+        .layer(middleware::from_fn_with_state(
+            guard_state.clone(),
+            request_audit,
+        ));
 
     Ok(router)
 }
