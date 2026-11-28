@@ -706,45 +706,48 @@ mod tests {
         let jwks_url = format!("http://{}/jwks", jwks_listener.local_addr().unwrap());
         let jwks_task =
             tokio::spawn(async move { axum::serve(jwks_listener, jwks).await.unwrap() });
-        let authenticator = Arc::new(
-            Authenticator::new(AuthConfig {
-                mode: AuthMode::Jwks,
-                strict_oauth: true,
-                issuer: Some(ISSUER.to_owned()),
-                audience: Some(RESOURCE.to_owned()),
-                jwks_url: Some(jwks_url.clone()),
-                required_scopes: vec!["analytics:read".to_owned()],
-                jti_ttl_s: 0.0,
-                jti_cache_size: 0,
-                ..Default::default()
-            })
-            .unwrap(),
-        );
-        let mut surface = AuthSurfaceConfig::single_issuer(
-            "https://resource.fixture.test".to_owned(),
-            IssuerEntry {
-                resource_path: "/mcp".to_owned(),
-                issuer: ISSUER.to_owned(),
-                authorization_endpoint: format!("{ISSUER}/authorize"),
-                token_endpoint: format!("{ISSUER}/token"),
-                registration_endpoint: None,
-                jwks_uri: Some(jwks_url),
-                introspection_endpoint: None,
-                device_authorization_endpoint: None,
-                grant_types_supported: None,
-                client_id_metadata_document_supported: None,
-                token_endpoint_auth_methods_supported: None,
-                code_challenge_methods_supported: None,
-                realm: "fixture".to_owned(),
-                scopes_supported: vec!["analytics:read".to_owned()],
-                allowed_client_ids: HashSet::new(),
-                authenticator: authenticator.clone(),
-                resource_url_override: Some(RESOURCE.to_owned()),
-            },
-        );
-        // Loopback JWKS fixture only. Production startup still requires TLS.
-        surface.allow_insecure_http = true;
-        let auth_layer = AuthSurfaceLayer::from_config(surface).unwrap();
+        let build_auth = || {
+            let authenticator = Arc::new(
+                Authenticator::new(AuthConfig {
+                    mode: AuthMode::Jwks,
+                    strict_oauth: true,
+                    issuer: Some(ISSUER.to_owned()),
+                    audience: Some(RESOURCE.to_owned()),
+                    jwks_url: Some(jwks_url.clone()),
+                    required_scopes: vec!["analytics:read".to_owned()],
+                    jti_ttl_s: 0.0,
+                    jti_cache_size: 0,
+                    ..Default::default()
+                })
+                .unwrap(),
+            );
+            let mut surface = AuthSurfaceConfig::single_issuer(
+                "https://resource.fixture.test".to_owned(),
+                IssuerEntry {
+                    resource_path: "/mcp".to_owned(),
+                    issuer: ISSUER.to_owned(),
+                    authorization_endpoint: format!("{ISSUER}/authorize"),
+                    token_endpoint: format!("{ISSUER}/token"),
+                    registration_endpoint: None,
+                    jwks_uri: Some(jwks_url.clone()),
+                    introspection_endpoint: None,
+                    device_authorization_endpoint: None,
+                    grant_types_supported: None,
+                    client_id_metadata_document_supported: None,
+                    token_endpoint_auth_methods_supported: None,
+                    code_challenge_methods_supported: None,
+                    realm: "fixture".to_owned(),
+                    scopes_supported: vec!["analytics:read".to_owned()],
+                    allowed_client_ids: HashSet::new(),
+                    authenticator: authenticator.clone(),
+                    resource_url_override: Some(RESOURCE.to_owned()),
+                },
+            );
+            // Loopback JWKS fixture only. Production startup still requires TLS.
+            surface.allow_insecure_http = true;
+            let auth_layer = AuthSurfaceLayer::from_config(surface).unwrap();
+            (authenticator, auth_layer)
+        };
 
         // Report ingestion uses the real HTTPS request builder, with a test-only
         // transport remap to this loopback provider. No Google traffic is sent.
@@ -802,7 +805,7 @@ mod tests {
             quota_project: Some("operator-fixture".to_owned()),
             shared_adc: true,
             scratchpad_session_ttl: Duration::from_secs(60),
-            scratchpad_max_sessions: 2,
+            scratchpad_max_sessions: 3,
             scratchpad_max_tables_per_session: 4,
             scratchpad_max_rows_per_session: 100,
             scratchpad_max_memory_mb: 128,
@@ -822,7 +825,7 @@ mod tests {
         let root = Arc::new(
             ScratchpadSessionManager::new(
                 engine,
-                ScratchpadSessionConfig::new(Duration::from_secs(60), 2, 4, 100, 128),
+                ScratchpadSessionConfig::new(Duration::from_secs(60), 3, 4, 100, 128),
             )
             .unwrap(),
         );
@@ -845,6 +848,7 @@ mod tests {
             dispatch_fixture: true,
         }));
         let build_app = |server: AnalyticsMcp| {
+            let (authenticator, auth_layer) = build_auth();
             let runtime = build_local_streamable_http_service(
                 move || Ok(server.clone()),
                 LocalStreamableHttpServiceConfig {
@@ -858,10 +862,10 @@ mod tests {
             Router::new()
                 .nest_service("/mcp", runtime.service)
                 .layer(middleware::from_fn_with_state(
-                    HostedAuthGuard::new(authenticator.clone(), "x-google-token".to_owned()),
+                    HostedAuthGuard::new(authenticator, "x-google-token".to_owned()),
                     verify_hosted_mcp_request,
                 ))
-                .layer(auth_layer.clone())
+                .layer(auth_layer)
         };
         let app = build_app(server.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1013,7 +1017,7 @@ mod tests {
         ))
         .await;
         assert_eq!(limit["ok"], false);
-        assert_eq!(root.max_sessions_limit(), 2);
+        assert_eq!(root.max_sessions_limit(), 3);
         let extra = payload(call(
             a.clone(),
             "fixture-google-a",
@@ -1022,6 +1026,34 @@ mod tests {
         ))
         .await;
         assert_eq!(extra["ok"], false);
+        // Global capacity is not full. Changing upstream account or token
+        // must not reset the verified MCP principal's session budget.
+        for google in ["fixture-google-a-rotated", "fixture-google-b"] {
+            let extra = payload(call(
+                a.clone(),
+                google,
+                "scratchpad_open_session",
+                json!({"session_id":"extra"}),
+            ))
+            .await;
+            assert_eq!(extra["ok"], false);
+        }
+        let third = payload(call(
+            signed_token("mcp-c", "analytics:read"),
+            "fixture-google-a",
+            "scratchpad_open_session",
+            session.clone(),
+        ))
+        .await;
+        assert_eq!(third["ok"], true);
+        let fourth = payload(call(
+            signed_token("mcp-d", "analytics:read"),
+            "fixture-google-a",
+            "scratchpad_open_session",
+            session.clone(),
+        ))
+        .await;
+        assert_eq!(fourth["ok"], false);
 
         let dropped = payload(call(
             a.clone(),
@@ -1107,7 +1139,7 @@ mod tests {
         let fresh_root = Arc::new(
             ScratchpadSessionManager::new(
                 fresh_engine,
-                ScratchpadSessionConfig::new(Duration::from_secs(60), 2, 4, 100, 128),
+                ScratchpadSessionConfig::new(Duration::from_secs(60), 3, 4, 100, 128),
             )
             .unwrap(),
         );
