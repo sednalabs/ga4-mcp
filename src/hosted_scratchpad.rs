@@ -1363,7 +1363,11 @@ mod tests {
         ))
         .await;
         assert_eq!(after_replica_shutdown["ok"], true);
-        assert!(after_replica_shutdown["data"].to_string().contains("only-b"));
+        assert!(
+            after_replica_shutdown["data"]
+                .to_string()
+                .contains("only-b")
+        );
         assert_eq!(report_calls.load(Ordering::SeqCst), 7);
         read_replicas[1].1.abort();
         provider_task.abort();
