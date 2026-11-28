@@ -651,16 +651,13 @@ mod tests {
 
     #[tokio::test]
     async fn actual_http_dispatch_isolates_verified_principals_and_rejects_limit_changes() {
-        use axum::{Json, Router, middleware, routing::get, routing::post};
+        use axum::{Json, Router, routing::get, routing::post};
         use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use mcp_toolkit_auth::{
             AuthConfig,
             surface::{AuthSurfaceConfig, AuthSurfaceLayer, IssuerEntry},
         };
-        use mcp_toolkit_http::streamable::{
-            LocalStreamableHttpServiceConfig, build_local_streamable_http_service,
-        };
-        use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
+        use std::net::SocketAddr;
         use std::sync::atomic::AtomicUsize;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -707,20 +704,18 @@ mod tests {
         let jwks_task =
             tokio::spawn(async move { axum::serve(jwks_listener, jwks).await.unwrap() });
         let build_auth = || {
-            let authenticator = Arc::new(
-                Authenticator::new(AuthConfig {
-                    mode: AuthMode::Jwks,
-                    strict_oauth: true,
-                    issuer: Some(ISSUER.to_owned()),
-                    audience: Some(RESOURCE.to_owned()),
-                    jwks_url: Some(jwks_url.clone()),
-                    required_scopes: vec!["analytics:read".to_owned()],
-                    jti_ttl_s: 0.0,
-                    jti_cache_size: 0,
-                    ..Default::default()
-                })
-                .unwrap(),
-            );
+            let auth_config = AuthConfig {
+                mode: AuthMode::Jwks,
+                strict_oauth: true,
+                issuer: Some(ISSUER.to_owned()),
+                audience: Some(RESOURCE.to_owned()),
+                jwks_url: Some(jwks_url.clone()),
+                required_scopes: vec!["analytics:read".to_owned()],
+                jti_ttl_s: 0.0,
+                jti_cache_size: 0,
+                ..Default::default()
+            };
+            let authenticator = Arc::new(Authenticator::new(auth_config.clone()).unwrap());
             let mut surface = AuthSurfaceConfig::single_issuer(
                 "https://resource.fixture.test".to_owned(),
                 IssuerEntry {
@@ -746,7 +741,7 @@ mod tests {
             // Loopback JWKS fixture only. Production startup still requires TLS.
             surface.allow_insecure_http = true;
             let auth_layer = AuthSurfaceLayer::from_config(surface).unwrap();
-            (authenticator, auth_layer)
+            (authenticator, auth_layer, auth_config)
         };
 
         // Report ingestion uses the real HTTPS request builder, with a test-only
@@ -848,29 +843,42 @@ mod tests {
             dispatch_fixture: true,
         }));
         let build_app = |server: AnalyticsMcp| {
-            let (authenticator, auth_layer) = build_auth();
-            let runtime = build_local_streamable_http_service(
-                move || Ok(server.clone()),
-                LocalStreamableHttpServiceConfig {
-                    server_config: StreamableHttpServerConfig::default()
-                        .with_allowed_hosts(["127.0.0.1".to_owned()])
-                        .with_legacy_session_mode(false)
-                        .with_json_response(true),
-                    ..Default::default()
+            let (authenticator, auth_layer, auth_config) = build_auth();
+            let http_settings = HttpSettings {
+                bind_addr: "127.0.0.1:0".parse().unwrap(),
+                allow_non_loopback: false,
+                allow_local_single_user_scratchpad_http: false,
+                allowed_hosts: HashSet::from(["127.0.0.1".to_owned()]),
+                allowed_cidrs: vec!["127.0.0.1/32".parse().unwrap()],
+                tls_cert_path: None,
+                tls_key_path: None,
+                auth: crate::http_config::HttpAuthSettings {
+                    enabled: true,
+                    realm: "fixture".to_owned(),
+                    resource_url: Some(RESOURCE.to_owned()),
+                    issuer: Some(ISSUER.to_owned()),
+                    required_scopes: vec!["analytics:read".to_owned()],
+                    scopes_supported: vec!["analytics:read".to_owned()],
+                    allowed_client_ids: Vec::new(),
+                    auth_config,
                 },
-            );
-            Router::new()
-                .nest_service("/mcp", runtime.service)
-                .layer(middleware::from_fn_with_state(
-                    HostedAuthGuard::new(authenticator, "x-google-token".to_owned()),
-                    verify_hosted_mcp_request,
-                ))
-                .layer(auth_layer)
+                stateless_http: true,
+            };
+            crate::http_runtime::build_http_router(
+                server,
+                &http_settings,
+                Some((auth_layer, authenticator)),
+            )
+            .unwrap()
         };
         let app = build_app(server.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .unwrap()
+        });
         let http = Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(10))
@@ -1153,7 +1161,14 @@ mod tests {
         let fresh_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fresh_endpoint = format!("http://{}/mcp", fresh_listener.local_addr().unwrap());
         let fresh_task =
-            tokio::spawn(async move { axum::serve(fresh_listener, fresh_app).await.unwrap() });
+            tokio::spawn(async move {
+                axum::serve(
+                    fresh_listener,
+                    fresh_app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap()
+            });
         for (token, google) in [
             (a.clone(), "fixture-google-a"),
             (b.clone(), "fixture-google-b"),
