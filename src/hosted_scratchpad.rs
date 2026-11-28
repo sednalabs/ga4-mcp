@@ -940,18 +940,24 @@ mod tests {
         assert_eq!(denied_ingest["ok"], false);
         assert_eq!(report_calls.load(Ordering::SeqCst), 0);
         let (a_ingest, b_ingest) = tokio::join!(
-            payload(call(
-                a.clone(),
-                "fixture-google-a",
-                "scratchpad_ingest_report",
-                report.clone()
-            )),
-            payload(call(
-                b.clone(),
-                "fixture-google-b",
-                "scratchpad_ingest_report",
-                report.clone()
-            ))
+            payload(
+                call(
+                    a.clone(),
+                    "fixture-google-a",
+                    "scratchpad_ingest_report",
+                    report.clone()
+                )
+                .header("x-goog-user-project", "untrusted-caller-project")
+            ),
+            payload(
+                call(
+                    b.clone(),
+                    "fixture-google-b",
+                    "scratchpad_ingest_report",
+                    report.clone()
+                )
+                .header("x-goog-user-project", "another-caller-project")
+            )
         );
         assert_eq!(a_ingest["ok"], true, "{a_ingest}");
         assert_eq!(b_ingest["ok"], true, "{b_ingest}");
@@ -1048,6 +1054,22 @@ mod tests {
             invalid.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
         ));
+        for missing_header in ["authorization", "x-google-token"] {
+            let mut request = call(
+                a.clone(),
+                "fixture-google-a",
+                "scratchpad_list_sessions",
+                json!({}),
+            )
+            .build()
+            .unwrap();
+            request.headers_mut().remove(missing_header);
+            let missing = http.execute(request).await.unwrap();
+            assert!(matches!(
+                missing.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            ));
+        }
         let duplicate = call(
             a.clone(),
             "fixture-google-a",
@@ -1079,10 +1101,8 @@ mod tests {
         .unwrap();
         assert_eq!(legacy.status(), StatusCode::METHOD_NOT_ALLOWED);
 
-        // Independent runtime and fresh manager: never resurrect process-local
-        // state from the same logical session identifier or verified credentials.
-        task.abort();
-        let _ = task.await;
+        // An independent runtime and fresh manager must not expose the
+        // process-local state of the first runtime, even while both are alive.
         let fresh_engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
         let fresh_root = Arc::new(
             ScratchpadSessionManager::new(
@@ -1102,7 +1122,10 @@ mod tests {
         let fresh_endpoint = format!("http://{}/mcp", fresh_listener.local_addr().unwrap());
         let fresh_task =
             tokio::spawn(async move { axum::serve(fresh_listener, fresh_app).await.unwrap() });
-        for (token, google) in [(a, "fixture-google-a"), (b, "fixture-google-b")] {
+        for (token, google) in [
+            (a.clone(), "fixture-google-a"),
+            (b.clone(), "fixture-google-b"),
+        ] {
             let listing = payload(call_at(
                 &fresh_endpoint,
                 token,
@@ -1114,6 +1137,27 @@ mod tests {
             assert_eq!(listing["ok"], true);
             assert_eq!(listing["data"]["returned"], 0);
         }
+        let original = payload(call(
+            b.clone(),
+            "fixture-google-b",
+            "scratchpad_list_sessions",
+            json!({}),
+        ))
+        .await;
+        assert_eq!(original["ok"], true);
+        assert_eq!(original["data"]["returned"], 1);
+        task.abort();
+        let _ = task.await;
+        let after_shutdown = payload(call_at(
+            &fresh_endpoint,
+            b,
+            "fixture-google-b",
+            "scratchpad_list_sessions",
+            json!({}),
+        ))
+        .await;
+        assert_eq!(after_shutdown["ok"], true);
+        assert_eq!(after_shutdown["data"]["returned"], 0);
         assert_eq!(report_calls.load(Ordering::SeqCst), 2);
         fresh_task.abort();
         provider_task.abort();
