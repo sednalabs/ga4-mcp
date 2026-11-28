@@ -717,6 +717,51 @@ fn unique_page_token(
     Ok(token)
 }
 
+// Validate the actual aggregate cells, not just the column names. In particular,
+// a malformed provider response must not leak arbitrary strings in count fields
+// or bypass the minimum-group threshold enforced by the fixed SQL templates.
+fn valid_aggregate_cell(name: &str, value: &Value, plan: &ExportPlan) -> bool {
+    let Some(value) = value.as_str() else {
+        return false;
+    };
+    match name {
+        "event_date" => {
+            value.len() == 8
+                && value.bytes().all(|b| b.is_ascii_digit())
+                && value >= plan.start_suffix.as_str()
+                && value <= plan.end_suffix.as_str()
+                && parse_date(
+                    "event_date",
+                    &format!("{}-{}-{}", &value[..4], &value[4..6], &value[6..]),
+                )
+                .is_ok()
+        }
+        "event_label" | "next_event" | "first_user_medium" | "item_category" => {
+            if value == "(other)" {
+                return true;
+            }
+            let max = if name == "item_category" { 64 } else { 40 };
+            !value.is_empty()
+                && value.len() <= max
+                && value.as_bytes()[0].is_ascii_alphabetic()
+                && value.bytes().all(|b| {
+                    b.is_ascii_alphanumeric()
+                        || b == b'_'
+                        || (matches!(name, "first_user_medium" | "item_category") && b == b'-')
+                        || (name == "item_category" && b == b' ')
+                })
+        }
+        "event_count" | "observed_sessions" | "transitions" | "item_records" => {
+            value.parse::<i64>().is_ok_and(|count| count >= 5)
+        }
+        "observed_users" | "purchase_events" | "purchase_item_records" => {
+            value.parse::<i64>().is_ok_and(|count| count >= 0)
+        }
+        "purchased_quantity" => value.parse::<i64>().is_ok(),
+        _ => false,
+    }
+}
+
 fn append_rows(
     page: &Value,
     plan: &ExportPlan,
@@ -752,7 +797,7 @@ fn append_rows(
         let mut values = serde_json::Map::new();
         for (field, name) in fields.iter().zip(&plan.columns) {
             let value = field.get("v").ok_or_else(bad_provider)?;
-            if !value.is_null() && !value.as_str().is_some_and(|s| s.len() <= 128) {
+            if !valid_aggregate_cell(name, value, plan) {
                 return Err(bad_provider());
             }
             values.insert((*name).to_string(), value.clone());
@@ -1340,6 +1385,62 @@ mod tests {
         assert!(verify_completed_job(&running, &reference).is_err());
         let mismatched = json!({"jobReference":{"jobId":"other","projectId":"billing-fixture","location":"US"},"status":{"state":"DONE"}});
         assert!(verify_completed_job(&mismatched, &reference).is_err());
+    }
+
+    #[test]
+    fn aggregate_cells_reject_wrong_types_ranges_and_small_groups() {
+        let plan = fixture(false).plan(args("daily_sessions", false)).unwrap();
+        for (name, value) in [
+            ("event_date", json!("20261031")),
+            ("event_date", json!("20261131")),
+            ("observed_sessions", json!("4")),
+            ("observed_sessions", json!("private-identifier")),
+            ("observed_sessions", json!(null)),
+            ("event_count", json!("-5")),
+            ("observed_users", json!("-1")),
+            ("event_label", json!("name@example.invalid")),
+            ("next_event", json!("bad-name")),
+            ("first_user_medium", json!("bad medium")),
+            ("item_category", json!("bad/category")),
+            ("unknown", json!("5")),
+        ] {
+            assert!(!valid_aggregate_cell(name, &value, &plan));
+        }
+        for (name, value) in [
+            ("event_date", json!("20261130")),
+            ("observed_sessions", json!("5")),
+            ("observed_users", json!("0")),
+            ("event_label", json!("page_view")),
+            ("next_event", json!("(other)")),
+            ("first_user_medium", json!("paid-search")),
+            ("item_category", json!("Home Office")),
+            ("purchased_quantity", json!("-1")),
+        ] {
+            assert!(valid_aggregate_cell(name, &value, &plan));
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_fixture_rejects_scalar_identifier_and_small_group() {
+        for value in ["private-identifier", "4"] {
+            let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+            let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+            steps.push(step(
+                "POST",
+                "/bigquery/v2/projects/billing-fixture/queries",
+                Some(false),
+                json!({"jobReference":reference,"jobComplete":true,"schema":{"fields":[{"name":"event_date"},{"name":"observed_sessions"}]},"rows":[{"f":[{"v":"20261101"},{"v":value}]}]}),
+            ));
+            steps.push(step(
+                "GET",
+                "/bigquery/v2/projects/billing-fixture/jobs/job_1",
+                None,
+                json!({"jobReference":reference,"status":{"state":"DONE"}}),
+            ));
+            let error = query_fixture(steps).await.unwrap_err();
+            assert_eq!(error.code(), "BIGQUERY_EXECUTION_UNCONFIRMED");
+            assert!(!error.to_string().contains("private-identifier"));
+        }
     }
 
     #[test]
