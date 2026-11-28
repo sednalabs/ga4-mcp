@@ -518,6 +518,11 @@ impl BigQueryExportClient {
                 .get("jobComplete")
                 .and_then(Value::as_bool)
                 .ok_or_else(bad_provider)?;
+            // Once completion has been verified, a later result page cannot
+            // legitimately regress the same job to a running state.
+            if verified && !complete {
+                return Err(bad_provider());
+            }
             if complete {
                 if !verified {
                     let status = self
@@ -561,6 +566,11 @@ impl BigQueryExportClient {
             // A failed getQueryResults request is not an empty successful report.
             // Propagate the sanitized error; never submit a replacement job.
             page = self.response(req).await?;
+        }
+        // Poll exhaustion is not a successful empty report. The job may
+        // still be running (or incur cost); the caller must not resubmit.
+        if !complete || !verified {
+            return Err(bad_provider());
         }
         output["executed"] = json!(true);
         output["job_reference"] = json!({
@@ -960,6 +970,63 @@ mod tests {
                 assert!(query_fixture(steps).await.is_err());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn exhausted_poll_budget_is_unconfirmed_not_an_empty_success() {
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+        steps.push(step(
+            "POST",
+            "/bigquery/v2/projects/billing-fixture/queries",
+            Some(false),
+            json!({"jobReference":reference,"jobComplete":false}),
+        ));
+        for _ in 1..MAX_PAGES {
+            steps.push(step(
+                "GET",
+                "/bigquery/v2/projects/billing-fixture/queries/job_1",
+                None,
+                json!({"jobReference":reference,"jobComplete":false}),
+            ));
+        }
+        let error = query_fixture(steps).await.unwrap_err();
+        let result = crate::contract::error(error, 0);
+        let payload = result.structured_content.unwrap();
+        assert_eq!(payload["error"]["code"], "BIGQUERY_EXECUTION_UNCONFIRMED");
+        assert_eq!(payload["error"]["detail"], "retry_safe=false");
+        assert!(
+            payload["error"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("Do not automatically resubmit")
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_job_cannot_regress_to_running_on_later_page() {
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+        steps.push(step(
+            "POST",
+            "/bigquery/v2/projects/billing-fixture/queries",
+            Some(false),
+            json!({"jobReference":reference,"jobComplete":true,"schema":{"fields":[{"name":"event_date"},{"name":"observed_sessions"}]},"rows":[{"f":[{"v":"20261101"},{"v":"42"}]}],"pageToken":"next"}),
+        ));
+        steps.push(step(
+            "GET",
+            "/bigquery/v2/projects/billing-fixture/jobs/job_1",
+            None,
+            json!({"jobReference":reference,"status":{"state":"DONE"}}),
+        ));
+        steps.push(step(
+            "GET",
+            "/bigquery/v2/projects/billing-fixture/queries/job_1",
+            None,
+            json!({"jobReference":reference,"jobComplete":false}),
+        ));
+        let error = query_fixture(steps).await.unwrap_err();
+        assert_eq!(error.code(), "BIGQUERY_EXECUTION_UNCONFIRMED");
     }
 
     #[tokio::test]
