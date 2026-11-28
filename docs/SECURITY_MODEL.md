@@ -224,5 +224,9 @@ to a property in that snapshot. Switching Google accounts, rotating tokens or
 changing the accessible-property set creates a different namespace; existing
 sessions are not silently inherited. Cached results are not proof of live
 metric-level permissions: use short TTLs, and do not expose the mode where
-stricter per-field revocation is required. The mode remains opt-in and requires
-end-to-end two-principal HTTP/auth/Google mock qualification before production use.
+stricter per-field revocation is required. The mode remains opt-in and requires deployment qualification before production use.
+Scratchpad state and quota counters are process-local: do not load-balance this
+profile across replicas or treat per-process limits as deployment-wide quotas.
+The offline dispatch fixture exercises the production router and independently
+constructed replicas; it does not qualify native TLS deployment, distributed
+quota custody, or shared storage.
