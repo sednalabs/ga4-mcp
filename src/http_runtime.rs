@@ -74,58 +74,7 @@ pub async fn run_http_server(mut server: AnalyticsMcp, mut settings: HttpSetting
         )?;
     }
     let auth_layer = build_auth_surface_layer(&settings).await?;
-    let server_factory = server.clone();
-    let runtime = build_local_streamable_http_service(
-        move || Ok(server_factory.clone()),
-        LocalStreamableHttpServiceConfig {
-            server_config: streamable_http_config(&settings),
-            ..Default::default()
-        },
-    );
-    let mcp_service = runtime.service;
-
-    let guard_state = GuardState {
-        settings: settings.clone(),
-        allow_mcp_auth_headers: server.accepts_upstream_request_tokens(),
-    };
-    let router = Router::new()
-        .route("/health", get(health))
-        .nest_service("/mcp", mcp_service);
-    let router = if server.hosted_scratchpad.is_some() {
-        let (_, authenticator) = auth_layer
-            .as_ref()
-            .ok_or_else(|| anyhow!("hosted scratchpad requires authenticated HTTP"))?;
-        router.layer(middleware::from_fn_with_state(
-            crate::hosted_scratchpad::HostedAuthGuard::new(
-                authenticator.clone(),
-                server.upstream_token_header().to_string(),
-            ),
-            crate::hosted_scratchpad::verify_hosted_mcp_request,
-        ))
-    } else {
-        router
-    };
-    let mut router = router
-        .layer(middleware::from_fn_with_state(
-            guard_state.clone(),
-            inbound_auth_guard,
-        ))
-        .layer(middleware::from_fn_with_state(
-            guard_state.clone(),
-            host_guard,
-        ))
-        .layer(middleware::from_fn_with_state(
-            guard_state.clone(),
-            client_ip_guard,
-        ))
-        .with_state(guard_state.clone());
-    if let Some((auth_layer, _)) = auth_layer {
-        router = router.layer(auth_layer);
-    }
-    router = router.layer(middleware::from_fn_with_state(
-        guard_state.clone(),
-        request_audit,
-    ));
+    let router = build_http_router(server, &settings, auth_layer)?;
 
     mcp_toolkit_observability::emit_event(
         mcp_toolkit_observability::Level::INFO,
@@ -182,6 +131,68 @@ pub async fn run_http_server(mut server: AnalyticsMcp, mut settings: HttpSetting
             .await?;
     }
     Ok(())
+}
+
+/// Assemble the production middleware and MCP router independently of the listener.
+pub(crate) fn build_http_router(
+    server: AnalyticsMcp,
+    settings: &HttpSettings,
+    auth_layer: Option<(AuthSurfaceLayer, Arc<Authenticator>)>,
+) -> Result<Router> {
+    let server_factory = server.clone();
+    let runtime = build_local_streamable_http_service(
+        move || Ok(server_factory.clone()),
+        LocalStreamableHttpServiceConfig {
+            server_config: streamable_http_config(settings),
+            ..Default::default()
+        },
+    );
+    let mcp_service = runtime.service;
+
+    let guard_state = GuardState {
+        settings: settings.clone(),
+        allow_mcp_auth_headers: server.accepts_upstream_request_tokens(),
+    };
+    let router = Router::new()
+        .route("/health", get(health))
+        .nest_service("/mcp", mcp_service);
+    let router = if server.hosted_scratchpad.is_some() {
+        let (_, authenticator) = auth_layer
+            .as_ref()
+            .ok_or_else(|| anyhow!("hosted scratchpad requires authenticated HTTP"))?;
+        router.layer(middleware::from_fn_with_state(
+            crate::hosted_scratchpad::HostedAuthGuard::new(
+                authenticator.clone(),
+                server.upstream_token_header().to_string(),
+            ),
+            crate::hosted_scratchpad::verify_hosted_mcp_request,
+        ))
+    } else {
+        router
+    };
+    let mut router = router
+        .layer(middleware::from_fn_with_state(
+            guard_state.clone(),
+            inbound_auth_guard,
+        ))
+        .layer(middleware::from_fn_with_state(
+            guard_state.clone(),
+            host_guard,
+        ))
+        .layer(middleware::from_fn_with_state(
+            guard_state.clone(),
+            client_ip_guard,
+        ))
+        .with_state(guard_state.clone());
+    if let Some((auth_layer, _)) = auth_layer {
+        router = router.layer(auth_layer);
+    }
+    router = router.layer(middleware::from_fn_with_state(
+        guard_state.clone(),
+        request_audit,
+    ));
+
+    Ok(router)
 }
 
 fn streamable_http_config(settings: &HttpSettings) -> StreamableHttpServerConfig {
