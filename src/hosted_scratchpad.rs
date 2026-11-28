@@ -1160,15 +1160,14 @@ mod tests {
         let fresh_app = build_app(server);
         let fresh_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fresh_endpoint = format!("http://{}/mcp", fresh_listener.local_addr().unwrap());
-        let fresh_task =
-            tokio::spawn(async move {
-                axum::serve(
-                    fresh_listener,
-                    fresh_app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .await
-                .unwrap()
-            });
+        let fresh_task = tokio::spawn(async move {
+            axum::serve(
+                fresh_listener,
+                fresh_app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
         for (token, google) in [
             (a.clone(), "fixture-google-a"),
             (b.clone(), "fixture-google-b"),
