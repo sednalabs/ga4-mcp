@@ -16,6 +16,7 @@ const MAX_ROWS: u32 = 500;
 const MAX_RESPONSE: usize = 1024 * 1024;
 const MAX_PAGES: usize = 5;
 const MAX_LINK_PAGES: usize = 5;
+const PAID_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -347,7 +348,15 @@ impl BigQueryExportClient {
     async fn response(&self, request: RequestBuilder) -> Result<Value, AnalyticsError> {
         #[cfg(test)]
         if let Some(fixture) = &self.fixture {
-            return fixture.lock().unwrap().respond(request);
+            let (result, pause) = {
+                let mut fixture = fixture.lock().unwrap();
+                let result = fixture.respond(request);
+                (result, fixture.should_pause())
+            };
+            if pause {
+                std::future::pending::<()>().await;
+            }
+            return result;
         }
         response(request).await
     }
@@ -405,6 +414,16 @@ impl BigQueryExportClient {
         &self,
         plan: ExportPlan,
         token: &str,
+    ) -> Result<Value, AnalyticsError> {
+        self.query_with_paid_deadline(plan, token, PAID_EXECUTION_TIMEOUT)
+            .await
+    }
+
+    async fn query_with_paid_deadline(
+        &self,
+        plan: ExportPlan,
+        token: &str,
+        paid_deadline: Duration,
     ) -> Result<Value, AnalyticsError> {
         self.verify_link(&plan, token).await?;
         let dataset = self
@@ -464,11 +483,17 @@ impl BigQueryExportClient {
         // From the first paid submission onward, even a transport or response
         // validation failure may have incurred cost. Never expose read-path
         // retry advice for an execution that cannot be confirmed.
-        self.execute_verified(plan, token, url, output)
-            .await
-            .map_err(|error| AnalyticsError::BigQueryExecutionUnconfirmed {
-                status: error.status_code(),
-            })
+        // Bound the entire paid phase, not merely each individual HTTP call.
+        // Dropping the local future is NOT remote cancellation and may incur cost.
+        tokio::time::timeout(
+            paid_deadline,
+            self.execute_verified(plan, token, url, output),
+        )
+        .await
+        .map_err(|_| AnalyticsError::BigQueryExecutionUnconfirmed { status: None })?
+        .map_err(|error| AnalyticsError::BigQueryExecutionUnconfirmed {
+            status: error.status_code(),
+        })
     }
 
     async fn execute_verified(
@@ -769,12 +794,19 @@ mod tests {
         reply: Result<Value, AnalyticsError>,
     }
 
-    pub(super) struct ProviderFixture(VecDeque<ExpectedRequest>);
+    pub(super) struct ProviderFixture {
+        steps: VecDeque<ExpectedRequest>,
+        pause_when_remaining: Option<usize>,
+    }
 
     impl ProviderFixture {
+        pub(super) fn should_pause(&self) -> bool {
+            self.pause_when_remaining == Some(self.steps.len())
+        }
+
         pub(super) fn respond(&mut self, builder: RequestBuilder) -> Result<Value, AnalyticsError> {
             let expected = self
-                .0
+                .steps
                 .pop_front()
                 .expect("unexpected additional provider call");
             let request = builder.build().unwrap();
@@ -843,12 +875,15 @@ mod tests {
 
     async fn query_fixture(steps: Vec<ExpectedRequest>) -> Result<Value, AnalyticsError> {
         let mut client = fixture(true);
-        let provider = Arc::new(Mutex::new(ProviderFixture(steps.into())));
+        let provider = Arc::new(Mutex::new(ProviderFixture {
+            steps: steps.into(),
+            pause_when_remaining: None,
+        }));
         client.fixture = Some(provider.clone());
         let plan = client.plan(args("daily_sessions", true)).unwrap();
         let result = client.query(plan, "fixture-token").await;
         assert!(
-            provider.lock().unwrap().0.is_empty(),
+            provider.lock().unwrap().steps.is_empty(),
             "missing expected provider call"
         );
         result
@@ -1027,6 +1062,72 @@ mod tests {
         ));
         let error = query_fixture(steps).await.unwrap_err();
         assert_eq!(error.code(), "BIGQUERY_EXECUTION_UNCONFIRMED");
+    }
+
+    #[tokio::test]
+    async fn paid_deadline_drops_pending_poll_without_resubmission() {
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        let reference = json!({"jobId":"job_1","projectId":"billing-fixture","location":"US"});
+        steps.push(step(
+            "POST",
+            "/bigquery/v2/projects/billing-fixture/queries",
+            Some(false),
+            json!({"jobReference":reference,"jobComplete":false}),
+        ));
+        steps.push(step(
+            "GET",
+            "/bigquery/v2/projects/billing-fixture/queries/job_1",
+            None,
+            json!({"jobReference":reference,"jobComplete":false}),
+        ));
+        let mut client = fixture(true);
+        let provider = Arc::new(Mutex::new(ProviderFixture {
+            steps: steps.into(),
+            pause_when_remaining: Some(0),
+        }));
+        client.fixture = Some(provider.clone());
+        let plan = client.plan(args("daily_sessions", true)).unwrap();
+        let error = client
+            .query_with_paid_deadline(plan, "fixture-token", Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(provider.lock().unwrap().steps.is_empty());
+        assert_eq!(error.code(), "BIGQUERY_EXECUTION_UNCONFIRMED");
+        assert!(error.status_code().is_none());
+        assert!(
+            error
+                .hint()
+                .unwrap()
+                .contains("Do not automatically resubmit")
+        );
+    }
+
+    #[tokio::test]
+    async fn local_cancellation_during_dry_run_never_submits_paid_job() {
+        use std::{future::Future, task::Poll};
+
+        let mut steps = provider_fixture(json!({"totalBytesProcessed":"1"}));
+        steps.push(step(
+            "POST",
+            "/bigquery/v2/projects/billing-fixture/queries",
+            Some(false),
+            json!({}),
+        ));
+        let mut client = fixture(true);
+        let provider = Arc::new(Mutex::new(ProviderFixture {
+            steps: steps.into(),
+            pause_when_remaining: Some(1),
+        }));
+        client.fixture = Some(provider.clone());
+        let plan = client.plan(args("daily_sessions", true)).unwrap();
+        let mut query = Box::pin(client.query(plan, "fixture-token"));
+        std::future::poll_fn(|cx| {
+            assert!(query.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(query);
+        assert_eq!(provider.lock().unwrap().steps.len(), 1);
     }
 
     #[tokio::test]
