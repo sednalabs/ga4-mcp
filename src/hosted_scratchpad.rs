@@ -1229,6 +1229,147 @@ mod tests {
         assert_eq!(after_shutdown["data"]["returned"], 0);
         assert_eq!(report_calls.load(Ordering::SeqCst), 2);
         fresh_task.abort();
+
+        // Qualify the separate production read-only profile, which has no
+        // hosted scratchpad witness or process-local session authority.
+        let mut read_settings = settings.clone();
+        read_settings.capability_profile = CapabilityProfile::ReadOnly;
+        let mut read_replicas = Vec::new();
+        for _ in 0..2 {
+            let mut read_client =
+                crate::ga_client::AnalyticsApiClient::from_settings(&read_settings)
+                    .await
+                    .unwrap();
+            read_client.install_report_fixture(&provider_url);
+            let engine: SharedScratchpadEngine = Arc::new(DuckDbEngine::new().unwrap());
+            let manager = Arc::new(
+                ScratchpadSessionManager::new(
+                    engine,
+                    ScratchpadSessionConfig::new(Duration::from_secs(60), 3, 4, 100, 128),
+                )
+                .unwrap(),
+            );
+            let read_server = AnalyticsMcp::new(
+                Arc::new(read_client),
+                manager,
+                CapabilityProfile::ReadOnly,
+                UpstreamTokenSource::RequestHeader,
+                "x-google-token".to_owned(),
+            );
+            assert!(read_server.hosted_scratchpad.is_none());
+            let app = build_app(read_server);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap()
+            });
+            read_replicas.push((url, task));
+        }
+        let report_args = json!({
+            "property_id":"42",
+            "date_ranges":[{"start_date":"2026-01-01","end_date":"2026-01-01"}],
+            "dimensions":["country"],"metrics":["activeUsers"],"limit":1
+        });
+        let read_b = signed_token("mcp-b", "analytics:read");
+        for (first, second) in [(0, 1), (1, 0)] {
+            let (read_a_result, read_b_result) = tokio::join!(
+                payload(call_at(
+                    &read_replicas[first].0,
+                    a.clone(),
+                    "fixture-google-a",
+                    "run_report",
+                    report_args.clone(),
+                )),
+                payload(call_at(
+                    &read_replicas[second].0,
+                    read_b.clone(),
+                    "fixture-google-b",
+                    "run_report",
+                    report_args.clone(),
+                ))
+            );
+            assert_eq!(read_a_result["ok"], true, "{read_a_result}");
+            assert_eq!(read_b_result["ok"], true, "{read_b_result}");
+            assert!(read_a_result["data"].to_string().contains("only-a"));
+            assert!(!read_a_result["data"].to_string().contains("only-b"));
+            assert!(read_b_result["data"].to_string().contains("only-b"));
+            assert!(!read_b_result["data"].to_string().contains("only-a"));
+        }
+        assert_eq!(report_calls.load(Ordering::SeqCst), 6);
+        let read_endpoint = &read_replicas[1].0;
+        let denied = call_at(
+            read_endpoint,
+            signed_token("mcp-a", "wrong:scope"),
+            "fixture-google-a",
+            "run_report",
+            report_args.clone(),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert!(matches!(
+            denied.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
+        let mut missing = call_at(
+            read_endpoint,
+            a.clone(),
+            "fixture-google-a",
+            "run_report",
+            report_args.clone(),
+        )
+        .build()
+        .unwrap();
+        missing.headers_mut().remove("x-google-token");
+        let missing_response = http.execute(missing).await.unwrap();
+        assert_eq!(missing_response.status(), StatusCode::OK);
+        let envelope: Value = missing_response.json().await.unwrap();
+        assert_eq!(envelope["result"]["structuredContent"]["ok"], false);
+        let duplicate = payload(
+            call_at(
+                read_endpoint,
+                a.clone(),
+                "fixture-google-a",
+                "run_report",
+                report_args.clone(),
+            )
+            .header("x-google-token", "fixture-google-b"),
+        )
+        .await;
+        assert_eq!(duplicate["ok"], false);
+        let forbidden = payload(call_at(
+            read_endpoint,
+            a.clone(),
+            "fixture-google-a",
+            "scratchpad_list_sessions",
+            json!({}),
+        ))
+        .await;
+        assert_eq!(forbidden["ok"], false);
+        assert_eq!(report_calls.load(Ordering::SeqCst), 6);
+
+        read_replicas[0].1.abort();
+        let after_replica_shutdown = payload(call_at(
+            read_endpoint,
+            read_b,
+            "fixture-google-b",
+            "run_report",
+            report_args,
+        ))
+        .await;
+        assert_eq!(after_replica_shutdown["ok"], true);
+        assert!(
+            after_replica_shutdown["data"]
+                .to_string()
+                .contains("only-b")
+        );
+        assert_eq!(report_calls.load(Ordering::SeqCst), 7);
+        read_replicas[1].1.abort();
         provider_task.abort();
         jwks_task.abort();
     }

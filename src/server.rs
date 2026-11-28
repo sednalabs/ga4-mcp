@@ -160,6 +160,11 @@ impl ServerHandler for AnalyticsMcp {
                 return Ok(result.into());
             }
 
+            let request_token = match request_token {
+                Ok(token) => token,
+                Err(error) => return Ok(contract::error(error, 0).into()),
+            };
+
             emit_event(
                 Level::INFO,
                 "ga4_mcp.tool.start",
@@ -242,24 +247,38 @@ fn upstream_token_override_from_context(
     context: &RequestContext<RoleServer>,
     source: UpstreamTokenSource,
     header_name: &str,
-) -> Option<String> {
+) -> Result<Option<String>, AnalyticsError> {
     if !source.uses_request_header() {
-        return None;
+        return Ok(None);
     }
-    context
-        .extensions
-        .get::<Parts>()
-        .and_then(|parts| upstream_token_override_from_parts(parts, header_name))
+    match context.extensions.get::<Parts>() {
+        Some(parts) => upstream_token_override_from_parts(parts, header_name),
+        None => Ok(None),
+    }
 }
 
-fn upstream_token_override_from_parts(parts: &Parts, header_name: &str) -> Option<String> {
-    parts
-        .headers
-        .get(header_name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+fn upstream_token_override_from_parts(
+    parts: &Parts,
+    header_name: &str,
+) -> Result<Option<String>, AnalyticsError> {
+    let mut values = parts.headers.get_all(header_name).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    let malformed = || {
+        AnalyticsError::malformed_request_access_token(
+            header_name,
+            "expected exactly one nonempty token header",
+        )
+    };
+    if values.next().is_some() {
+        return Err(malformed());
+    }
+    let raw = value.to_str().map_err(|_| malformed())?.trim();
+    if raw.is_empty() || raw.contains(',') {
+        return Err(malformed());
+    }
+    Ok(Some(raw.to_owned()))
 }
 
 fn tool_allowed_for_profile(profile: CapabilityProfile, tool_name: &str) -> bool {
@@ -808,14 +827,26 @@ mod tests {
     #[test]
     fn upstream_token_override_reads_authorization_header() {
         let parts = request_parts_with_headers(&[("authorization", "Bearer token-123")]);
-        let token = upstream_token_override_from_parts(&parts, "authorization");
+        let token = upstream_token_override_from_parts(&parts, "authorization").unwrap();
         assert_eq!(token.as_deref(), Some("Bearer token-123"));
+    }
+
+    #[test]
+    fn upstream_token_override_rejects_ambiguous_or_empty_headers() {
+        for headers in [
+            vec![("x-google-token", "a"), ("x-google-token", "b")],
+            vec![("x-google-token", "a,b")],
+            vec![("x-google-token", "")],
+        ] {
+            let parts = request_parts_with_headers(&headers);
+            assert!(upstream_token_override_from_parts(&parts, "x-google-token").is_err());
+        }
     }
 
     #[test]
     fn upstream_token_override_ignores_headers_in_config_mode() {
         let parts = request_parts_with_headers(&[("authorization", "Bearer token-123")]);
-        let token = upstream_token_override_from_parts(&parts, "x-google-access-token");
+        let token = upstream_token_override_from_parts(&parts, "x-google-access-token").unwrap();
         assert!(token.is_none(), "wrong header should not produce token");
 
         assert!(matches!(UpstreamTokenSource::Config, source if !source.uses_request_header()));
