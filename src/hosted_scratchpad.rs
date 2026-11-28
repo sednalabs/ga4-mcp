@@ -1,5 +1,6 @@
 //! Request-bound hosted scratchpad isolation using the shared toolkit manager.
-//! This feature is opt-in; no ambient credential or legacy MCP-session authority.
+//! Hosted activation remains blocked pending deployment qualification.
+//! No ambient credential or legacy MCP-session authority.
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::sync::{
@@ -38,6 +39,19 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_PROPERTIES: usize = 4096;
 const MAX_PAGES: usize = 10;
 const REQUEST_WITNESS_TTL: Duration = Duration::from_secs(30);
+
+// Do not enable production hosting based solely on offline router fixtures.
+// Remove this gate only after native TLS and deployment isolation qualification.
+const HOSTED_DEPLOYMENT_QUALIFIED: bool = false;
+
+fn hosted_deployment_gate(enabled: bool) -> Result<bool> {
+    if enabled && !HOSTED_DEPLOYMENT_QUALIFIED {
+        return Err(anyhow!(
+            "hosted scratchpad activation is blocked pending deployment qualification"
+        ));
+    }
+    Ok(enabled)
+}
 
 fn denied() -> AnalyticsError {
     AnalyticsError::policy_denied("hosted_scratchpad_identity_unverified", "scratchpad")
@@ -179,7 +193,7 @@ impl HostedScratchpadVerifier {
                 ));
             }
         };
-        if !enabled {
+        if !hosted_deployment_gate(enabled)? {
             return Ok(None);
         }
         let auth = &settings.auth.auth_config;
@@ -436,6 +450,12 @@ async fn bounded_json(request: RequestBuilder) -> Result<Value, AnalyticsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_deployment_gate_preserves_containment() {
+        assert!(!hosted_deployment_gate(false).unwrap());
+        assert!(hosted_deployment_gate(true).is_err());
+    }
     use crate::scratchpad::{DuckDbEngine, ScratchpadSessionConfig, SharedScratchpadEngine};
     use serde_json::json;
 
